@@ -1,0 +1,26 @@
+# Python / Virtualenv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local SQLite database & model weights (never commit user data or checkpoints!)
+*.db
+*.db-wal
+*.db-shm
+*.ckpt
+
+# Mobile build artifacts & dependencies
+mobile/node_modules/
+mobile/www/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/ios/Pods/
+mobile/ios/App/build/
+
+# OS / Editor
+.DS_Store
+.env
+*.log

@@ -1,0 +1,15 @@
+{
+  "appId": "network.aethelburg.daily",
+  "appName": "Daily",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon_config_sample",
+      "iconColor": "#2563eb"
+    }
+  }
+}
