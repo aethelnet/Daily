@@ -982,28 +982,58 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 .leg-toggle:hover { background: var(--surface-2); color: var(--text); }
 .leg-toggle:not(.active) { opacity: 0.36; text-decoration: line-through; }
 .state-chart-wrap {
+  position: relative;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 10px 12px 6px;
+  padding: 10px 14px 8px;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
   touch-action: pan-y;
 }
 .state-chart-wrap.is-dragging { cursor: grabbing; }
+.state-chart-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 20px;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.state-chart-readout .ro-live {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.state-chart-readout .ro-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .state-chart-svg {
   width: 100%;
-  height: 144px;
+  height: auto;
   display: block;
   overflow: visible;
-  cursor: ns-resize;
+  cursor: inherit;
 }
 .state-chart-foot {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 4px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
   font-size: 11px;
   color: var(--muted);
 }

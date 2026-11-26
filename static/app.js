@@ -1616,12 +1616,14 @@ function renderStateCurveSection(curves, timelineMeta) {
     return;
   }
 
-  const W = 680;
-  const H = 152;
-  const padL = 26;
-  const padR = 20;
-  const padT = 14;
-  const padB = 26;
+  // Measure real pixel width for razor-sharp 1:1 aspect ratio (zero squished ovals or warped text!)
+  const hostW = chartEl.clientWidth || (chartEl.parentElement && chartEl.parentElement.clientWidth) || 760;
+  const W = Math.max(300, Math.round(hostW - 30));
+  const H = W < 520 ? 196 : 226;
+  const padL = 32;
+  const padR = 16;
+  const padT = 26;
+  const padB = 30;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const vStart = state.chartView.startHr;
@@ -1636,27 +1638,52 @@ function renderStateCurveSection(curves, timelineMeta) {
     return `${dt.toLocaleDateString(getLocale(), { weekday: "short", day: "2-digit", month: "2-digit" })} ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
   };
 
-  // Horizontal 1..5 guide hairlines
+  // Horizontal 1..5 guide hairlines (clean, spacious, subtle 3-midline)
   const guides = [1, 2, 3, 4, 5]
     .map((lv) => {
       const y = yOf(lv).toFixed(1);
-      return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${lv === 3 ? "3 3" : "none"}" opacity="${lv === 3 ? "0.9" : "0.5"}" />
-              <text x="${padL - 8}" y="${(yOf(lv) + 3.5).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="10" font-family="var(--mono)">${lv}</text>`;
+      const isMid = lv === 3;
+      return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1" ${isMid ? 'stroke-dasharray="3 4"' : ""} opacity="${isMid ? "0.95" : "0.55"}" />
+              <text x="${padL - 10}" y="${(yOf(lv) + 3.5).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="11" font-family="var(--mono)">${lv}</text>`;
     })
     .join("");
 
-  // Past/Future background boundary & optional #tag day highlights
-  let bgLayer = "";
+  // Subtle vertical midnight day-grid hairlines when zoomed into multi-day view (<= 16 days)
+  let dayGridLayer = "";
+  if (span > 18 && span <= 16 * 24) {
+    const d0 = Math.ceil(vStart / 24) * 24;
+    for (let dh = d0; dh <= vEnd; dh += 24) {
+      const gx = xOf(dh);
+      if (gx > padL + 2 && gx < W - padR - 2) {
+        dayGridLayer += `<line x1="${gx.toFixed(1)}" y1="${padT}" x2="${gx.toFixed(1)}" y2="${padT + plotH}" stroke="var(--border)" stroke-width="1" opacity="0.35" />`;
+      }
+    }
+  }
+
+  // Past vs. Future zone (ultra-subtle tinted forecast area + clear unclipped header labels!)
+  let bgLayer = dayGridLayer;
+  let topBadgesLayer = "";
   const nowX = xOf(nowHr);
   if (nowHr < vEnd) {
     const futX = Math.max(padL, nowX);
-    bgLayer += `<rect x="${futX.toFixed(1)}" y="${padT}" width="${Math.max(0, W - padR - futX).toFixed(1)}" height="${plotH}" fill="var(--ai-soft)" opacity="0.28" />`;
+    const futW = Math.max(0, W - padR - futX);
+    bgLayer += `<rect x="${futX.toFixed(1)}" y="${padT}" width="${futW.toFixed(1)}" height="${plotH}" fill="url(#fut-zone-bg)" />`;
+    if (futW >= 78) {
+      topBadgesLayer += `<text x="${(W - padR - 4).toFixed(1)}" y="${(padT - 8).toFixed(1)}" text-anchor="end" fill="var(--ai)" font-size="10" font-weight="500" font-family="var(--mono)" opacity="0.82">${esc(t("an_chart_forecast_zone"))}</text>`;
+    }
   }
   if (nowHr >= vStart && nowHr <= vEnd) {
-    bgLayer += `<line x1="${nowX.toFixed(1)}" y1="${padT}" x2="${nowX.toFixed(1)}" y2="${padT + plotH}" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="2 3" opacity="0.7" />`;
-    bgLayer += `<text x="${Math.min(W - padR - 14, Math.max(padL + 14, nowX)).toFixed(1)}" y="${padT - 3}" text-anchor="middle" fill="var(--accent)" font-size="9" font-weight="600" font-family="var(--mono)">${esc(t("btn_chart_now"))}</text>`;
+    bgLayer += `<line x1="${nowX.toFixed(1)}" y1="${padT}" x2="${nowX.toFixed(1)}" y2="${padT + plotH}" stroke="var(--accent)" stroke-width="1.25" stroke-dasharray="3 3" opacity="0.6" />`;
+    const nowLbl = t("btn_chart_now");
+    const pillW = Math.max(36, nowLbl.length * 6.5 + 12);
+    const clampedX = Math.min(W - padR - pillW / 2, Math.max(padL + pillW / 2, nowX));
+    topBadgesLayer += `<g>
+      <rect x="${(clampedX - pillW / 2).toFixed(1)}" y="${(padT - 20).toFixed(1)}" width="${pillW.toFixed(1)}" height="16" rx="8" fill="var(--accent-soft)" stroke="color-mix(in srgb, var(--accent) 28%, transparent)" stroke-width="1" />
+      <text x="${clampedX.toFixed(1)}" y="${(padT - 8.5).toFixed(1)}" text-anchor="middle" fill="var(--accent)" font-size="10" font-weight="600" font-family="var(--mono)">${esc(nowLbl)}</text>
+    </g>`;
   }
 
+  // Optional #tag day highlight stripes (only when user explicitly toggles a #tag pill)
   if (state.selectedChartTag && tagDaysMap[state.selectedChartTag]) {
     for (const dIso of tagDaysMap[state.selectedChartTag]) {
       const [dy, dm, dd] = dIso.split("-").map(Number);
@@ -1665,18 +1692,23 @@ function renderStateCurveSection(curves, timelineMeta) {
       if (dEndHr < vStart || dStartHr > vEnd) continue;
       const x1 = Math.max(padL, xOf(dStartHr));
       const x2 = Math.min(W - padR, xOf(dEndHr));
-      const bw = Math.max(4, x2 - x1);
-      bgLayer += `<rect x="${x1.toFixed(1)}" y="${padT}" width="${bw.toFixed(1)}" height="${plotH}" fill="var(--ai)" opacity="0.13" rx="2"><title>#${esc(state.selectedChartTag)} · ${esc(dIso)}</title></rect>`;
-      bgLayer += `<circle cx="${((x1 + x2) / 2).toFixed(1)}" cy="${(padT + 4).toFixed(1)}" r="2.5" fill="var(--ai)" opacity="0.85"><title>#${esc(state.selectedChartTag)} · ${esc(dIso)}</title></circle>`;
+      const bw = Math.max(6, x2 - x1);
+      bgLayer += `<rect x="${x1.toFixed(1)}" y="${padT}" width="${bw.toFixed(1)}" height="${plotH}" fill="var(--ai)" opacity="0.11" rx="3"><title>#${esc(state.selectedChartTag)} · ${esc(dIso)}</title></rect>`;
+      bgLayer += `<rect x="${x1.toFixed(1)}" y="${padT}" width="${bw.toFixed(1)}" height="3" fill="var(--ai)" opacity="0.65" rx="1.5" />`;
     }
   }
 
-  // Helper to render continuous past line + fading future line & expanding confidence ribbon
   const tl = cur.timeline || { actual: [], ode: [], tabpfn: [] };
-  let defsExtra = "";
+  let defsExtra = `<linearGradient id="ode-past-area" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#368470" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#368470" stop-opacity="0.0" />
+    </linearGradient>
+    <linearGradient id="fut-zone-bg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="var(--ai)" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="var(--ai)" stop-opacity="0.015" />
+    </linearGradient>`;
   let bandLayer = "";
   let curveLayer = "";
-  let futureHoverLayer = "";
 
   const drawContinuousSeries = (rawPts, opts) => {
     if (!rawPts || rawPts.length < 2) return;
@@ -1720,7 +1752,7 @@ function renderStateCurveSection(curves, timelineMeta) {
         if (opts.pastFill) {
           bandLayer += `<path d="${dStr} L ${xy[xy.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${xy[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z" fill="${opts.pastFill}" />`;
         }
-        curveLayer += `<path d="${dStr}" fill="none" stroke="${opts.stroke}" stroke-width="${opts.width}" ${opts.dash ? `stroke-dasharray="${opts.dash}"` : ""} stroke-linecap="round" opacity="${opts.pastOpacity}" />`;
+        curveLayer += `<path d="${dStr}" fill="none" stroke="${opts.stroke}" stroke-width="${opts.width}" ${opts.dash ? `stroke-dasharray="${opts.dash}"` : ""} stroke-linecap="round" stroke-linejoin="round" opacity="${opts.pastOpacity}" />`;
       }
     }
 
@@ -1732,7 +1764,7 @@ function renderStateCurveSection(curves, timelineMeta) {
       const cEnd = futPts[futPts.length - 1][2] ?? 0.1;
       defsExtra += `<linearGradient id="${gId}" gradientUnits="userSpaceOnUse" x1="${x0.toFixed(1)}" y1="0" x2="${Math.max(x0 + 1, x1).toFixed(1)}" y2="0">
         <stop offset="0%" stop-color="${opts.stroke}" stop-opacity="${(0.18 * cStart).toFixed(2)}" />
-        <stop offset="100%" stop-color="${opts.stroke}" stop-opacity="${Math.max(0.02, 0.16 * cEnd).toFixed(2)}" />
+        <stop offset="100%" stop-color="${opts.stroke}" stop-opacity="${Math.max(0.015, 0.14 * cEnd).toFixed(2)}" />
       </linearGradient>`;
 
       const upper = futPts.map((p) => `${xOf(p[0]).toFixed(1)},${yOf(p[1] + (p[3] || 0)).toFixed(1)}`);
@@ -1743,17 +1775,8 @@ function renderStateCurveSection(curves, timelineMeta) {
         const a = futPts[i];
         const b = futPts[i + 1];
         const avgConf = ((a[2] ?? 0.5) + (b[2] ?? 0.5)) / 2;
-        const segOp = Math.max(0.1, Math.min(0.95, 0.08 + 0.88 * avgConf));
+        const segOp = Math.max(0.1, Math.min(0.92, 0.08 + 0.84 * avgConf));
         curveLayer += `<line x1="${xOf(a[0]).toFixed(1)}" y1="${yOf(a[1]).toFixed(1)}" x2="${xOf(b[0]).toFixed(1)}" y2="${yOf(b[1]).toFixed(1)}" stroke="${opts.stroke}" stroke-width="${opts.width}" ${opts.dash ? `stroke-dasharray="${opts.dash}"` : ""} stroke-linecap="round" stroke-opacity="${segOp.toFixed(2)}" />`;
-      }
-
-      const step = Math.max(1, Math.floor(futPts.length / 10));
-      for (let i = 1; i < futPts.length; i += step) {
-        const p = futPts[i];
-        if (p[0] < vStart || p[0] > vEnd) continue;
-        const pct = Math.round((p[2] ?? 0.2) * 100);
-        const tip = `${fmtRelTime(p[0])} · ${opts.label} ${fmtNum(p[1])}/5 · ${t("an_conf_lbl", { pct })}`;
-        futureHoverLayer += `<circle cx="${xOf(p[0]).toFixed(1)}" cy="${yOf(p[1]).toFixed(1)}" r="6" fill="transparent"><title>${esc(tip)}</title></circle>`;
       }
     }
   };
@@ -1763,10 +1786,10 @@ function renderStateCurveSection(curves, timelineMeta) {
       id: "ode",
       label: "ODE",
       stroke: "#368470",
-      width: 2.1,
+      width: 2.4,
       dash: "",
-      pastOpacity: 0.95,
-      pastFill: "rgba(54, 132, 112, 0.08)",
+      pastOpacity: 0.96,
+      pastFill: "url(#ode-past-area)",
     });
   }
   if (state.showTabpfnLine) {
@@ -1774,7 +1797,7 @@ function renderStateCurveSection(curves, timelineMeta) {
       id: "tabpfn",
       label: "TabPFN",
       stroke: "var(--ai)",
-      width: 1.9,
+      width: 2.0,
       dash: "5 4",
       pastOpacity: 0.9,
       pastFill: "",
@@ -1791,11 +1814,11 @@ function renderStateCurveSection(curves, timelineMeta) {
       .map((tk) => {
         const tx = xOf(tk.t).toFixed(1);
         const yBot = (padT + plotH).toFixed(1);
-        const yTop = (padT + plotH - 9).toFixed(1);
+        const yTop = (padT + plotH - 10).toFixed(1);
         const tip = `${tk.ts.slice(11, 16)} (${tk.ts.slice(8, 10)}.${tk.ts.slice(5, 7)}.) · ${tk.habit_name} (+${fmtNum(tk.amount)})`;
         return `<g>
-          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot}" stroke="${esc(tk.color)}" stroke-width="2.2" stroke-linecap="round" />
-          <circle cx="${tx}" cy="${yTop}" r="2.1" fill="${esc(tk.color)}"><title>${esc(tip)}</title></circle>
+          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot}" stroke="${esc(tk.color)}" stroke-width="2.4" stroke-linecap="round" opacity="0.88" />
+          <circle cx="${tx}" cy="${yTop}" r="2.3" fill="${esc(tk.color)}"><title>${esc(tip)}</title></circle>
         </g>`;
       })
       .join("");
@@ -1807,25 +1830,20 @@ function renderStateCurveSection(curves, timelineMeta) {
       const cx = xOf(pt.t).toFixed(1);
       const cy = yOf(pt.v).toFixed(1);
       const tip = `${fmtRelTime(pt.t)}: ${fmtNum(pt.v)}/5${pt.note ? ` · ${pt.note}` : ""}`;
-      return `<circle cx="${cx}" cy="${cy}" r="4.2" fill="var(--text)" stroke="var(--surface)" stroke-width="1.8"><title>${esc(tip)}</title></circle>`;
+      return `<circle cx="${cx}" cy="${cy}" r="4.8" fill="var(--text)" stroke="var(--surface)" stroke-width="2.2"><title>${esc(tip)}</title></circle>`;
     })
     .join("");
 
-  let stepHr = 24;
-  if (span <= 14) stepHr = 2;
-  else if (span <= 38) stepHr = 4;
-  else if (span <= 84) stepHr = 12;
-  else if (span <= 180) stepHr = 24;
-  else if (span <= 420) stepHr = 72;
-  else if (span <= 900) stepHr = 120;
-  else stepHr = 168;
-
+  // Adaptive non-overlapping X-axis labels computed from actual pixel spacing
+  const maxLabels = Math.max(4, Math.floor(plotW / 58));
+  const candSteps = [2, 3, 4, 6, 12, 24, 48, 72, 96, 120, 168, 336];
+  const stepHr = candSteps.find((s) => span / s <= maxLabels) || 336;
   const firstTick = Math.ceil(vStart / stepHr) * stepHr;
   const xLabelParts = [];
   const p2 = (n) => String(n).padStart(2, "0");
   for (let th = firstTick; th <= vEnd + 0.01; th += stepHr) {
     const x = xOf(th);
-    if (x < padL + 10 || x > W - padR - 10) continue;
+    if (x < padL + 16 || x > W - padR - 16) continue;
     const dt = new Date(originMs + th * 3600000);
     const isFut = th > nowHr + 0.5;
     let lbl = "";
@@ -1850,7 +1868,7 @@ function renderStateCurveSection(curves, timelineMeta) {
     const fill = Math.abs(th) < 12 ? "var(--text)" : isFut ? "var(--ai)" : "var(--muted)";
     const fw = Math.abs(th) < 12 ? "600" : "400";
     xLabelParts.push(
-      `<text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="${fill}" font-size="10" font-weight="${fw}" font-family="var(--mono)">${esc(lbl)}</text>`
+      `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="${fill}" font-size="11" font-weight="${fw}" font-family="var(--mono)">${esc(lbl)}</text>`
     );
   }
   const xLabels = xLabelParts.join("");
@@ -1869,11 +1887,18 @@ function renderStateCurveSection(curves, timelineMeta) {
   const anchorTxt =
     curLow || curHigh ? `1 = ${curLow || t("an_anchor_low")} · 5 = ${curHigh || t("an_anchor_high")}` : "";
 
+  // Store geometry snapshot for zero-latency live hover crosshair
+  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, visActual, anchorTxt, rightSummary };
+
   chartEl.innerHTML = `
-    <div class="state-chart-wrap" data-pan-chart="1" title="${esc(t("an_chart_wheel_title"))}">
-      <svg class="state-chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <div class="state-chart-wrap" data-pan-chart="1">
+      <div class="state-chart-readout" id="state-chart-readout">
+        <span>${esc(anchorTxt)}</span>
+        <span class="mono">${esc(rightSummary)}</span>
+      </div>
+      <svg class="state-chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
         <defs>
-          <clipPath id="state-plot-clip"><rect x="${padL}" y="${padT - 6}" width="${plotW}" height="${plotH + 12}" /></clipPath>
+          <clipPath id="state-plot-clip"><rect x="${padL}" y="${padT - 2}" width="${plotW}" height="${plotH + 4}" /></clipPath>
           ${defsExtra}
         </defs>
         ${guides}
@@ -1883,13 +1908,14 @@ function renderStateCurveSection(curves, timelineMeta) {
           ${curveLayer}
           ${ticksLayer}
           ${dotsLayer}
-          ${futureHoverLayer}
         </g>
+        ${topBadgesLayer}
+        <g id="state-chart-hover" style="pointer-events:none;"></g>
         ${xLabels}
       </svg>
       <div class="state-chart-foot">
-        <span>${esc(anchorTxt)}</span>
-        <span class="mono">${esc(rightSummary)} · <span class="muted">${esc(t("an_chart_pan_hint"))}</span></span>
+        <span>${esc(t("an_chart_pan_hint"))}</span>
+        <span class="mono">${esc(t("an_chart_zoom_hint"))}</span>
       </div>
     </div>`;
 }
@@ -3308,6 +3334,107 @@ function bindEvents() {
     const nextSpan = Math.max(CHART_MIN_SPAN_HR, span * 0.5);
     state.chartView = clampChartView(anchor - frac * nextSpan, anchor + (1 - frac) * nextSpan);
     renderStateCurveSection(state.lastStateCurves);
+  });
+
+  // Live hover crosshair + crisp top readout bar (zero layout shift!)
+  const interpSeriesAt = (pts, hr) => {
+    if (!pts || !pts.length) return null;
+    if (hr < pts[0][0] || hr > pts[pts.length - 1][0]) return null;
+    let lo = 0, hi = pts.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid][0] <= hr) lo = mid;
+      else hi = mid;
+    }
+    const a = pts[lo], b = pts[hi];
+    const dt = b[0] - a[0];
+    const f = dt > 1e-6 ? Math.max(0, Math.min(1, (hr - a[0]) / dt)) : 0;
+    return {
+      v: a[1] + (b[1] - a[1]) * f,
+      conf: (a[2] ?? 1) + ((b[2] ?? 1) - (a[2] ?? 1)) * f,
+    };
+  };
+  const clearChartHover = () => {
+    const g = state._chartGeom;
+    const hoverEl = $("#state-chart-hover");
+    const roEl = $("#state-chart-readout");
+    if (hoverEl) hoverEl.innerHTML = "";
+    if (roEl && g) {
+      roEl.innerHTML = `<span>${esc(g.anchorTxt)}</span><span class="mono">${esc(g.rightSummary)}</span>`;
+    }
+  };
+  chartHost.addEventListener("pointermove", (e) => {
+    if (chartDrag) return;
+    const g = state._chartGeom;
+    const svg = chartHost.querySelector(".state-chart-svg");
+    if (!g || !svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const svgX = ((e.clientX - rect.left) / rect.width) * g.W;
+    if (svgX < g.padL || svgX > g.W - g.padR) {
+      clearChartHover();
+      return;
+    }
+    let hr = g.vStart + ((svgX - g.padL) / g.plotW) * g.span;
+    const xOf = (tHr) => g.padL + ((tHr - g.vStart) / g.span) * g.plotW;
+    const yOf = (v) => g.padT + ((5 - Math.max(1, Math.min(5, v))) / 4) * g.plotH;
+
+    // Snap softly to a nearby observed snapshot dot (within 14px)
+    let snappedDot = null;
+    let bestPx = 14;
+    for (const pt of g.visActual || []) {
+      const dist = Math.abs(xOf(pt.t) - svgX);
+      if (dist < bestPx) {
+        bestPx = dist;
+        snappedDot = pt;
+      }
+    }
+    if (snappedDot) hr = snappedDot.t;
+    const cx = xOf(hr);
+    const tl = (g.cur && g.cur.timeline) || {};
+    const odePt = state.showOdeLine ? interpSeriesAt(tl.ode, hr) : null;
+    const tpPt = state.showTabpfnLine ? interpSeriesAt(tl.tabpfn, hr) : null;
+
+    let markers = `<line x1="${cx.toFixed(1)}" y1="${g.padT}" x2="${cx.toFixed(1)}" y2="${g.padT + g.plotH}" stroke="var(--text-2)" stroke-width="1" opacity="0.32" />`;
+    if (odePt) {
+      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(odePt.v).toFixed(1)}" r="4" fill="#368470" stroke="var(--surface)" stroke-width="1.8" />`;
+    }
+    if (tpPt) {
+      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(tpPt.v).toFixed(1)}" r="3.8" fill="var(--ai)" stroke="var(--surface)" stroke-width="1.8" />`;
+    }
+    if (snappedDot) {
+      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(snappedDot.v).toFixed(1)}" r="7.5" fill="none" stroke="var(--text)" stroke-width="1.4" opacity="0.45" />`;
+    }
+    const hoverEl = $("#state-chart-hover");
+    if (hoverEl) hoverEl.innerHTML = markers;
+
+    const dt = new Date(g.originMs + hr * 3600000);
+    const p2 = (n) => String(n).padStart(2, "0");
+    const tsStr = `${dt.toLocaleDateString(getLocale(), { weekday: "short", day: "2-digit", month: "2-digit" })} ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
+    const isFut = hr > g.nowHr + 0.1;
+    const pills = [`<span class="ro-pill"><strong>${esc(tsStr)}</strong></span>`];
+    if (snappedDot) {
+      pills.push(`<span class="ro-pill"><span class="dot-obs" style="background:var(--text)"></span>${fmtNum(snappedDot.v)}/5${snappedDot.note ? ` <span class="muted">${esc(snappedDot.note.slice(0, 32))}</span>` : ""}</span>`);
+    }
+    if (odePt) {
+      const cTxt = isFut ? ` <span class="muted">(${Math.round(odePt.conf * 100)}%)</span>` : "";
+      pills.push(`<span class="ro-pill"><span class="line-ode"></span>ODE ${fmtNum(odePt.v)}${cTxt}</span>`);
+    }
+    if (tpPt) {
+      const cTxt = isFut ? ` <span class="muted">(${Math.round(tpPt.conf * 100)}%)</span>` : "";
+      pills.push(`<span class="ro-pill"><span class="line-ai"></span>TabPFN ${fmtNum(tpPt.v)}${cTxt}</span>`);
+    }
+    const roEl = $("#state-chart-readout");
+    if (roEl) roEl.innerHTML = `<span class="ro-live">${pills.join("")}</span>`;
+  });
+  chartHost.addEventListener("pointerleave", clearChartHover);
+
+  // Re-render crisp 1:1 SVG dimensions on window resize
+  let chartResizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (state.tab !== "analysis" || !state.lastStateCurves.length) return;
+    clearTimeout(chartResizeTimer);
+    chartResizeTimer = setTimeout(() => renderStateCurveSection(state.lastStateCurves), 80);
   });
 
   $("#ai-assumptions-list").addEventListener("click", async (e) => {
