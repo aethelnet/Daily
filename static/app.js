@@ -98,7 +98,7 @@ const state = {
   edges: [],
   settings: {},
   tags: [],
-  filterKind: "all",
+  filterKind: localStorage.getItem("daily_today_focus") === "1" ? "focus" : "all",
   filterQuery: "",
   sortMode: localStorage.getItem("daily_sort_mode") === "manual" ? "manual" : "smart",
   showDormantToday: false,
@@ -792,6 +792,17 @@ function isHabitCadenceDue(h) {
   return sinceLast / med >= 0.72;
 }
 
+function isHabitInFocusNow(h, incomingTargets, selectedIds, connectedToSelected) {
+  if (h.active_since) return true;
+  if (selectedIds.includes(h.id) || connectedToSelected.has(h.id)) return true;
+  if (h.kind === "min" && h.target != null && h.status !== "met") return true;
+  if (h.kind === "max" && (h.status === "warning" || h.status === "exceeded")) return true;
+  if (incomingTargets.has(h.id) && h.status !== "met") return true;
+  if (isHabitCadenceDue(h)) return true;
+  if (Number(h.hour_fit || 0) >= 0.55 && h.kind !== "max" && h.status !== "met") return true;
+  return false;
+}
+
 function computeSmartScore(h, ctx) {
   let score = 0;
   if (h.active_since) score += 1000;
@@ -843,9 +854,11 @@ function renderToday(data) {
     clearFocusBtn.classList.add("hidden");
   }
 
+  $$("#today-kind-pills [data-fkind]").forEach((p) => p.classList.toggle("active", p.dataset.fkind === state.filterKind));
+
   const q = state.filterQuery.trim().toLowerCase();
   const visible = data.habits.filter((h) => {
-    if (state.filterKind !== "all" && h.kind !== state.filterKind) return false;
+    if (state.filterKind !== "all" && state.filterKind !== "focus" && h.kind !== state.filterKind) return false;
     if (q && !h.name.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -1017,14 +1030,28 @@ function renderToday(data) {
       clustersBox.innerHTML = "";
     }
 
-    // 2. Render remaining habits in regular grid (+ fold rare/dormant cards cleanly in "Jetzt" mode!)
+    // 2. Render remaining habits in regular grid (+ fold non-focus cards in "Fokus" or rare/dormant cards in "Jetzt"!)
     const rest = selectedIds.length
       ? visible.filter((h) => !shownInClusters.has(h.id))
       : visible;
 
     let activeRest = rest;
     let dormantRest = [];
-    if (isSmart && !q && state.filterKind === "all") {
+    const isFocusFilter = state.filterKind === "focus" && !q;
+    if (isFocusFilter) {
+      const incomingTargets = new Set(
+        (state.edges || []).filter((e) => e.relation_type === "rollup").map((e) => e.target_id)
+      );
+      activeRest = [];
+      for (const h of rest) {
+        if (isHabitInFocusNow(h, incomingTargets, selectedIds, connectedToSelected)) activeRest.push(h);
+        else dormantRest.push(h);
+      }
+      if (!activeRest.length && !shownInClusters.size && dormantRest.length) {
+        activeRest = dormantRest;
+        dormantRest = [];
+      }
+    } else if (isSmart && !q && state.filterKind === "all") {
       activeRest = [];
       for (const h of rest) {
         if (isHabitDormantNow(h, selectedIds, connectedToSelected)) dormantRest.push(h);
@@ -1045,9 +1072,11 @@ function renderToday(data) {
     if (dormantBox) {
       if (dormantRest.length) {
         dormantBox.classList.remove("hidden");
+        const showKey = isFocusFilter ? "focus_show_rest" : "dormant_show";
+        const hideKey = isFocusFilter ? "focus_hide_rest" : "dormant_hide";
         const btnLbl = state.showDormantToday
-          ? t("dormant_hide", { n: dormantRest.length })
-          : t("dormant_show", { n: dormantRest.length });
+          ? t(hideKey, { n: dormantRest.length })
+          : t(showKey, { n: dormantRest.length });
         const expandedHtml = state.showDormantToday
           ? `<div class="habit-grid">${dormantRest.map((h) => renderHabitCardHtml(h, cardRenderOpts(h, { softDim: true }))).join("")}</div>`
           : "";
@@ -3724,6 +3753,9 @@ function bindEvents() {
     const pill = e.target.closest("[data-fkind]");
     if (!pill) return;
     state.filterKind = pill.dataset.fkind;
+    if (state.filterKind === "focus") localStorage.setItem("daily_today_focus", "1");
+    else if (state.filterKind === "all") localStorage.setItem("daily_today_focus", "0");
+    state.showDormantToday = false;
     $$("#today-kind-pills [data-fkind]").forEach((p) => p.classList.toggle("active", p === pill));
     if (state.todayData) renderToday(state.todayData);
   });
