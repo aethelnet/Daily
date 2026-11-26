@@ -2021,6 +2021,77 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
     : `<div class="muted sm-text">${esc(t("no_hyps"))}</div>`;
   resetRollupForm();
   resetHypForm();
+  renderHabitColorSwatches();
+}
+
+const DEFAULT_HABIT_SWATCHES = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0d9488", "#475569"];
+const RECENT_COLORS_KEY = "daily_recent_colors";
+
+function normalizeHexColor(val) {
+  const s = String(val || "").trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(s) ? s : "";
+}
+
+function getStoredRecentColors() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_COLORS_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.map(normalizeHexColor).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function rememberHabitColor(hex) {
+  const c = normalizeHexColor(hex);
+  if (!c) return;
+  const next = [c, ...getStoredRecentColors().filter((x) => x !== c)].slice(0, 12);
+  try {
+    localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(next));
+  } catch {}
+  renderHabitColorSwatches();
+}
+
+function syncActiveColorSwatch() {
+  const inp = $("#hf-color");
+  if (!inp) return;
+  const cur = normalizeHexColor(inp.value);
+  $$("#hf-colors .swatch").forEach((sw) => {
+    sw.classList.toggle("active", normalizeHexColor(sw.dataset.color) === cur);
+  });
+}
+
+function renderHabitColorSwatches() {
+  const box = $("#hf-colors");
+  if (!box) return;
+  const seen = new Set();
+  const palette = [];
+  const push = (hex) => {
+    const c = normalizeHexColor(hex);
+    if (!c || seen.has(c)) return;
+    seen.add(c);
+    palette.push(c);
+  };
+  for (const c of getStoredRecentColors()) push(c);
+  const allHabits = [...(state.habits || []), ...(state.archivedHabits || [])].sort((a, b) =>
+    String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))
+  );
+  for (const h of allHabits) push(h.color);
+  for (const c of DEFAULT_HABIT_SWATCHES) push(c);
+  const finalSwatches = palette.slice(0, 7);
+
+  box.querySelectorAll(".swatch").forEach((el) => el.remove());
+  for (const c of finalSwatches) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "swatch";
+    btn.dataset.color = c;
+    btn.style.background = c;
+    btn.title = c;
+    btn.setAttribute("aria-label", c);
+    box.appendChild(btn);
+  }
+  syncActiveColorSwatch();
 }
 
 function resetRollupForm() {
@@ -2075,7 +2146,9 @@ function resetHabitForm() {
   $("#hf-target").value = "";
   $("#hf-period").value = "day";
   $("#hf-unit").value = "x";
-  $("#hf-color").value = "#2563eb";
+  const firstSw = $("#hf-colors .swatch");
+  $("#hf-color").value = (firstSw && firstSw.dataset.color) || getStoredRecentColors()[0] || "#2563eb";
+  syncActiveColorSwatch();
   $("#hf-block-min").value = "";
   $("#hf-nudge-enabled").checked = false;
   $("#hf-nudge-lead").value = "20";
@@ -2123,6 +2196,7 @@ function populateHabitForm(habitId) {
   $("#hf-period").value = h.target_period || "day";
   $("#hf-unit").value = h.unit || "x";
   $("#hf-color").value = h.color || "#2563eb";
+  syncActiveColorSwatch();
   $("#hf-block-min").value = h.block_minutes != null ? h.block_minutes : "";
   $("#hf-nudge-enabled").checked = !!h.nudge_enabled;
   $("#hf-nudge-lead").value = h.nudge_lead_min || 20;
@@ -3643,8 +3717,13 @@ function bindEvents() {
   });
   $("#hf-colors").addEventListener("click", (e) => {
     const sw = e.target.closest(".swatch");
-    if (sw) $("#hf-color").value = sw.dataset.color;
+    if (sw) {
+      $("#hf-color").value = sw.dataset.color;
+      syncActiveColorSwatch();
+    }
   });
+  $("#hf-color").addEventListener("input", syncActiveColorSwatch);
+  $("#hf-color").addEventListener("change", (e) => rememberHabitColor(e.target.value));
   $("#btn-cancel-edit").addEventListener("click", resetHabitForm);
   const setupList = $("#setup-habit-list");
   setupList.addEventListener("click", (e) => {
@@ -4076,6 +4155,7 @@ function bindEvents() {
         await api("/api/habits", { method: "POST", body: JSON.stringify(payload) });
         toast(t("habit_created", { name: payload.name }));
       }
+      rememberHabitColor(payload.color);
       resetHabitForm();
       await loadSetup();
     } catch (err) {
