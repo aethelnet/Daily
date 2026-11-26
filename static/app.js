@@ -2153,7 +2153,7 @@ function renderHabitColorSwatches() {
   );
   for (const h of allHabits) push(h.color);
   for (const c of DEFAULT_HABIT_SWATCHES) push(c);
-  const finalSwatches = palette.slice(0, 7);
+  const finalSwatches = palette.slice(0, 5);
 
   box.querySelectorAll(".swatch").forEach((el) => el.remove());
   for (const c of finalSwatches) {
