@@ -619,7 +619,7 @@ function renderHabitCardHtml(h, opts = {}) {
   <div class="habit-card status-${esc(h.status)} ${extraCls}" style="--card-accent:${esc(h.color)}" data-id="${esc(h.id)}" data-has-links="${hasLinks ? "1" : "0"}">
     <div class="hc-top">
       <span class="hc-name">${esc(h.name)}${caret}</span>
-      <div class="row-inline" style="gap:4px;">${activePillHtml}${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
+      <div class="row-inline hc-badges">${activePillHtml}${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
     </div>
     <div class="hc-metrics">
       <span class="hc-val-wrap"><span class="hc-big">${fmtNum(heroVal)}</span>${denomHtml}</span>
