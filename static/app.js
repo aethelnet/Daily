@@ -133,6 +133,9 @@ const state = {
   logSnapsById: {},
   logRange: null, // null = single day (state.day); or { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
   logRangeData: null,
+  routeFilterQuery: "",
+  openRouteClusters: new Set(),
+  routeClustersAllOpen: null, // null = auto (open if <= 8 edges, else collapsed), true/false = explicit toggle
 };
 
 // ---- Cross-Device Auth, Server Base URL & Offline-First Queue ----
@@ -2050,8 +2053,17 @@ function renderRollupList() {
     }
   });
 
+  const q = (state.routeFilterQuery || "").trim().toLowerCase();
+  const filteredRollups = q
+    ? rollups.filter(
+        (e) =>
+          String(e.source_name || "").toLowerCase().includes(q) ||
+          String(e.target_name || "").toLowerCase().includes(q)
+      )
+    : rollups;
+
   const groupsMap = new Map();
-  for (const e of rollups) {
+  for (const e of filteredRollups) {
     if (!groupsMap.has(e.target_id)) {
       groupsMap.set(e.target_id, {
         target_id: e.target_id,
@@ -2070,29 +2082,58 @@ function renderRollupList() {
     return a.target_name.localeCompare(b.target_name);
   });
 
-  box.innerHTML = groups
-    .map((g) => {
-      g.edges.sort((a, b) => {
-        const aPos = Number(a.weight) >= 0 ? 0 : 1;
-        const bPos = Number(b.weight) >= 0 ? 0 : 1;
-        if (aPos !== bPos) return aPos - bPos;
-        const magDiff = Math.abs(Number(b.weight)) - Math.abs(Number(a.weight));
-        if (Math.abs(magDiff) > 1e-6) return magDiff;
-        const sa = orderIdx[a.source_id] ?? 99999;
-        const sb = orderIdx[b.source_id] ?? 99999;
-        if (sa !== sb) return sa - sb;
-        return String(a.source_name || "").localeCompare(String(b.source_name || ""));
-      });
-      const tColor = (g.target && g.target.color) || "var(--muted)";
-      const tBadge =
-        g.target && g.target.kind !== "neutral"
-          ? `<span class="badge ${esc(kindBadgeClass(g.target))}">${esc(kindBadgeText(g.target))}</span>`
-          : "";
-      const rowsHtml = g.edges
-        .map((e) => {
-          const srcH = habitById[e.source_id];
-          const sColor = (srcH && srcH.color) || "var(--muted)";
-          return `
+  const autoOpen = rollups.length <= 8;
+  const showTools = rollups.length > 8 || groups.length > 3 || !!q;
+  const allCurrentlyOpen =
+    groups.length > 0 &&
+    groups.every((g) =>
+      q ? true : state.routeClustersAllOpen !== null ? state.routeClustersAllOpen : autoOpen || state.openRouteClusters.has(g.target_id)
+    );
+
+  const toolsHtml = showTools
+    ? `<div class="route-tools-bar">
+        <input type="text" id="route-filter-input" class="filter-search" style="flex:1;width:auto;min-width:120px;" value="${esc(state.routeFilterQuery)}" placeholder="${esc(t("route_filter_ph"))}" />
+        <button type="button" class="btn ghost sm" id="btn-toggle-all-routes">${esc(t(allCurrentlyOpen ? "route_collapse_all" : "route_expand_all"))}</button>
+      </div>`
+    : "";
+
+  const clustersHtml = groups.length
+    ? groups
+        .map((g) => {
+          g.edges.sort((a, b) => {
+            const aPos = Number(a.weight) >= 0 ? 0 : 1;
+            const bPos = Number(b.weight) >= 0 ? 0 : 1;
+            if (aPos !== bPos) return aPos - bPos;
+            const magDiff = Math.abs(Number(b.weight)) - Math.abs(Number(a.weight));
+            if (Math.abs(magDiff) > 1e-6) return magDiff;
+            const sa = orderIdx[a.source_id] ?? 99999;
+            const sb = orderIdx[b.source_id] ?? 99999;
+            if (sa !== sb) return sa - sb;
+            return String(a.source_name || "").localeCompare(String(b.source_name || ""));
+          });
+          const tColor = (g.target && g.target.color) || "var(--muted)";
+          const tBadge =
+            g.target && g.target.kind !== "neutral"
+              ? `<span class="badge ${esc(kindBadgeClass(g.target))}">${esc(kindBadgeText(g.target))}</span>`
+              : "";
+          const posCnt = g.edges.filter((e) => Number(e.weight) >= 0).length;
+          const negCnt = g.edges.length - posCnt;
+          const countSummary = [
+            posCnt ? `<span class="pos">+${posCnt}</span>` : "",
+            negCnt ? `<span class="neg">−${negCnt}</span>` : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          const isOpen = q
+            ? true
+            : state.routeClustersAllOpen !== null
+              ? state.routeClustersAllOpen
+              : autoOpen || state.openRouteClusters.has(g.target_id);
+          const rowsHtml = g.edges
+            .map((e) => {
+              const srcH = habitById[e.source_id];
+              const sColor = (srcH && srcH.color) || "var(--muted)";
+              return `
           <div class="route-cluster-row">
             <div class="row-inline" style="min-width:0;">
               <span class="ev-dot" style="background:${esc(sColor)}"></span>
@@ -2104,23 +2145,37 @@ function renderRollupList() {
               <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
             </div>
           </div>`;
-        })
-        .join("");
-      return `
-      <div class="route-cluster">
-        <div class="route-cluster-head">
+            })
+            .join("");
+          return `
+      <details class="route-cluster" data-route-target="${esc(g.target_id)}"${isOpen ? " open" : ""}>
+        <summary class="route-cluster-head">
           <div class="row-inline" style="min-width:0;">
+            <span class="route-caret"></span>
             <span class="arrow">→</span>
             <span class="ev-dot" style="background:${esc(tColor)}"></span>
             <strong>${esc(g.target_name)}</strong>
             ${tBadge}
           </div>
-          <span class="muted mono sm-text">${g.edges.length}</span>
-        </div>
+          <span class="mono sm-text muted">${countSummary}</span>
+        </summary>
         <div class="route-cluster-items">${rowsHtml}</div>
-      </div>`;
-    })
-    .join("");
+      </details>`;
+        })
+        .join("")
+    : `<div class="muted sm-text">${esc(t("route_no_match"))}</div>`;
+
+  // Preserve search focus & caret when filtering live
+  const wasFocused = document.activeElement && document.activeElement.id === "route-filter-input";
+  const selStart = wasFocused ? document.activeElement.selectionStart : null;
+  box.innerHTML = toolsHtml + clustersHtml;
+  if (wasFocused) {
+    const inp = $("#route-filter-input");
+    if (inp) {
+      inp.focus();
+      if (selStart != null) inp.setSelectionRange(selStart, selStart);
+    }
+  }
 }
 
 const DEFAULT_HABIT_SWATCHES = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0d9488", "#475569"];
@@ -4800,12 +4855,56 @@ function bindEvents() {
         await api("/api/edges", { method: "POST", body: JSON.stringify(payload) });
         toast(t("edge_saved"));
       }
+      state.openRouteClusters.add(target_id);
+      if (state.routeClustersAllOpen === false) state.routeClustersAllOpen = null;
       resetRollupForm();
       await loadSetup();
     } catch (err) {
       toast(t("err_prefix", { msg: err.message }));
     }
   });
+
+  // Live-Routing cluster accordion state, expand/collapse-all & quick filter
+  const rollupListEl = $("#rollup-list");
+  if (rollupListEl) {
+    rollupListEl.addEventListener(
+      "toggle",
+      (e) => {
+        const det = e.target;
+        if (!det || !det.matches || !det.matches("details.route-cluster")) return;
+        const tid = det.dataset.routeTarget;
+        if (!tid) return;
+        if (state.routeClustersAllOpen === true) {
+          rollupListEl.querySelectorAll("details.route-cluster").forEach((d) => {
+            if (d.dataset.routeTarget) state.openRouteClusters.add(d.dataset.routeTarget);
+          });
+        }
+        state.routeClustersAllOpen = null;
+        if (det.open) state.openRouteClusters.add(tid);
+        else state.openRouteClusters.delete(tid);
+        const btn = $("#btn-toggle-all-routes");
+        if (btn) {
+          const allOpen = Array.from(rollupListEl.querySelectorAll("details.route-cluster")).every((d) => d.open);
+          btn.textContent = t(allOpen ? "route_collapse_all" : "route_expand_all");
+        }
+      },
+      true
+    );
+    rollupListEl.addEventListener("input", (e) => {
+      if (e.target && e.target.id === "route-filter-input") {
+        state.routeFilterQuery = e.target.value || "";
+        renderRollupList();
+      }
+    });
+    rollupListEl.addEventListener("click", (e) => {
+      if (e.target && e.target.id === "btn-toggle-all-routes") {
+        const allOpen = Array.from(rollupListEl.querySelectorAll("details.route-cluster")).every((d) => d.open);
+        state.routeClustersAllOpen = !allOpen;
+        if (allOpen) state.openRouteClusters.clear();
+        renderRollupList();
+      }
+    });
+  }
 
   $("#hyp-form").addEventListener("submit", async (e) => {
     e.preventDefault();

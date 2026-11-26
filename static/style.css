@@ -564,6 +564,12 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   z-index: 5;
 }
 
+.route-tools-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
 .route-cluster {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -577,9 +583,24 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   gap: 8px;
   padding: 7px 11px;
   background: var(--surface-2);
-  border-bottom: 1px solid var(--border);
   font-size: 12.5px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background 0.12s var(--ease);
 }
+.route-cluster-head::-webkit-details-marker { display: none; }
+.route-cluster-head:hover { background: var(--surface-hover); }
+.route-cluster[open] > .route-cluster-head { border-bottom: 1px solid var(--border); }
+.route-caret {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  width: 10px;
+  display: inline-block;
+}
+.route-caret::before { content: "▸"; }
+.route-cluster[open] .route-caret::before { content: "▾"; }
 .route-cluster-items {
   display: flex;
   flex-direction: column;
