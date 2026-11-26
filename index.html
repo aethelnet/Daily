@@ -270,6 +270,10 @@
           <div class="panel">
             <div class="panel-head">
               <h3 data-i18n-html="routing_title_html">Live-Routing (<span class="pos">+</span> / <span class="neg">−</span>)</h3>
+              <div class="mode-switch" id="routing-mode-switch" role="group" data-i18n-title="routing_mode_title" title="Steuert nur die Live-Gewichte auf dem Heute-Tab (Benachrichtigungen bleiben unberührt)">
+                <button type="button" class="mode-btn active" data-routing-mode="observed" data-i18n="routing_mode_manual">Eigene Regeln</button>
+                <button type="button" class="mode-btn" data-routing-mode="tabpfn" data-i18n="routing_mode_ai">Adaptiv (TabPFN)</button>
+              </div>
             </div>
             <p class="muted sm-text" data-i18n-html="routing_desc_html">
               Alles kann frei auf alles andere routen: z. B. <code>Bild gemalt +1 → Kreativ</code> oder <code>Kaffee −1 → Schlaf</code>.
@@ -336,7 +340,7 @@
               <div class="row-inline">
                 <span class="muted sm-text" data-i18n="notif_trigger">Auslöser:</span>
                 <div class="mode-switch" id="nudge-mode-switch" role="group">
-                  <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="notif_obs">Manuell (eigene Regeln)</button>
+                  <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="notif_obs">Ist-Peaks</button>
                   <button type="button" class="mode-btn" data-nudge-mode="tabpfn" data-i18n="notif_ai">Adaptiv (TabPFN)</button>
                 </div>
               </div>

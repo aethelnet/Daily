@@ -426,7 +426,8 @@ async function loadToday() {
     state.settings = meta.settings || {};
     state.tags = meta.tags || [];
     localStorage.setItem(`daily_today_cache_${state.day}`, JSON.stringify(data));
-    syncNudgeModeUI(data.routing_mode || state.settings.nudge_mode || "observed");
+    syncRoutingModeUI(data.routing_mode || state.settings.routing_mode || "observed");
+    syncNudgeModeUI(state.settings.nudge_mode || "observed");
     renderToday(data);
     if (state.logRange) {
       await loadLogRange(state.logRange.start, state.logRange.end);
@@ -1521,6 +1522,12 @@ function syncNudgeModeUI(mode) {
   });
 }
 
+function syncRoutingModeUI(mode) {
+  $$("[data-routing-mode]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.routingMode === mode);
+  });
+}
+
 async function loadSetup(editId = null) {
   const [data, pairInfo, e2eeInfo] = await Promise.all([
     api("/api/habits?include_archived=true"),
@@ -1715,6 +1722,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
   $("#set-qend").value = state.settings.quiet_hours_end || "8";
   $("#set-notif").checked = state.settings.notifications_enabled === "1";
   $("#set-followup").checked = state.settings.followup_enabled !== "0";
+  syncRoutingModeUI(state.settings.routing_mode || "observed");
   syncNudgeModeUI(state.settings.nudge_mode || "observed");
 
   // Populate edge selects (prefer a sensible non-self target, e.g. a Mehr goal over a Weniger limit)
@@ -3863,28 +3871,46 @@ function bindEvents() {
   $("#rollup-list").addEventListener("click", handleEdgeClick);
   $("#hyp-list").addEventListener("click", handleEdgeClick);
 
-  // Unified mode switch (Topbar + Setup -> affects BOTH Today routing AND Notifications!)
-  const handleModeSwitch = async (e) => {
-    const btn = e.target.closest("[data-nudge-mode]");
-    if (!btn) return;
-    const mode = btn.dataset.nudgeMode;
-    syncNudgeModeUI(mode);
-    try {
-      state.settings = await api("/api/settings", {
-        method: "PATCH",
-        body: JSON.stringify({ nudge_mode: mode }),
-      });
-      toast(mode === "tabpfn" ? t("mode_ai_toast") : t("mode_manual_toast"));
-      if (state.tab === "today") await loadToday();
-      if (state.tab === "analysis") await loadAnalysis();
-    } catch (err) {
-      toast(t("err_prefix", { msg: err.message }));
-    }
-  };
+  // Decoupled mode switches:
+  // 1) Notification trigger mode (only affects nudge pings — never alters Today routing!)
   const nudgeSwitch = $("#nudge-mode-switch");
-  if (nudgeSwitch) nudgeSwitch.addEventListener("click", handleModeSwitch);
-  const globalSwitch = $("#global-mode-switch");
-  if (globalSwitch) globalSwitch.addEventListener("click", handleModeSwitch);
+  if (nudgeSwitch) {
+    nudgeSwitch.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-nudge-mode]");
+      if (!btn) return;
+      const mode = btn.dataset.nudgeMode;
+      syncNudgeModeUI(mode);
+      try {
+        state.settings = await api("/api/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ nudge_mode: mode }),
+        });
+        toast(mode === "tabpfn" ? t("mode_ai_toast") : t("mode_manual_toast"));
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+    });
+  }
+  // 2) Live-Routing mode (only affects Today routing weights — keeps notifications stable!)
+  const routingSwitch = $("#routing-mode-switch");
+  if (routingSwitch) {
+    routingSwitch.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-routing-mode]");
+      if (!btn) return;
+      const mode = btn.dataset.routingMode;
+      syncRoutingModeUI(mode);
+      try {
+        state.settings = await api("/api/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ routing_mode: mode }),
+        });
+        toast(mode === "tabpfn" ? t("routing_ai_toast") : t("routing_manual_toast"));
+        if (state.tab === "today") await loadToday();
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+    });
+  }
 
   // Toggleable 24h Rhythm legend (Ist-Peaks / Prognose morgen — same calm grammar as Befinden legend)
   const rhythmLegend = $("#rhythm-legend");
