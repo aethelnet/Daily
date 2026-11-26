@@ -46,6 +46,7 @@ from .db import (
     log_retro_batch,
     merge_habit,
     reorder_habits,
+    reorder_state_dimensions,
     update_edge,
     update_event,
     update_habit,
@@ -223,6 +224,10 @@ class SettingsUpdate(BaseModel):
 
 class HabitReorder(BaseModel):
     habit_ids: list[str]
+
+
+class StateDimensionReorder(BaseModel):
+    dim_ids: list[str]
 
 
 class HabitMerge(BaseModel):
@@ -588,6 +593,10 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/state/dimensions/reorder")
+    def api_reorder_state_dims(payload: StateDimensionReorder) -> dict[str, Any]:
+        return {"dimensions": reorder_state_dimensions(payload.dim_ids, db_path=resolved_db)}
 
     @app.patch("/api/state/dimensions/{dim_id}")
     def api_update_state_dim(dim_id: str, payload: StateDimensionUpdate) -> dict[str, Any]:

@@ -1023,6 +1023,15 @@ def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = 
     return dict(row)
 
 
+def reorder_state_dimensions(dim_ids: list[str], db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
+    """Persist explicit display order for state dimensions."""
+    ts = now_iso()
+    with get_conn(db_path) as conn:
+        for idx, did in enumerate(dim_ids):
+            conn.execute("UPDATE state_dimensions SET sort_order = ?, updated_at = ? WHERE id = ?", (idx, ts, did))
+    return list_state_dimensions(include_archived=False, db_path=db_path)
+
+
 def _decode_snapshot(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     try:

@@ -110,6 +110,7 @@ const state = {
   lastStateCurves: [],
   lastTimelineMeta: null,
   selectedChartTag: null,
+  selectedChartHabitId: null,
   chartView: null, // continuous pan/zoom viewport { startHr, endHr } relative to today 00:00
   matrixEndDay: null, // null = latest 7 days ending today; or "YYYY-MM-DD" when paging back
   stateZoom: localStorage.getItem("daily_state_zoom") || "d14",
@@ -1607,9 +1608,21 @@ function renderMoodGroupManager() {
 function renderMoodModal() {
   // Calm questionnaire group switcher pills (Alltag / Zyklus / Alle / +)
   const gPills = $("#mood-group-pills");
+  const activeGrp = state.activeMoodGroup !== "all" ? state.moodGroups.find((g) => g.id === state.activeMoodGroup) : null;
+  let visibleDims = state.stateDims;
+  if (activeGrp) {
+    const dimMap = Object.fromEntries(state.stateDims.map((d) => [d.id, d]));
+    const ordered = activeGrp.dim_ids.map((id) => dimMap[id]).filter(Boolean);
+    visibleDims = ordered;
+  }
+
   if (gPills) {
     if (state.moodGroups.length) {
       gPills.classList.remove("hidden");
+      const dragHintHtml =
+        visibleDims.length >= 2
+          ? `<span class="muted mood-drag-hint">${esc(t("drag_hint"))}</span>`
+          : "";
       gPills.innerHTML =
         state.moodGroups
           .map(
@@ -1618,19 +1631,12 @@ function renderMoodModal() {
           )
           .join("") +
         `<button type="button" class="pill ${state.activeMoodGroup === "all" ? "active" : ""}" data-mgroup="all">${esc(t("mg_all"))}</button>` +
-        `<button type="button" class="pill mood-group-add-pill" data-mgroup-new="1" title="${esc(t("mg_add_title"))}">+</button>`;
+        `<button type="button" class="pill mood-group-add-pill" data-mgroup-new="1" title="${esc(t("mg_add_title"))}">+</button>` +
+        dragHintHtml;
     } else {
       gPills.classList.add("hidden");
       gPills.innerHTML = "";
     }
-  }
-
-  const activeGrp = state.activeMoodGroup !== "all" ? state.moodGroups.find((g) => g.id === state.activeMoodGroup) : null;
-  let visibleDims = state.stateDims;
-  if (activeGrp) {
-    const dimMap = Object.fromEntries(state.stateDims.map((d) => [d.id, d]));
-    const ordered = activeGrp.dim_ids.map((id) => dimMap[id]).filter(Boolean);
-    visibleDims = ordered;
   }
 
   const list = $("#mood-axes-list");
@@ -1651,7 +1657,7 @@ function renderMoodModal() {
           const dotPicker = `<label class="dim-dot-picker" style="background:${esc(col)}" title="${esc(t("dim_pick_color_title"))}"><input type="color" data-dim-color="${esc(d.id)}" value="${esc(col)}" /></label>`;
           if (isEditing) {
             return `
-      <div class="mood-axis" style="--axis-c:${esc(col)}">
+      <div class="mood-axis is-editing" data-dim-id="${esc(d.id)}" style="--axis-c:${esc(col)}">
         <form class="dim-inline-edit" data-dim-edit-form="${esc(d.id)}">
           <div class="row-inline" style="gap:6px;">
             ${dotPicker}
@@ -1672,7 +1678,7 @@ function renderMoodModal() {
               ? `<div class="mood-anchors editable" data-dim-inline-edit="${esc(d.id)}" data-focus="low" title="${esc(t("dim_rename_title"))}"><span>${esc(lo)}</span><span>${esc(hi)}</span></div>`
               : "";
           return `
-      <div class="mood-axis" style="--axis-c:${esc(col)}">
+      <div class="mood-axis" data-dim-id="${esc(d.id)}" title="${esc(t("drag_reorder_title"))}" style="--axis-c:${esc(col)}">
         <div class="mood-axis-head">
           <span class="row-inline" style="gap:6px;">
             ${dotPicker}
@@ -2695,23 +2701,173 @@ function renderStateCurveSection(curves, timelineMeta) {
 
   let ticksLayer = "";
   const allTicks = meta.habit_ticks || [];
-  let visibleTicksCount = 0;
-  if (span <= 120) {
-    const visTicks = allTicks.filter((tk) => tk.t >= vStart && tk.t <= vEnd);
-    visibleTicksCount = visTicks.length;
-    ticksLayer = visTicks
-      .map((tk) => {
-        const tx = xOf(tk.t).toFixed(1);
-        const yBot = (padT + plotH).toFixed(1);
-        const yTop = (padT + plotH - 10).toFixed(1);
-        const tip = `${tk.ts.slice(11, 16)} (${tk.ts.slice(8, 10)}.${tk.ts.slice(5, 7)}.) · ${tk.habit_name} (+${fmtNum(tk.amount)})`;
-        return `<g>
-          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot}" stroke="${esc(tk.color)}" stroke-width="2.4" stroke-linecap="round" opacity="0.88" />
-          <circle cx="${tx}" cy="${yTop}" r="2.3" fill="${esc(tk.color)}"><title>${esc(tip)}</title></circle>
-        </g>`;
-      })
-      .join("");
+  const visTicksAll = allTicks.filter((tk) => tk.t >= vStart && tk.t <= vEnd);
+
+  // Build visible viewport habit-pin legend summary (so colors are immediately readable without hovering + clickable to isolate!)
+  const pinSummaryMap = new Map();
+  for (const tk of visTicksAll) {
+    const curS = pinSummaryMap.get(tk.habit_id) || {
+      habit_id: tk.habit_id,
+      habit_name: tk.habit_name,
+      color: tk.color,
+      amount: 0,
+      count: 0,
+    };
+    curS.amount += Number(tk.amount || 0);
+    curS.count += 1;
+    pinSummaryMap.set(tk.habit_id, curS);
   }
+  const pinLegendItems = Array.from(pinSummaryMap.values()).sort((a, b) => b.amount - a.amount || b.count - a.count);
+  if (state.selectedChartHabitId && !pinSummaryMap.has(state.selectedChartHabitId) && !allTicks.some((tk) => tk.habit_id === state.selectedChartHabitId)) {
+    state.selectedChartHabitId = null;
+  }
+
+  const visTicks = state.selectedChartHabitId
+    ? visTicksAll.filter((tk) => tk.habit_id === state.selectedChartHabitId)
+    : visTicksAll;
+  const visibleTicksCount = visTicks.length;
+
+  // Pixel-aware adaptive pin aggregation across ALL zoom levels (24h individual -> 6h blocks -> daily -> weekly!)
+  const pxPerDay = (24 / Math.max(0.1, span)) * plotW;
+  let bucketHr = 0;
+  if (span > 42 && span <= 120) bucketHr = 6;
+  else if (span > 120) bucketHr = pxPerDay >= 7 ? 24 : 168;
+
+  const pinBuckets = [];
+  if (visTicks.length) {
+    if (bucketHr === 0) {
+      // Individual pins, merging only simultaneous / colliding pins within 6px
+      const sorted = [...visTicks].sort((a, b) => a.t - b.t);
+      for (const tk of sorted) {
+        const tx = xOf(tk.t);
+        const last = pinBuckets[pinBuckets.length - 1];
+        if (last && Math.abs(tx - last.cx) <= 6) {
+          last.raw.push(tk);
+          last.tSum += tk.t;
+          last.tCenter = last.tSum / last.raw.length;
+          last.cx = xOf(last.tCenter);
+        } else {
+          pinBuckets.push({ tCenter: tk.t, tSum: tk.t, cx: tx, raw: [tk], bucketHr: 0 });
+        }
+      }
+    } else {
+      const bMap = new Map();
+      for (const tk of visTicks) {
+        let bKey, bCenter;
+        if (bucketHr === 168) {
+          // Align weekly buckets cleanly to Monday..Sunday relative to local calendar
+          const dt = new Date(originMs + tk.t * 3600000);
+          const monOff = (dt.getDay() + 6) % 7;
+          const mon = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - monOff, 0, 0, 0);
+          const monHr = (mon.getTime() - originMs) / 3600000;
+          bKey = Math.round(monHr / 24);
+          bCenter = monHr + 84; // Wednesday noon
+        } else if (bucketHr === 24) {
+          const dayIdx = Math.floor(tk.t / 24);
+          bKey = dayIdx;
+          bCenter = dayIdx * 24 + 12; // Midday of that local day
+        } else {
+          const blkIdx = Math.floor(tk.t / bucketHr);
+          bKey = blkIdx;
+          bCenter = blkIdx * bucketHr + bucketHr / 2;
+        }
+        let b = bMap.get(bKey);
+        if (!b) {
+          b = { tCenter: bCenter, cx: xOf(bCenter), raw: [], bucketHr };
+          bMap.set(bKey, b);
+        }
+        b.raw.push(tk);
+      }
+      pinBuckets.push(...Array.from(bMap.values()).sort((a, b) => a.tCenter - b.tCenter));
+    }
+  }
+
+  const renderedPins = pinBuckets.map((b) => {
+    const byHab = new Map();
+    let totalAmt = 0;
+    for (const tk of b.raw) {
+      const amt = Math.max(0.1, Number(tk.amount || 0));
+      totalAmt += amt;
+      const curH = byHab.get(tk.habit_id) || {
+        habit_id: tk.habit_id,
+        habit_name: tk.habit_name,
+        color: tk.color,
+        amount: 0,
+        count: 0,
+        ts: tk.ts,
+      };
+      curH.amount += amt;
+      curH.count += 1;
+      byHab.set(tk.habit_id, curH);
+    }
+    const items = Array.from(byHab.values()).sort((a, b2) => b2.amount - a.amount || b2.count - a.count);
+    return {
+      cx: b.cx,
+      tCenter: b.tCenter,
+      bucketHr: b.bucketHr,
+      total: totalAmt,
+      rawCount: b.raw.length,
+      ts: b.raw[0] ? b.raw[0].ts : "",
+      items,
+    };
+  });
+
+  const maxPinTotal = Math.max(1, ...renderedPins.map((p) => p.total));
+  const yBot = padT + plotH;
+  const barW =
+    bucketHr === 0
+      ? 2.8
+      : bucketHr === 6
+        ? Math.max(4, Math.min(7, (6 / span) * plotW * 0.45))
+        : bucketHr === 24
+          ? Math.max(4.5, Math.min(10, pxPerDay * 0.44))
+          : Math.max(6, Math.min(14, (168 / span) * plotW * 0.34));
+
+  ticksLayer = renderedPins
+    .map((p) => {
+      const totalH =
+        bucketHr === 0
+          ? Math.min(22, 10 + 10 * Math.sqrt(p.total / maxPinTotal))
+          : Math.min(30, 8 + 22 * Math.sqrt(p.total / maxPinTotal));
+      p.barH = totalH;
+      p.barW = barW;
+      const tipParts = p.items.slice(0, 4).map((it) => `${it.habit_name} +${fmtNum(it.amount)}`);
+      if (p.items.length > 4) tipParts.push(`+${p.items.length - 4}`);
+      const tipTime =
+        bucketHr === 0
+          ? `${p.ts.slice(11, 16)} (${p.ts.slice(8, 10)}.${p.ts.slice(5, 7)}.)`
+          : bucketHr === 168
+            ? `${p.ts.slice(8, 10)}.${p.ts.slice(5, 7)}. (Woche)`
+            : `${p.ts.slice(8, 10)}.${p.ts.slice(5, 7)}.`;
+      const tip = `${tipTime} · ${tipParts.join(", ")}`;
+
+      if (bucketHr === 0 && p.items.length === 1) {
+        const it = p.items[0];
+        const tx = p.cx.toFixed(1);
+        const yTop = (yBot - totalH).toFixed(1);
+        return `<g>
+          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot.toFixed(1)}" stroke="${esc(it.color)}" stroke-width="2.4" stroke-linecap="round" opacity="0.88" />
+          <circle cx="${tx}" cy="${yTop}" r="2.4" fill="${esc(it.color)}"><title>${esc(tip)}</title></circle>
+        </g>`;
+      }
+      // Stacked color micro-bar (used for zoomed-out aggregates & colliding same-time pins)
+      let curY = yBot;
+      const segs = [];
+      const topItems = p.items.slice(0, 5);
+      const topSum = topItems.reduce((s, it) => s + it.amount, 0) || 1;
+      for (let i = 0; i < topItems.length; i++) {
+        const it = topItems[i];
+        const segH = Math.max(2.2, (it.amount / topSum) * totalH);
+        curY -= segH;
+        const isTop = i === topItems.length - 1;
+        segs.push(
+          `<rect x="${(p.cx - barW / 2).toFixed(1)}" y="${curY.toFixed(1)}" width="${barW.toFixed(1)}" height="${segH.toFixed(1)}" rx="${isTop ? "1.6" : "0.6"}" fill="${esc(it.color)}" opacity="0.86" />`
+        );
+      }
+      return `<g><title>${esc(tip)}</title>${segs.join("")}</g>`;
+    })
+    .join("");
+  const pinHitPx = bucketHr === 0 ? 14 : Math.max(12, Math.min(26, ((bucketHr / Math.max(0.1, span)) * plotW) * 0.55));
 
   const visActual = (tl.actual || []).filter((pt) => pt.t >= vStart && pt.t <= vEnd);
   const dotsLayer = visActual
@@ -2776,8 +2932,21 @@ function renderStateCurveSection(curves, timelineMeta) {
   const anchorTxt =
     curLow || curHigh ? `1 = ${curLow || t("an_anchor_low")} · 5 = ${curHigh || t("an_anchor_high")}` : "";
 
-  // Store geometry snapshot for zero-latency live hover crosshair
-  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, axisColor, visActual, anchorTxt, rightSummary };
+  // Store geometry snapshot for zero-latency live hover crosshair + habit pin identification
+  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, axisColor, visActual, renderedPins, pinHitPx, anchorTxt, rightSummary };
+
+  const pinLegendHtml = pinLegendItems.length
+    ? `<div class="state-pin-legend" id="state-pin-legend">
+        ${pinLegendItems
+          .slice(0, 8)
+          .map((it) => {
+            const isSel = state.selectedChartHabitId === it.habit_id;
+            const isDim = !!state.selectedChartHabitId && !isSel;
+            return `<button type="button" class="pin-leg-chip${isSel ? " active" : ""}${isDim ? " dimmed" : ""}" data-chart-habit="${esc(it.habit_id)}" title="${esc(it.habit_name)} (${fmtNum(it.amount)})"><span class="chip-dot" style="background:${esc(it.color)}"></span>${esc(it.habit_name)} <span class="mono muted">${fmtNum(it.amount)}</span></button>`;
+          })
+          .join("")}
+      </div>`
+    : "";
 
   chartEl.innerHTML = `
     <div class="state-chart-wrap" data-pan-chart="1">
@@ -2802,6 +2971,7 @@ function renderStateCurveSection(curves, timelineMeta) {
         <g id="state-chart-hover" style="pointer-events:none;"></g>
         ${xLabels}
       </svg>
+      ${pinLegendHtml}
       <div class="state-chart-foot">
         <span>${esc(t("an_chart_pan_hint"))}</span>
         <span class="mono">${esc(t("an_chart_zoom_hint"))}</span>
@@ -3654,6 +3824,7 @@ function bindEvents() {
     }
     const inlineEditBtn = e.target.closest("[data-dim-inline-edit]");
     if (inlineEditBtn) {
+      if (state._justDraggedMoodAxis) return;
       state.editingDimId = inlineEditBtn.dataset.dimInlineEdit;
       const focusTarget = inlineEditBtn.dataset.focus === "low" ? "#dim-edit-low" : "#dim-edit-name";
       renderMoodModal();
@@ -3702,7 +3873,143 @@ function bindEvents() {
     }
   });
   // Tap directly on any axis color dot to update color immediately
-  $("#mood-axes-list").addEventListener("change", async (e) => {
+  const moodAxesList = $("#mood-axes-list");
+  // Zero-icon whole-card drag reordering for Befinden axes (Mouse: drag card; Touch: hold ~210ms)
+  let moodDragRow = null;
+  let moodPendingRow = null;
+  let moodDragStartOrder = [];
+  let moodDragPointerId = null;
+  let moodDragStartX = 0;
+  let moodDragStartY = 0;
+  let moodHoldTimer = null;
+
+  const clearMoodPendingDrag = () => {
+    if (moodHoldTimer) {
+      clearTimeout(moodHoldTimer);
+      moodHoldTimer = null;
+    }
+    moodPendingRow = null;
+  };
+
+  const activateMoodAxisDrag = (row, pointerId) => {
+    clearMoodPendingDrag();
+    moodDragRow = row;
+    moodDragStartOrder = Array.from(moodAxesList.querySelectorAll(".mood-axis[data-dim-id]")).map((el) => el.dataset.dimId);
+    row.classList.add("is-dragging");
+    try { row.setPointerCapture(pointerId); } catch {}
+    if (navigator.vibrate) {
+      try { navigator.vibrate(10); } catch {}
+    }
+  };
+
+  const finishMoodAxisDrag = async () => {
+    clearMoodPendingDrag();
+    if (!moodDragRow) return;
+    moodDragRow.classList.remove("is-dragging");
+    if (moodDragPointerId != null) {
+      try { moodDragRow.releasePointerCapture(moodDragPointerId); } catch {}
+    }
+    moodDragRow = null;
+    moodDragPointerId = null;
+    state._justDraggedMoodAxis = true;
+    setTimeout(() => { state._justDraggedMoodAxis = false; }, 160);
+
+    const newVisOrder = Array.from(moodAxesList.querySelectorAll(".mood-axis[data-dim-id]")).map((el) => el.dataset.dimId);
+    const changed = newVisOrder.length === moodDragStartOrder.length && newVisOrder.some((id, i) => id !== moodDragStartOrder[i]);
+    if (!changed) return;
+
+    try {
+      // Slot the reordered visible axes back into their positions in the global sort_order
+      const visSet = new Set(newVisOrder);
+      let k = 0;
+      const nextGlobalIds = state.stateDims.map((d) => (visSet.has(d.id) ? newVisOrder[k++] : d.id));
+      for (const id of newVisOrder) {
+        if (!nextGlobalIds.includes(id)) nextGlobalIds.push(id);
+      }
+
+      const activeGrp = state.activeMoodGroup !== "all" ? state.moodGroups.find((g) => g.id === state.activeMoodGroup) : null;
+      const tasks = [
+        api("/api/state/dimensions/reorder", {
+          method: "POST",
+          body: JSON.stringify({ dim_ids: nextGlobalIds }),
+        }),
+      ];
+      if (activeGrp) {
+        const hiddenInGrp = (activeGrp.dim_ids || []).filter((id) => !visSet.has(id));
+        const nextGroups = state.moodGroups.map((g) =>
+          g.id === activeGrp.id ? { ...g, dim_ids: [...newVisOrder, ...hiddenInGrp] } : g
+        );
+        tasks.push(saveMoodGroups(nextGroups, state.activeMoodGroup));
+      }
+      await Promise.all(tasks);
+
+      const dimById = Object.fromEntries(state.stateDims.map((d) => [d.id, d]));
+      state.stateDims = nextGlobalIds.map((id, idx) => ({ ...dimById[id], sort_order: idx })).filter((x) => x && x.id);
+      toast(t("reordered_toast"));
+      if (state.tab === "analysis") await loadAnalysis();
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+      await openMoodModal();
+    }
+  };
+
+  moodAxesList.addEventListener("contextmenu", (e) => {
+    if (e.target.closest(".mood-axis:not(.is-editing)")) e.preventDefault();
+  });
+  moodAxesList.addEventListener("touchmove", (e) => {
+    if (moodDragRow) e.preventDefault();
+  }, { passive: false });
+  moodAxesList.addEventListener("pointerdown", (e) => {
+    if (state.editingDimId) return;
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (e.target.closest("button, input, label, a, select, form")) return;
+    const row = e.target.closest(".mood-axis[data-dim-id]");
+    if (!row || row.classList.contains("is-editing")) return;
+    moodPendingRow = row;
+    moodDragPointerId = e.pointerId;
+    moodDragStartX = e.clientX;
+    moodDragStartY = e.clientY;
+    if (e.pointerType === "touch") {
+      moodHoldTimer = setTimeout(() => {
+        if (moodPendingRow === row) activateMoodAxisDrag(row, e.pointerId);
+      }, 210);
+    }
+  });
+  moodAxesList.addEventListener("pointermove", (e) => {
+    if (moodPendingRow && !moodDragRow) {
+      const dx = Math.abs(e.clientX - moodDragStartX);
+      const dy = Math.abs(e.clientY - moodDragStartY);
+      if (e.pointerType === "touch") {
+        if (dx > 8 || dy > 8) clearMoodPendingDrag();
+        return;
+      }
+      if (dy >= 5) {
+        e.preventDefault();
+        activateMoodAxisDrag(moodPendingRow, e.pointerId);
+      } else {
+        return;
+      }
+    }
+    if (!moodDragRow) return;
+    e.preventDefault();
+    const rows = Array.from(moodAxesList.querySelectorAll(".mood-axis[data-dim-id]"));
+    for (const r of rows) {
+      if (r === moodDragRow) continue;
+      const rect = r.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid && r.compareDocumentPosition(moodDragRow) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        moodAxesList.insertBefore(moodDragRow, r);
+        break;
+      } else if (e.clientY > mid && moodDragRow.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        moodAxesList.insertBefore(moodDragRow, r.nextSibling);
+        break;
+      }
+    }
+  });
+  moodAxesList.addEventListener("pointerup", finishMoodAxisDrag);
+  moodAxesList.addEventListener("pointercancel", finishMoodAxisDrag);
+
+  moodAxesList.addEventListener("change", async (e) => {
     const inp = e.target.closest("[data-dim-color]");
     if (!inp) return;
     const dimId = inp.dataset.dimColor;
@@ -4653,13 +4960,22 @@ function bindEvents() {
 
   // Smooth click-drag / swipe panning across the continuous timeline
   let chartDrag = null;
+  chartHost.addEventListener("click", (e) => {
+    const habBtn = e.target.closest("[data-chart-habit]");
+    if (!habBtn) return;
+    const hid = habBtn.dataset.chartHabit;
+    state.selectedChartHabitId = state.selectedChartHabitId === hid ? null : hid;
+    renderStateCurveSection(state.lastStateCurves);
+  });
   chartHost.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !state.chartView || !state.lastStateCurves.length) return;
+    if (e.target.closest("#state-pin-legend, button")) return;
     const wrap = e.target.closest("[data-pan-chart]");
     if (!wrap) return;
     chartDrag = {
       pointerId: e.pointerId,
       startX: e.clientX,
+      moved: false,
       origStart: state.chartView.startHr,
       origEnd: state.chartView.endHr,
       width: Math.max(180, wrap.getBoundingClientRect().width),
@@ -4670,6 +4986,8 @@ function bindEvents() {
   chartHost.addEventListener("pointermove", (e) => {
     if (!chartDrag || e.pointerId !== chartDrag.pointerId) return;
     const dx = e.clientX - chartDrag.startX;
+    if (Math.abs(dx) >= 4) chartDrag.moved = true;
+    if (!chartDrag.moved) return;
     const span = chartDrag.origEnd - chartDrag.origStart;
     const shiftHr = -(dx / chartDrag.width) * span;
     state.chartView = clampChartView(chartDrag.origStart + shiftHr, chartDrag.origEnd + shiftHr);
@@ -4677,10 +4995,12 @@ function bindEvents() {
   });
   const endChartDrag = (e) => {
     if (!chartDrag || e.pointerId !== chartDrag.pointerId) return;
+    const wasTap = !chartDrag.moved;
     chartDrag = null;
     const wrap = chartHost.querySelector("[data-pan-chart]");
     if (wrap) wrap.classList.remove("is-dragging");
     try { chartHost.releasePointerCapture(e.pointerId); } catch {}
+    if (wasTap) updateChartHoverAtClientX(e.clientX);
   };
   chartHost.addEventListener("pointerup", endChartDrag);
   chartHost.addEventListener("pointercancel", endChartDrag);
@@ -4719,6 +5039,7 @@ function bindEvents() {
   // Double-click zooms in 2x at clicked position
   chartHost.addEventListener("dblclick", (e) => {
     if (!state.chartView || !state.lastStateCurves.length) return;
+    if (e.target.closest("#state-pin-legend, button")) return;
     const rect = chartHost.getBoundingClientRect();
     const frac = rect.width > 0 ? Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width)) : 0.5;
     const span = state.chartView.endHr - state.chartView.startHr;
@@ -4755,14 +5076,13 @@ function bindEvents() {
       roEl.innerHTML = `<span>${esc(g.anchorTxt)}</span><span class="mono">${esc(g.rightSummary)}</span>`;
     }
   };
-  chartHost.addEventListener("pointermove", (e) => {
-    if (chartDrag) return;
+  const updateChartHoverAtClientX = (clientX) => {
     const g = state._chartGeom;
     const svg = chartHost.querySelector(".state-chart-svg");
     if (!g || !svg) return;
     const rect = svg.getBoundingClientRect();
     if (!rect.width) return;
-    const svgX = ((e.clientX - rect.left) / rect.width) * g.W;
+    const svgX = ((clientX - rect.left) / rect.width) * g.W;
     if (svgX < g.padL || svgX > g.W - g.padR) {
       clearChartHover();
       return;
@@ -4781,6 +5101,16 @@ function bindEvents() {
         snappedDot = pt;
       }
     }
+    // Find nearest habit pin / aggregated bar for instant name + amount readout!
+    let nearPin = null;
+    let bestPinPx = g.pinHitPx || 14;
+    for (const pin of g.renderedPins || []) {
+      const dist = Math.abs(pin.cx - svgX);
+      if (dist < bestPinPx) {
+        bestPinPx = dist;
+        nearPin = pin;
+      }
+    }
     if (snappedDot) hr = snappedDot.t;
     const cx = xOf(hr);
     const tl = (g.cur && g.cur.timeline) || {};
@@ -4789,6 +5119,12 @@ function bindEvents() {
 
     const ac = g.axisColor || "#368470";
     let markers = `<line x1="${cx.toFixed(1)}" y1="${g.padT}" x2="${cx.toFixed(1)}" y2="${g.padT + g.plotH}" stroke="var(--text-2)" stroke-width="1" opacity="0.32" />`;
+    if (nearPin) {
+      const hw = Math.max(4, (nearPin.barW || 4) + 3);
+      const hh = (nearPin.barH || 12) + 3;
+      const yTopPin = g.padT + g.plotH - hh;
+      markers += `<rect x="${(nearPin.cx - hw / 2).toFixed(1)}" y="${yTopPin.toFixed(1)}" width="${hw.toFixed(1)}" height="${hh.toFixed(1)}" rx="2.5" fill="none" stroke="var(--text)" stroke-width="1.2" opacity="0.55" />`;
+    }
     if (odePt) {
       markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(odePt.v).toFixed(1)}" r="4" fill="${esc(ac)}" stroke="var(--surface)" stroke-width="1.8" />`;
     }
@@ -4817,8 +5153,22 @@ function bindEvents() {
       const cTxt = isFut ? ` <span class="muted">(${Math.round(tpPt.conf * 100)}%)</span>` : "";
       pills.push(`<span class="ro-pill"><span class="line-ai"></span>TabPFN ${fmtNum(tpPt.v)}${cTxt}</span>`);
     }
+    if (nearPin && nearPin.items && nearPin.items.length) {
+      const topPinItems = nearPin.items.slice(0, 3);
+      topPinItems.forEach((it) => {
+        pills.push(`<span class="ro-pill ro-pin"><span class="chip-dot" style="background:${esc(it.color)}"></span>${esc(it.habit_name)} +${fmtNum(it.amount)}</span>`);
+      });
+      if (nearPin.items.length > 3) {
+        pills.push(`<span class="ro-pill muted">+${nearPin.items.length - 3}</span>`);
+      }
+    }
     const roEl = $("#state-chart-readout");
     if (roEl) roEl.innerHTML = `<span class="ro-live">${pills.join("")}</span>`;
+  };
+  chartHost.addEventListener("pointermove", (e) => {
+    if (chartDrag && chartDrag.moved) return;
+    if (e.target.closest("#state-pin-legend")) return;
+    updateChartHoverAtClientX(e.clientX);
   });
   chartHost.addEventListener("pointerleave", clearChartHover);
 

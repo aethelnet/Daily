@@ -314,7 +314,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                     conn.execute(
                         """
                         UPDATE state_dimensions
-                        SET name=?, low_label=?, high_label=?, color=COALESCE(NULLIF(?, ''), color), archived=?, updated_at=?
+                        SET name=?, low_label=?, high_label=?, color=COALESCE(NULLIF(?, ''), color), sort_order=?, archived=?, updated_at=?
                         WHERE id=?
                         """,
                         (
@@ -322,6 +322,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                             rd.get("low_label", ld.get("low_label", "")),
                             rd.get("high_label", ld.get("high_label", "")),
                             rd.get("color", ""),
+                            int(rd.get("sort_order", ld.get("sort_order", 0))),
                             1 if rd.get("archived") else 0,
                             r_upd,
                             did,

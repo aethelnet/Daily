@@ -1021,15 +1021,25 @@ class TestDailyCore(unittest.TestCase):
         st_curve = next(c for c in an["ai"]["state_curves"] if c["id"] == "stimmung")
         self.assertEqual(st_curve["color"], "#4f7a65")
 
-        # E2EE vault merge propagates custom axis color cleanly to second device
+        # Reorder state dimensions via API and verify order persists & syncs via E2EE!
+        cur_ids = [d["id"] for d in client.get("/api/state/dimensions").json()["dimensions"]]
+        cust_id = cust.json()["id"]
+        reordered_ids = [cust_id] + [i for i in cur_ids if i != cust_id]
+        ro = client.post("/api/state/dimensions/reorder", json={"dim_ids": reordered_ids})
+        self.assertEqual(ro.status_code, 200)
+        self.assertEqual(ro.json()["dimensions"][0]["id"], cust_id)
+
+        # E2EE vault merge propagates custom axis color & sort_order cleanly to second device
         other_db = Path(self.tmp.name) / "dim_color_target.db"
         init_db(other_db)
         with get_conn(other_db) as conn:
-            conn.execute("UPDATE state_dimensions SET updated_at = '2020-01-01T00:00:00' WHERE id = 'stimmung'")
+            conn.execute("UPDATE state_dimensions SET updated_at = '2020-01-01T00:00:00'")
         merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
-        other_dims = {d["id"]: d for d in list_state_dimensions(db_path=other_db)}
+        other_list = list_state_dimensions(db_path=other_db)
+        other_dims = {d["id"]: d for d in other_list}
         self.assertEqual(other_dims["stimmung"]["color"], "#4f7a65")
-        self.assertEqual(other_dims[cust.json()["id"]]["color"], "#8b6f4e")
+        self.assertEqual(other_dims[cust_id]["color"], "#8b6f4e")
+        self.assertEqual(other_list[0]["id"], cust_id)
 
     def test_mood_groups_seeding_customization_and_e2ee_sync(self) -> None:
         import json

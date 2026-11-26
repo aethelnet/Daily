@@ -150,6 +150,9 @@
           migrated = true;
         }
         if (migrated) saveDB(parsed);
+        if (Array.isArray(parsed.state_dimensions)) {
+          parsed.state_dimensions.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+        }
         return parsed;
       }
     } catch {}
@@ -1562,7 +1565,24 @@
     // State Dimensions & Snapshots
     if (path === "/api/state/dimensions" && method === "GET") {
       const inc = u.searchParams.get("include_archived") === "true";
-      return { dimensions: db.state_dimensions.filter((d) => inc || !d.archived) };
+      return {
+        dimensions: db.state_dimensions
+          .filter((d) => inc || !d.archived)
+          .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
+      };
+    }
+    if (path === "/api/state/dimensions/reorder" && method === "POST") {
+      const ts = nowIso();
+      (body.dim_ids || []).forEach((did, idx) => {
+        const d = db.state_dimensions.find((x) => x.id === did);
+        if (d) {
+          d.sort_order = idx;
+          d.updated_at = ts;
+        }
+      });
+      db.state_dimensions.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      saveDB(db);
+      return { dimensions: db.state_dimensions.filter((d) => !d.archived) };
     }
     if (path === "/api/state/dimensions" && method === "POST") {
       const name = (body.name || "").trim();
