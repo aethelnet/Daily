@@ -993,7 +993,7 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 }
 
 /* ==================== SETUP & EDGES ==================== */
-.color-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.color-row { display: flex; align-items: center; gap: 7px; flex-wrap: nowrap; }
 .name-match-list {
   display: flex;
   flex-direction: column;
