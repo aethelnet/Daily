@@ -219,9 +219,13 @@
       sync_adv_summary: "Erweitert (bestehende Gist-ID oder eigenen 256-Bit-Schlüssel eintragen)",
       sync_gist_id_ph: "Bestehende Gist-ID (optional)",
       sync_key_ph: "256-Bit-Schlüssel (wird sonst automatisch erzeugt)",
-      sync_step2: "Schritt 2 · Handy & Tablet koppeln (kein Tippen)",
+      sync_step2: "Handy & Tablet koppeln (nur kopieren / scannen)",
       sync_step2_desc_html:
         "QR-Code scannen oder Link auf dem anderen Gerät öffnen — der Schlüssel steckt nur im <code>#</code>-Fragment und landet in keinem Server-Log.",
+      sync_setup_summary_unpaired: "Sync einrichten oder anderes Gerät verbinden",
+      sync_setup_summary_active: "Verbindung & Schlüssel ändern (Sync bereits aktiv)",
+      sync_confirm_new_gist:
+        "Sync ist auf diesem Gerät bereits aktiv. Wirklich einen NEUEN Briefkasten (Gist) + neuen Schlüssel anlegen? Bereits gekoppelte Handys müssten dann neu verbunden werden.",
       sync_join_title: "Schon auf einem anderen Gerät aktiv? (z. B. iPhone Home-Screen)",
       sync_join_ph: "Koppel-Link (#e2ee=...) hier einfügen",
       sync_join_invalid: "Ungültiger Koppel-Link (erwartet #e2ee=...)",
@@ -629,9 +633,13 @@
       sync_adv_summary: "Advanced (enter existing Gist ID or custom 256-bit key)",
       sync_gist_id_ph: "Existing Gist ID (optional)",
       sync_key_ph: "256-bit key (auto-generated if empty)",
-      sync_step2: "Step 2 · Pair phone & tablet (no typing)",
+      sync_step2: "Pair phone & tablet (copy / scan only)",
       sync_step2_desc_html:
         "Scan the QR code or open the link on your other device — the key lives only in the <code>#</code> fragment and never hits server logs.",
+      sync_setup_summary_unpaired: "Set up sync or join another device",
+      sync_setup_summary_active: "Change connection & key (sync already active)",
+      sync_confirm_new_gist:
+        "Sync is already active on this device. Really create a NEW Gist mailbox + new key? Already paired phones would need to be re-paired.",
       sync_join_title: "Already active on another device? (e.g. iPhone Home Screen)",
       sync_join_ph: "Paste pairing link (#e2ee=...) here",
       sync_join_invalid: "Invalid pairing link (expected #e2ee=...)",
