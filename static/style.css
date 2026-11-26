@@ -813,7 +813,35 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   transition: width 0.28s var(--ease), background 0.2s var(--ease);
 }
 
-.hc-routes { display: flex; flex-wrap: wrap; gap: 4px; }
+.hc-routes {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.hc-flow-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.hc-flow-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding-top: 3px;
+  min-width: 28px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.hc-flow-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .chip {
   font-family: var(--mono);
   font-size: 11px;
@@ -821,10 +849,29 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text-2);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .chip.pos-chip { color: var(--pos); background: var(--pos-bg); }
 .chip.neg-chip { color: var(--neg); background: var(--neg-bg); }
 .chip.ai-chip { color: var(--ai); background: var(--ai-soft); }
+.chip.route-out-chip {
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.chip.route-out-chip.pos-chip {
+  border-color: color-mix(in srgb, var(--pos) 34%, var(--border));
+}
+.chip.route-out-chip.neg-chip {
+  border-color: color-mix(in srgb, var(--neg) 34%, var(--border));
+}
+.chip.route-out-chip.ai-chip {
+  border-color: color-mix(in srgb, var(--ai) 38%, var(--border));
+}
+.chip-via {
+  opacity: 0.72;
+  font-weight: 400;
+}
 
 .hc-actions {
   display: flex;

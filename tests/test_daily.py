@@ -84,6 +84,7 @@ class TestDailyCore(unittest.TestCase):
         by2 = {h["id"]: h for h in sum2["habits"]}
         self.assertEqual(by2[sport["id"]]["routed"], -0.6)
         self.assertEqual(by2[upgrade["id"]]["routed"], -0.36)
+        self.assertEqual(by2[upgrade["id"]]["contributors"][0]["via"], ["Sport"])
         self.assertEqual(by2[laundry["id"]]["routed"], 0.0)
 
         # Direct positive Sport (+1) still applies its -0.2 cost onto Laundry cleanly

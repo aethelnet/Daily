@@ -93,6 +93,7 @@ def compute_signed_rollups(
     routed: dict[str, float] = {hid: 0.0 for hid in habits_by_id}
     contrib_map: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     contrib_ai: dict[str, dict[str, bool]] = defaultdict(lambda: defaultdict(bool))
+    contrib_via: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
 
     def dfs(origin_id: str, cur_id: str, val: float, path: set[str], depth: int, via_ai: bool) -> None:
         if depth >= max_depth or abs(val) < 1e-9:
@@ -111,6 +112,8 @@ def compute_signed_rollups(
             is_ai_step = via_ai or bool(edge.get("is_ai"))
             routed[nxt] = routed.get(nxt, 0.0) + delta
             contrib_map[nxt][origin_id] += delta
+            if cur_id != origin_id:
+                contrib_via[nxt][origin_id].add(habits_by_id[cur_id]["name"])
             if is_ai_step:
                 contrib_ai[nxt][origin_id] = True
             dfs(origin_id, nxt, delta, path | {nxt}, depth + 1, is_ai_step)
@@ -130,6 +133,7 @@ def compute_signed_rollups(
                         "from_name": habits_by_id[from_id]["name"],
                         "delta": round(delta, 2),
                         "is_ai": bool(contrib_ai[hid].get(from_id, False)),
+                        "via": sorted(contrib_via[hid].get(from_id, set())),
                     }
                 )
         items.sort(key=lambda x: abs(x["delta"]), reverse=True)

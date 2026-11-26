@@ -572,7 +572,11 @@ function renderHabitCardHtml(h, opts = {}) {
         .map((c) => {
           const cls = c.is_ai ? "ai-chip" : c.delta >= 0 ? "pos-chip" : "neg-chip";
           const pfx = c.is_ai ? aiPrefix : "";
-          return `<span class="chip ${cls}">← ${pfx}${c.delta >= 0 ? "+" : ""}${fmtNum(c.delta)} ${esc(c.from_name)}</span>`;
+          const viaList = Array.isArray(c.via) && c.via.length ? c.via : [];
+          const viaHtml = viaList.length
+            ? ` <span class="chip-via">· ${esc(t("flow_via", { name: viaList.join(", ") }))}</span>`
+            : "";
+          return `<span class="chip ${cls}">${pfx}${c.delta >= 0 ? "+" : ""}${fmtNum(c.delta)} ${esc(c.from_name)}${viaHtml}</span>`;
         })
         .join("")
     : "";
@@ -584,8 +588,18 @@ function renderHabitCardHtml(h, opts = {}) {
         r.is_ai && r.prior_weight != null
           ? `title="Prior: ${r.prior_weight >= 0 ? "+" : ""}${fmtNum(r.prior_weight)} → ${t("mode_ai")}: ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}"`
           : "";
-      return `<span class="chip ${cls}" ${tip}>→ ${pfx}${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`;
+      return `<span class="chip route-out-chip ${cls}" ${tip}>${pfx}${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`;
     })
+    .join("");
+  const flowRowsHtml = [
+    contribHtml
+      ? `<div class="hc-flow-row hc-flow-in"><span class="hc-flow-lbl">${esc(t("flow_in_lbl"))}</span><div class="hc-flow-chips">${contribHtml}</div></div>`
+      : "",
+    routesHtml
+      ? `<div class="hc-flow-row hc-flow-out"><span class="hc-flow-lbl">${esc(t("flow_out_lbl"))}</span><div class="hc-flow-chips">${routesHtml}</div></div>`
+      : "",
+  ]
+    .filter(Boolean)
     .join("");
   const per = h.target_period || "day";
   const heroVal = per !== "day" && h.period_effective != null ? h.period_effective : h.effective;
@@ -642,7 +656,7 @@ function renderHabitCardHtml(h, opts = {}) {
         ? `<div class="bar-track"><div class="bar-fill" style="width:${bar.pct}%;background:${bar.color}"></div></div>`
         : ""
     }
-    ${contribHtml || routesHtml ? `<div class="hc-routes">${contribHtml}${routesHtml}</div>` : ""}
+    ${flowRowsHtml ? `<div class="hc-routes">${flowRowsHtml}</div>` : ""}
     <div class="hc-actions">
       ${sessionBtnHtml}
       <button class="btn sm btn-tap" data-act="tap" data-id="${esc(h.id)}">+${fmtNum(habitTapStep(h))}</button>
