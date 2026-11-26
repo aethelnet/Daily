@@ -28,6 +28,22 @@ def slugify(name: str) -> str:
     return s[:40] or f"h-{uuid.uuid4().hex[:8]}"
 
 
+DEFAULT_DIM_COLORS: dict[str, str] = {
+    "stimmung": "#368470",
+    "mental-fit": "#3d6b7d",
+    "stress": "#c85a44",
+    "anspannung": "#b4783c",
+    "antrieb": "#6e68a8",
+}
+
+
+def _clean_hex_color(raw: str | None, fallback: str = "#3d6b7d") -> str:
+    s = (raw or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", s):
+        return s.lower()
+    return fallback
+
+
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
 
@@ -148,9 +164,11 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
                 name TEXT NOT NULL UNIQUE,
                 low_label TEXT NOT NULL DEFAULT '',
                 high_label TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '',
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS snapshots (
@@ -182,12 +200,26 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
             for dim_id, dname, low_l, high_l, order_idx in default_dims:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO state_dimensions(id, name, low_label, high_label, sort_order, archived, created_at)
-                    VALUES(?, ?, ?, ?, ?, 0, ?)
+                    INSERT OR IGNORE INTO state_dimensions(id, name, low_label, high_label, color, sort_order, archived, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?)
                     """,
-                    (dim_id, dname, low_l, high_l, order_idx, ts_seed),
+                    (dim_id, dname, low_l, high_l, DEFAULT_DIM_COLORS.get(dim_id, "#3d6b7d"), order_idx, ts_seed, ts_seed),
                 )
             conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('state_dims_seeded', '1')")
+
+        # Migrate legacy state_dimensions tables: add color & updated_at and backfill calm defaults
+        dim_cols = {r[1] for r in conn.execute("PRAGMA table_info(state_dimensions)").fetchall()}
+        if "color" not in dim_cols:
+            conn.execute("ALTER TABLE state_dimensions ADD COLUMN color TEXT NOT NULL DEFAULT ''")
+        if "updated_at" not in dim_cols:
+            conn.execute("ALTER TABLE state_dimensions ADD COLUMN updated_at TEXT")
+        conn.execute("UPDATE state_dimensions SET updated_at = created_at WHERE updated_at IS NULL")
+        for dim_id, cur_color in conn.execute("SELECT id, color FROM state_dimensions").fetchall():
+            if not (cur_color or "").strip():
+                conn.execute(
+                    "UPDATE state_dimensions SET color = ? WHERE id = ?",
+                    (DEFAULT_DIM_COLORS.get(dim_id, "#3d6b7d"), dim_id),
+                )
 
         # Auto-generate a persistent local device sync token (only used for non-localhost devices)
         if not conn.execute("SELECT 1 FROM settings WHERE key = 'sync_token'").fetchone():
@@ -877,12 +909,15 @@ def create_state_dimension(
     name: str,
     low_label: str = "",
     high_label: str = "",
+    color: str = "",
     db_path: Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("Name der Achse darf nicht leer sein")
     base_id = slugify(clean_name)
+    clean_color = _clean_hex_color(color, DEFAULT_DIM_COLORS.get(base_id, "#3d6b7d"))
+    ts_now = now_iso()
     with get_conn(db_path) as conn:
         # If an archived dimension with the same name exists, simply unarchive it!
         existing = conn.execute(
@@ -890,9 +925,18 @@ def create_state_dimension(
             (clean_name,),
         ).fetchone()
         if existing:
+            next_color = _clean_hex_color(color, existing["color"] or DEFAULT_DIM_COLORS.get(existing["id"], "#3d6b7d"))
             conn.execute(
-                "UPDATE state_dimensions SET archived = 0, low_label = COALESCE(NULLIF(?, ''), low_label), high_label = COALESCE(NULLIF(?, ''), high_label) WHERE id = ?",
-                (low_label.strip(), high_label.strip(), existing["id"]),
+                """
+                UPDATE state_dimensions
+                SET archived = 0,
+                    low_label = COALESCE(NULLIF(?, ''), low_label),
+                    high_label = COALESCE(NULLIF(?, ''), high_label),
+                    color = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (low_label.strip(), high_label.strip(), next_color, ts_now, existing["id"]),
             )
             row = conn.execute("SELECT * FROM state_dimensions WHERE id = ?", (existing["id"],)).fetchone()
             return dict(row)
@@ -905,17 +949,17 @@ def create_state_dimension(
         max_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) FROM state_dimensions").fetchone()[0]
         conn.execute(
             """
-            INSERT INTO state_dimensions(id, name, low_label, high_label, sort_order, archived, created_at)
-            VALUES(?, ?, ?, ?, ?, 0, ?)
+            INSERT INTO state_dimensions(id, name, low_label, high_label, color, sort_order, archived, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
-            (did, clean_name, low_label.strip(), high_label.strip(), int(max_order) + 1, now_iso()),
+            (did, clean_name, low_label.strip(), high_label.strip(), clean_color, int(max_order) + 1, ts_now, ts_now),
         )
         row = conn.execute("SELECT * FROM state_dimensions WHERE id = ?", (did,)).fetchone()
     return dict(row)
 
 
 def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
-    allowed = {"name", "low_label", "high_label", "archived", "sort_order"}
+    allowed = {"name", "low_label", "high_label", "color", "archived", "sort_order"}
     sets: list[str] = []
     vals: list[Any] = []
     for k, v in fields.items():
@@ -923,12 +967,16 @@ def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = 
             continue
         if k == "archived":
             v = 1 if bool(v) else 0
+        elif k == "color":
+            v = _clean_hex_color(str(v), DEFAULT_DIM_COLORS.get(dim_id, "#3d6b7d"))
         elif k in {"name", "low_label", "high_label"}:
             v = str(v).strip()
         sets.append(f"{k} = ?")
         vals.append(v)
     if not sets:
         raise ValueError("No valid fields to update")
+    sets.append("updated_at = ?")
+    vals.append(now_iso())
     vals.append(dim_id)
     with get_conn(db_path) as conn:
         cur = conn.execute(f"UPDATE state_dimensions SET {', '.join(sets)} WHERE id = ?", vals)

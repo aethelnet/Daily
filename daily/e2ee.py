@@ -271,28 +271,51 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                     )
                     stats["habits"] += 1
 
-        # 2. State dimensions
+        # 2. State dimensions (LWW on updated_at so custom colors & archive state sync across devices!)
         local_dims = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM state_dimensions").fetchall()}
         for rd in remote.get("state_dimensions") or []:
             did = rd.get("id")
             if not did or not rd.get("name"):
                 continue
+            r_upd = rd.get("updated_at") or rd.get("created_at") or ts_now
             if did not in local_dims:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO state_dimensions(id, name, low_label, high_label, sort_order, archived, created_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO state_dimensions(id, name, low_label, high_label, color, sort_order, archived, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         did,
                         rd["name"],
                         rd.get("low_label", ""),
                         rd.get("high_label", ""),
+                        rd.get("color", ""),
                         int(rd.get("sort_order") or 0),
                         1 if rd.get("archived") else 0,
                         rd.get("created_at") or ts_now,
+                        r_upd,
                     ),
                 )
+            else:
+                ld = local_dims[did]
+                l_upd = ld.get("updated_at") or ld.get("created_at") or ""
+                if r_upd > l_upd:
+                    conn.execute(
+                        """
+                        UPDATE state_dimensions
+                        SET name=?, low_label=?, high_label=?, color=COALESCE(NULLIF(?, ''), color), archived=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (
+                            rd["name"],
+                            rd.get("low_label", ld.get("low_label", "")),
+                            rd.get("high_label", ld.get("high_label", "")),
+                            rd.get("color", ""),
+                            1 if rd.get("archived") else 0,
+                            r_upd,
+                            did,
+                        ),
+                    )
                 stats["dimensions"] += 1
 
         # 3. Edges (by semantic key, LWW on updated_at)

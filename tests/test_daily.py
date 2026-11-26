@@ -981,6 +981,47 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(len(edges_now), 1)
         self.assertEqual(edges_now[0]["source_id"], h2["id"])
 
+    def test_state_dimension_colors_and_e2ee_sync(self) -> None:
+        from daily.db import get_conn, init_db, list_state_dimensions
+        from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
+
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        # Default dimensions come with calm non-empty hex colors
+        dims = client.get("/api/state/dimensions").json()["dimensions"]
+        st = next(d for d in dims if d["id"] == "stimmung")
+        self.assertEqual(st["color"], "#368470")
+
+        # Update existing axis color & create custom axis with custom color
+        upd = client.patch("/api/state/dimensions/stimmung", json={"color": "#4f7a65"})
+        self.assertEqual(upd.status_code, 200)
+        self.assertEqual(upd.json()["color"], "#4f7a65")
+
+        cust = client.post(
+            "/api/state/dimensions",
+            json={"name": "Körpergefühl", "low_label": "schwer", "high_label": "leicht", "color": "#8b6f4e"},
+        )
+        self.assertEqual(cust.status_code, 200)
+        self.assertEqual(cust.json()["color"], "#8b6f4e")
+
+        # Analysis state_curves immediately reflects updated axis colors (cache busted!)
+        client.post("/api/habits", json={"name": "Spaziergang", "kind": "min", "target": 1})
+        client.post("/api/snapshots", json={"ratings": {"stimmung": 4}, "occurred_at": f"{date.today().isoformat()}T10:00:00"})
+        an = client.get("/api/analysis").json()
+        st_curve = next(c for c in an["ai"]["state_curves"] if c["id"] == "stimmung")
+        self.assertEqual(st_curve["color"], "#4f7a65")
+
+        # E2EE vault merge propagates custom axis color cleanly to second device
+        other_db = Path(self.tmp.name) / "dim_color_target.db"
+        init_db(other_db)
+        with get_conn(other_db) as conn:
+            conn.execute("UPDATE state_dimensions SET updated_at = '2020-01-01T00:00:00' WHERE id = 'stimmung'")
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        other_dims = {d["id"]: d for d in list_state_dimensions(db_path=other_db)}
+        self.assertEqual(other_dims["stimmung"]["color"], "#4f7a65")
+        self.assertEqual(other_dims[cust.json()["id"]]["color"], "#8b6f4e")
+
 
 if __name__ == "__main__":
     unittest.main()

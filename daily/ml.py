@@ -233,7 +233,7 @@ def _data_signature(
             for s in live_snaps
         ],
         "sd": [
-            (d.get("id"), d.get("name"), bool(d.get("archived")))
+            (d.get("id"), d.get("name"), d.get("color") or "", bool(d.get("archived")))
             for d in (state_dims or [])
         ],
     }
@@ -1332,6 +1332,7 @@ def compute_ai_insights(
                         "name": dim["name"],
                         "low_label": dim.get("low_label", ""),
                         "high_label": dim.get("high_label", ""),
+                        "color": dim.get("color") or "#3d6b7d",
                         "rated_count": len(dim_snaps),
                         "ode_tau_hours": tau_h,
                         # Legacy fields kept for clean backwards compatibility

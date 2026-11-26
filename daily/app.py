@@ -114,12 +114,14 @@ class StateDimensionCreate(BaseModel):
     name: str
     low_label: str = ""
     high_label: str = ""
+    color: str = ""
 
 
 class StateDimensionUpdate(BaseModel):
     name: str | None = None
     low_label: str | None = None
     high_label: str | None = None
+    color: str | None = None
     archived: bool | None = None
 
 
@@ -577,6 +579,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 name=payload.name,
                 low_label=payload.low_label,
                 high_label=payload.high_label,
+                color=payload.color,
                 db_path=resolved_db,
             )
         except Exception as exc:
