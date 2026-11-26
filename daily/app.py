@@ -381,7 +381,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
 
     @app.post("/api/habits/{habit_id}/toggle-active")
     def api_toggle_habit_active(habit_id: str, payload: HabitToggleActive | None = None) -> dict[str, Any]:
-        from datetime import datetime
+        from datetime import datetime, timedelta
         from .db import now_iso
 
         p = payload or HabitToggleActive()
@@ -401,39 +401,133 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         if p.cancel:
             return {"active": False, "logged": False, "habit": updated}
 
+        block_m = max(1, int(h.get("block_minutes") or 30))
         if p.override_minutes is not None:
             elapsed_min = float(p.override_minutes)
             if elapsed_min < 1.0:
                 return {"active": False, "logged": False, "too_short": True, "elapsed_minutes": 0, "habit": updated}
-        else:
-            try:
-                dt_start = datetime.fromisoformat(cur_since)
-                dt_end = datetime.fromisoformat(now_str)
-                raw_min = (dt_end - dt_start).total_seconds() / 60.0
-                if raw_min < 1.0:
-                    return {"active": False, "logged": False, "too_short": True, "elapsed_minutes": 0, "habit": updated}
-                elapsed_min = raw_min
-            except Exception:
-                elapsed_min = float(h.get("block_minutes") or 30)
+            amount = max(0.1, round((elapsed_min / block_m) * 10.0) / 10.0)
+            win_min = max(1, int(round(elapsed_min)))
+            ev = log_event(
+                habit_id=habit_id,
+                amount=amount,
+                occurred_at=now_str,
+                window_minutes=win_min,
+                source="tap",
+                note="",
+                db_path=resolved_db,
+            )
+            return {
+                "active": False,
+                "logged": True,
+                "elapsed_minutes": win_min,
+                "trimmed_minutes": 0,
+                "amount": amount,
+                "event": ev,
+                "habit": updated,
+            }
 
-        block_m = max(1, int(h.get("block_minutes") or 30))
-        amount = max(0.1, round((elapsed_min / block_m) * 10.0) / 10.0)
-        win_min = max(1, int(round(elapsed_min)))
-        ev = log_event(
-            habit_id=habit_id,
-            amount=amount,
-            occurred_at=now_str,
-            window_minutes=win_min,
-            source="tap",
-            note="",
-            db_path=resolved_db,
-        )
+        try:
+            dt_start = datetime.fromisoformat(cur_since)
+            dt_end = datetime.fromisoformat(now_str)
+            raw_min = (dt_end - dt_start).total_seconds() / 60.0
+            if raw_min < 1.0:
+                return {"active": False, "logged": False, "too_short": True, "elapsed_minutes": 0, "habit": updated}
+        except Exception:
+            elapsed_min = float(h.get("block_minutes") or 30)
+            amount = max(0.1, round((elapsed_min / block_m) * 10.0) / 10.0)
+            win_min = max(1, int(round(elapsed_min)))
+            ev = log_event(
+                habit_id=habit_id,
+                amount=amount,
+                occurred_at=now_str,
+                window_minutes=win_min,
+                source="tap",
+                note="",
+                db_path=resolved_db,
+            )
+            return {
+                "active": False,
+                "logged": True,
+                "elapsed_minutes": win_min,
+                "trimmed_minutes": 0,
+                "amount": amount,
+                "event": ev,
+                "habit": updated,
+            }
+
+        # Subtract any overlapping timed intervals of the SAME habit (e.g. a future Von-Bis estimate)
+        day_lo = (dt_start.date() - timedelta(days=1)).isoformat()
+        day_hi = (dt_end.date() + timedelta(days=1)).isoformat()
+        existing = list_log_range(start_day=day_lo, end_day=day_hi, db_path=resolved_db)["events"]
+        segs: list[tuple[datetime, datetime]] = [(dt_start, dt_end)]
+        for ex in existing:
+            if ex.get("habit_id") != habit_id or ex.get("deleted_at") or ex.get("source") == "retro":
+                continue
+            ew = int(ex.get("window_minutes") or 0)
+            if ew <= 0:
+                continue
+            try:
+                ex_end = datetime.fromisoformat(str(ex["occurred_at"])[:19])
+                ex_start = ex_end - timedelta(minutes=ew)
+            except Exception:
+                continue
+            if ex_end <= dt_start or ex_start >= dt_end:
+                continue
+            nxt: list[tuple[datetime, datetime]] = []
+            for s, e in segs:
+                if ex_end <= s or ex_start >= e:
+                    nxt.append((s, e))
+                else:
+                    if ex_start > s:
+                        nxt.append((s, ex_start))
+                    if ex_end < e:
+                        nxt.append((ex_end, e))
+            segs = nxt
+            if not segs:
+                break
+
+        uncovered = [(s, e) for s, e in segs if (e - s).total_seconds() >= 60.0]
+        if not uncovered:
+            return {
+                "active": False,
+                "logged": False,
+                "already_covered": True,
+                "elapsed_minutes": 0,
+                "trimmed_minutes": max(1, int(round(raw_min))),
+                "habit": updated,
+            }
+
+        uncovered_min = sum((e - s).total_seconds() / 60.0 for s, e in uncovered)
+        trimmed_min = max(0, int(round(raw_min - uncovered_min)))
+        created_events: list[dict[str, Any]] = []
+        total_amt = 0.0
+        total_win = 0
+        for s, e in uncovered:
+            seg_min = (e - s).total_seconds() / 60.0
+            seg_amt = max(0.1, round((seg_min / block_m) * 10.0) / 10.0)
+            seg_win = max(1, int(round(seg_min)))
+            ev = log_event(
+                habit_id=habit_id,
+                amount=seg_amt,
+                occurred_at=e.isoformat(timespec="seconds"),
+                window_minutes=seg_win,
+                source="tap",
+                note="",
+                db_path=resolved_db,
+            )
+            created_events.append(ev)
+            total_amt = round(total_amt + seg_amt, 2)
+            total_win += seg_win
+
         return {
             "active": False,
             "logged": True,
-            "elapsed_minutes": win_min,
-            "amount": amount,
-            "event": ev,
+            "elapsed_minutes": total_win,
+            "trimmed_minutes": trimmed_min,
+            "amount": total_amt,
+            "event": created_events[-1],
+            "events": created_events,
             "habit": updated,
         }
 

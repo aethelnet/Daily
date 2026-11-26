@@ -764,6 +764,40 @@ class TestDailyCore(unittest.TestCase):
             f"/api/events/{r_stop['event']['id']}",
             json={"occurred_at": "2026-11-26T09:30:00", "window_minutes": 30, "amount": 1.0},
         ).json()
+
+        # Overlap guard: manual future Von-Bis (14:00-16:00) + timer running 15:45-17:00
+        # must trim the 15-min overlap and log only 16:00-17:00 (+2.0 blocks on 30m block_minutes)
+        client.post(
+            "/api/events",
+            json={
+                "habit_id": coding["id"],
+                "amount": 4.0,
+                "occurred_at": "2026-11-26T16:00:00",
+                "window_minutes": 120,
+                "source": "manual",
+            },
+        )
+        client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T15:45:00"})
+        r_trim = client.post(
+            f"/api/habits/{coding['id']}/toggle-active",
+            json={"now_at": "2026-11-26T17:00:00"},
+        ).json()
+        self.assertTrue(r_trim["logged"])
+        self.assertEqual(r_trim["elapsed_minutes"], 60)
+        self.assertEqual(r_trim["trimmed_minutes"], 15)
+        self.assertEqual(r_trim["amount"], 2.0)
+        self.assertEqual(r_trim["event"]["window_minutes"], 60)
+        self.assertEqual(r_trim["event"]["occurred_at"], "2026-11-26T17:00:00")
+
+        # Completely covered timer (14:30-15:00 inside 14:00-16:00) must NOT double-count!
+        client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T14:30:00"})
+        r_cov = client.post(
+            f"/api/habits/{coding['id']}/toggle-active",
+            json={"now_at": "2026-11-26T15:00:00"},
+        ).json()
+        self.assertFalse(r_cov["logged"])
+        self.assertTrue(r_cov["already_covered"])
+        self.assertEqual(r_cov["trimmed_minutes"], 30)
         self.assertEqual(r_patch["window_minutes"], 30)
         self.assertEqual(r_patch["amount"], 1.0)
 

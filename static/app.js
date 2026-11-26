@@ -1214,14 +1214,18 @@ async function toggleHabitActive(habitId) {
     if (res.active) {
       toast(t("session_started", { name: h.name }));
     } else if (res.logged && res.event) {
+      const msgKey = res.trimmed_minutes >= 1 ? "session_stopped_trimmed" : "session_stopped_logged";
       toast(
-        t("session_stopped_logged", {
+        t(msgKey, {
           amt: fmtNum(res.amount),
           name: h.name,
           dur: formatDurationMin(res.elapsed_minutes),
+          trim: formatDurationMin(res.trimmed_minutes || 0),
         }),
         { undoEventId: res.event.id }
       );
+    } else if (res.already_covered) {
+      toast(t("session_already_covered", { name: h.name }));
     } else if (res.too_short) {
       toast(t("session_too_short", { name: h.name }));
     } else {
