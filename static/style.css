@@ -994,6 +994,41 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 
 /* ==================== SETUP & EDGES ==================== */
 .color-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.name-match-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+  margin-top: -4px;
+}
+.name-match-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s var(--ease);
+}
+.name-match-item:last-child { border-bottom: none; }
+.name-match-item:hover { background: var(--surface-2); }
+.name-match-item.is-exact { background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
+.name-match-cta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.name-match-item:hover .name-match-cta { color: var(--text); }
 .swatch {
   width: 22px;
   height: 22px;

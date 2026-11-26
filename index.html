@@ -156,8 +156,9 @@
             <input type="hidden" id="hf-id" />
             <label class="field">
               <span data-i18n="lbl_name">Name</span>
-              <input type="text" id="hf-name" data-i18n-placeholder="hf_name_ph" placeholder="z. B. Kreativ, Programmieren, Kochen, Sport" required />
+              <input type="text" id="hf-name" autocomplete="off" data-i18n-placeholder="hf_name_ph" placeholder="z. B. Kreativ, Programmieren, Kochen, Sport" required />
             </label>
+            <div id="hf-name-matches" class="name-match-list hidden" role="listbox"></div>
 
             <div class="row-2">
               <label class="field">
