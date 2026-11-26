@@ -424,6 +424,52 @@ input:focus, select:focus {
 }
 .habit-card.status-met { background: linear-gradient(180deg, var(--pos-tint), var(--surface) 65%); }
 .habit-card.status-exceeded { background: linear-gradient(180deg, var(--neg-tint), var(--surface) 65%); }
+.habit-card.is-active {
+  border-color: #368470;
+  box-shadow: 0 0 0 2px rgba(54, 132, 112, 0.16), var(--shadow-sm);
+}
+.active-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(54, 132, 112, 0.14);
+  color: #2f7462;
+  white-space: nowrap;
+  cursor: pointer;
+}
+body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
+.active-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #368470;
+  animation: calmPulse 2.6s ease-in-out infinite;
+}
+@keyframes calmPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.42; transform: scale(0.85); }
+}
+.hc-actions .btn-session {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.hc-actions .btn-session:hover { border-color: #368470; color: #2f7462; }
+.hc-actions .btn-session-on {
+  background: #368470;
+  border-color: #368470;
+  color: #ffffff;
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.hc-actions .btn-session-on:hover { opacity: 0.92; background: #2f7462; }
 
 .habit-card.route-dim { opacity: 0.42; }
 .habit-card.route-focus {

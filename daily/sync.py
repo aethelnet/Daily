@@ -129,6 +129,8 @@ def apply_sync_batch(
                     "nudge_alternatives",
                     "reminder_time",
                     "reminder_days",
+                    "block_minutes",
+                    "active_since",
                     "sort_order",
                     "archived",
                 )
@@ -151,6 +153,7 @@ def apply_sync_batch(
                     nudge_alternatives=h.get("nudge_alternatives", ""),
                     reminder_time=h.get("reminder_time", ""),
                     reminder_days=h.get("reminder_days", "0,1,2,3,4,5,6"),
+                    block_minutes=h.get("block_minutes"),
                     db_path=db_path,
                 )
                 applied["habits"] += 1

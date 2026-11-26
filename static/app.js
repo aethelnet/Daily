@@ -415,11 +415,29 @@ function getConnectedNeighbors(focusId) {
   return out;
 }
 
+function formatDurationMin(totalMin) {
+  const m = Math.max(1, Math.round(Number(totalMin) || 0));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+function elapsedMinutesSince(iso) {
+  if (!iso) return 0;
+  const ms = Date.now() - new Date(iso).getTime();
+  return Number.isFinite(ms) && ms > 0 ? Math.max(1, Math.round(ms / 60000)) : 1;
+}
+
 function renderHabitCardHtml(h, opts = {}) {
   const bar = barPercentAndColor(h);
   const neighbors = getConnectedNeighbors(h.id);
   const hasLinks = neighbors.length > 0;
   const isToggled = state.toggledFocus.includes(h.id);
+  const isActive = !!(h.active_since && String(h.active_since).trim());
+  const activeMins = isActive ? elapsedMinutesSince(h.active_since) : 0;
+  const activeDurTxt = isActive ? formatDurationMin(activeMins) : "";
+  const hasBlockMode = !!(h.block_minutes && Number(h.block_minutes) > 0) || isActive;
 
   const aiPrefix = `${t("mode_ai")} `;
   const contribHtml = h.contributors.length
@@ -464,16 +482,27 @@ function renderHabitCardHtml(h, opts = {}) {
   const extraCls = [
     hasLinks ? "is-clickable" : "",
     opts.asAnchor && isToggled ? "is-toggled" : "",
+    isActive ? "is-active" : "",
     opts.relGlow || "",
   ]
     .filter(Boolean)
     .join(" ");
 
+  const activePillHtml = isActive
+    ? `<span class="active-chip" data-active-since="${esc(h.active_since)}" data-active-id="${esc(h.id)}" title="${esc(t("session_edit_start_title"))}"><span class="active-dot"></span><span data-active-txt="1">${esc(t("active_badge", { dur: activeDurTxt }))}</span></span>`
+    : "";
+
+  const sessionBtnHtml = hasBlockMode
+    ? isActive
+      ? `<button class="btn sm btn-session-on" data-act="toggle-active" data-id="${esc(h.id)}" data-active-btn="${esc(h.active_since)}" title="${esc(t("btn_stop_title", { since: String(h.active_since).slice(11, 16) }))}">■ ${esc(activeDurTxt)}</button>`
+      : `<button class="btn sm btn-session" data-act="toggle-active" data-id="${esc(h.id)}" title="${esc(t("btn_start_title", { m: h.block_minutes || 30 }))}">${esc(t("btn_start_session"))}</button>`
+    : "";
+
   return `
   <div class="habit-card status-${esc(h.status)} ${extraCls}" style="--card-accent:${esc(h.color)}" data-id="${esc(h.id)}" data-has-links="${hasLinks ? "1" : "0"}">
     <div class="hc-top">
       <span class="hc-name">${esc(h.name)}${caret}</span>
-      <div class="row-inline" style="gap:4px;">${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
+      <div class="row-inline" style="gap:4px;">${activePillHtml}${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
     </div>
     <div class="hc-metrics">
       <span class="hc-val-wrap"><span class="hc-big">${fmtNum(heroVal)}</span>${denomHtml}</span>
@@ -486,6 +515,7 @@ function renderHabitCardHtml(h, opts = {}) {
     }
     ${contribHtml || routesHtml ? `<div class="hc-routes">${contribHtml}${routesHtml}</div>` : ""}
     <div class="hc-actions">
+      ${sessionBtnHtml}
       <button class="btn sm btn-tap" data-act="tap" data-id="${esc(h.id)}">+1</button>
       <button class="btn sm btn-subtle" data-act="custom" data-id="${esc(h.id)}" title="${esc(t("card_custom_title"))}">${esc(t("card_custom_btn"))}</button>
       <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">⇄</button>
@@ -696,6 +726,62 @@ function renderToday(data) {
       })
       .join("");
   }
+}
+
+async function toggleHabitActive(habitId) {
+  const h = state.habits.find((x) => x.id === habitId);
+  if (!h) return;
+  const payload = {};
+  if (h.active_since) {
+    const mins = elapsedMinutesSince(h.active_since);
+    // Overnight forgot-to-stop guard (> 10h)
+    if (mins > 600) {
+      const hrs = (mins / 60).toFixed(1);
+      const ans = prompt(t("session_long_prompt", { name: h.name, h: hrs }), String(Math.min(480, Number(h.block_minutes || 60) * 2)));
+      if (ans === null || ans.trim() === "") {
+        payload.cancel = true;
+      } else {
+        const parsed = Number(ans.trim().replace(",", "."));
+        if (!Number.isFinite(parsed) || parsed <= 0) payload.cancel = true;
+        else payload.override_minutes = parsed;
+      }
+    }
+  }
+  try {
+    const res = await api(`/api/habits/${encodeURIComponent(habitId)}/toggle-active`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (res.active) {
+      toast(t("session_started", { name: h.name }));
+    } else if (res.logged && res.event) {
+      toast(
+        t("session_stopped_logged", {
+          amt: fmtNum(res.amount),
+          name: h.name,
+          dur: formatDurationMin(res.elapsed_minutes),
+        }),
+        { undoEventId: res.event.id }
+      );
+    } else {
+      toast(t("session_cancelled", { name: h.name }));
+    }
+    await loadToday();
+  } catch (err) {
+    toast(t("err_prefix", { msg: err.message }));
+  }
+}
+
+function refreshActiveSessionBadges() {
+  $$("[data-active-since]").forEach((el) => {
+    const dur = formatDurationMin(elapsedMinutesSince(el.dataset.activeSince));
+    const txt = el.querySelector("[data-active-txt]");
+    if (txt) txt.textContent = t("active_badge", { dur });
+  });
+  $$("[data-active-btn]").forEach((btn) => {
+    const dur = formatDurationMin(elapsedMinutesSince(btn.dataset.activeBtn));
+    btn.textContent = `■ ${dur}`;
+  });
 }
 
 async function quickTap(habitId) {
@@ -1038,6 +1124,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
             <strong>${esc(h.name)}</strong>
             <span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span>
             ${outs}
+            ${h.block_minutes ? `<span class="chip">⏱ ${h.block_minutes}m=1</span>` : ""}
             ${h.nudge_enabled ? `<span class="chip">Ping −${h.nudge_lead_min}m</span>` : ""}
             ${formatAnchorBadge(h)}
           </div>
@@ -1169,6 +1256,7 @@ function resetHabitForm() {
   $("#hf-period").value = "day";
   $("#hf-unit").value = "x";
   $("#hf-color").value = "#2563eb";
+  $("#hf-block-min").value = "";
   $("#hf-nudge-enabled").checked = false;
   $("#hf-nudge-lead").value = "20";
   $("#hf-nudge-alts").value = "";
@@ -1215,6 +1303,7 @@ function populateHabitForm(habitId) {
   $("#hf-period").value = h.target_period || "day";
   $("#hf-unit").value = h.unit || "x";
   $("#hf-color").value = h.color || "#2563eb";
+  $("#hf-block-min").value = h.block_minutes != null ? h.block_minutes : "";
   $("#hf-nudge-enabled").checked = !!h.nudge_enabled;
   $("#hf-nudge-lead").value = h.nudge_lead_min || 20;
   $("#hf-nudge-alts").value = h.nudge_alternatives || "";
@@ -1799,12 +1888,42 @@ function bindEvents() {
     }
   });
 
-  // Habit cards click delegation (actions + multi-toggle focus clusters) & hover glow
-  const handleCardAreaClick = (e) => {
+  // Habit cards click delegation (actions + active-start adjust + multi-toggle focus clusters) & hover glow
+  const handleCardAreaClick = async (e) => {
+    const activeChip = e.target.closest(".active-chip[data-active-id]");
+    if (activeChip) {
+      e.stopPropagation();
+      const id = activeChip.dataset.activeId;
+      const h = state.habits.find((x) => x.id === id);
+      if (!h || !h.active_since) return;
+      const curHHMM = String(h.active_since).slice(11, 16);
+      const ans = prompt(t("session_edit_start_prompt", { name: h.name }), curHHMM);
+      if (ans === null) return;
+      const trimmed = ans.trim();
+      try {
+        if (trimmed === "") {
+          await api(`/api/habits/${encodeURIComponent(id)}/toggle-active`, { method: "POST", body: JSON.stringify({ cancel: true }) });
+          toast(t("session_cancelled", { name: h.name }));
+        } else if (/^\d{1,2}:\d{2}$/.test(trimmed)) {
+          const [hh, mm] = trimmed.split(":").map((x) => x.padStart(2, "0"));
+          const dayPrefix = String(h.active_since).slice(0, 10) || localDateISO(new Date());
+          await api(`/api/habits/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ active_since: `${dayPrefix}T${hh}:${mm}:00` }),
+          });
+          toast(t("time_updated", { v: `${hh}:${mm}` }));
+        }
+        await loadToday();
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+      return;
+    }
     const btn = e.target.closest("button[data-act]");
     if (btn) {
       const id = btn.dataset.id;
       if (btn.dataset.act === "tap") quickTap(id);
+      if (btn.dataset.act === "toggle-active") toggleHabitActive(id);
       if (btn.dataset.act === "custom") openCustomLog(id);
       if (btn.dataset.act === "edit") {
         setTab("setup");
@@ -2468,6 +2587,7 @@ function bindEvents() {
     e.preventDefault();
     const id = $("#hf-id").value;
     const rawT = $("#hf-target").value.trim();
+    const rawB = $("#hf-block-min").value.trim();
     const payload = {
       name: $("#hf-name").value.trim(),
       kind: $("#hf-kind").value,
@@ -2476,6 +2596,8 @@ function bindEvents() {
       clear_target: rawT === "",
       unit: $("#hf-unit").value.trim() || "x",
       color: $("#hf-color").value,
+      block_minutes: rawB !== "" ? Number(rawB) : null,
+      clear_block_minutes: rawB === "",
       nudge_enabled: $("#hf-nudge-enabled").checked,
       nudge_lead_min: Number($("#hf-nudge-lead").value || 20),
       nudge_alternatives: $("#hf-nudge-alts").value.trim(),
@@ -2488,6 +2610,7 @@ function bindEvents() {
         toast(t("habit_updated", { name: payload.name }));
       } else {
         delete payload.clear_target;
+        delete payload.clear_block_minutes;
         await api("/api/habits", { method: "POST", body: JSON.stringify(payload) });
         toast(t("habit_created", { name: payload.name }));
       }
@@ -2869,10 +2992,14 @@ function bindEvents() {
     }
   });
 
+  setInterval(refreshActiveSessionBadges, 30 * 1000);
   if (isStandaloneBrowserMode()) {
     setInterval(evaluateBrowserNudges, 60 * 1000);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") evaluateBrowserNudges();
+      if (document.visibilityState === "visible") {
+        refreshActiveSessionBadges();
+        evaluateBrowserNudges();
+      }
     });
   }
 

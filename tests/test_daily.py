@@ -402,13 +402,13 @@ class TestDailyCore(unittest.TestCase):
         csv_text = client.get("/api/export/features.csv").text
         self.assertIn("state__mental-fit", csv_text)
 
-        # Fixed anchor reminder test: Tuesday 2026-11-24 (weekday=1) at 13:00 fires Kochen; 18:00 fires Wäsche;
-        # Wednesday 2026-11-25 (weekday=2) at 18:00 does NOT fire Wäsche!
+        # Fixed anchor reminder test: future unlogged Tuesday 2030-01-08 (weekday=1) at 13:00 fires Kochen;
+        # 18:00 fires Wäsche; Wednesday 2030-01-09 (weekday=2) at 18:00 does NOT fire Wäsche!
         sched = NudgeScheduler(self.db)
         with patch("daily.nudges.send_desktop_notification", return_value=True):
-            tue_13 = sched.evaluate_once(now=datetime(2026, 11, 24, 13, 0, 0))
-            tue_18 = sched.evaluate_once(now=datetime(2026, 11, 24, 18, 0, 0))
-            wed_18 = sched.evaluate_once(now=datetime(2026, 11, 25, 18, 0, 0))
+            tue_13 = sched.evaluate_once(now=datetime(2030, 1, 8, 13, 0, 0))
+            tue_18 = sched.evaluate_once(now=datetime(2030, 1, 8, 18, 0, 0))
+            wed_18 = sched.evaluate_once(now=datetime(2030, 1, 9, 18, 0, 0))
 
         self.assertTrue(any(f["type"] == "fixed_anchor" and f["habit_id"] == kochen["id"] for f in tue_13))
         self.assertTrue(any(f["type"] == "fixed_anchor" and f["habit_id"] == waesche["id"] for f in tue_18))
@@ -631,18 +631,18 @@ class TestDailyCore(unittest.TestCase):
         # 3. Quiet +45m anchor follow-up: fires when unlogged, silent once logged or disabled!
         sched = NudgeScheduler(self.db)
         with patch("daily.nudges.send_desktop_notification", return_value=True):
-            # 2026-11-26 13:45 -> Kochen anchor 13:00 unlogged -> follow-up fires!
-            f_unlogged = sched.evaluate_once(now=datetime(2026, 11, 26, 13, 45, 0))
+            # Future unlogged day 2030-01-10 13:45 -> Kochen anchor 13:00 unlogged -> follow-up fires!
+            f_unlogged = sched.evaluate_once(now=datetime(2030, 1, 10, 13, 45, 0))
             self.assertTrue(any(f["type"] == "anchor_followup" and f["habit_id"] == kochen["id"] for f in f_unlogged))
 
-            # 2026-11-27 -> Kochen logged at 13:10 -> 13:45 stays completely silent!
-            client.post("/api/events", json={"habit_id": kochen["id"], "amount": 1, "occurred_at": "2026-11-27T13:10:00"})
-            f_logged = sched.evaluate_once(now=datetime(2026, 11, 27, 13, 45, 0))
+            # 2030-01-11 -> Kochen logged at 13:10 -> 13:45 stays completely silent!
+            client.post("/api/events", json={"habit_id": kochen["id"], "amount": 1, "occurred_at": "2030-01-11T13:10:00"})
+            f_logged = sched.evaluate_once(now=datetime(2030, 1, 11, 13, 45, 0))
             self.assertFalse(any(f["type"] == "anchor_followup" and f["habit_id"] == kochen["id"] for f in f_logged))
 
             # Turn off followup_enabled -> silent even when unlogged!
             client.patch("/api/settings", json={"followup_enabled": 0})
-            f_disabled = sched.evaluate_once(now=datetime(2026, 11, 28, 13, 45, 0))
+            f_disabled = sched.evaluate_once(now=datetime(2030, 1, 12, 13, 45, 0))
             self.assertFalse(any(f["type"] == "anchor_followup" for f in f_disabled))
 
     def test_note_hashtags_extracted_for_tabpfn_and_csv(self) -> None:
@@ -682,6 +682,61 @@ class TestDailyCore(unittest.TestCase):
         )
         self.assertEqual(ai["status"], "ready")
         self.assertTrue(any(c["id"] == "stimmung" and c["rated_count"] == 6 for c in ai["state_curves"]))
+
+    def test_active_session_toggle_half_block_rounding_and_e2ee_sync(self) -> None:
+        from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
+
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        coding = client.post(
+            "/api/habits",
+            json={"name": "Coding", "kind": "min", "target": 4, "unit": "blocks", "block_minutes": 30},
+        ).json()
+        self.assertEqual(coding["block_minutes"], 30)
+        self.assertIsNone(coding["active_since"])
+
+        # Start session at 09:00 -> active_since set
+        r_start = client.post(
+            f"/api/habits/{coding['id']}/toggle-active",
+            json={"now_at": "2026-11-26T09:00:00"},
+        ).json()
+        self.assertTrue(r_start["active"])
+        self.assertEqual(r_start["active_since"], "2026-11-26T09:00:00")
+
+        # Verify E2EE export & merge into second DB preserves block_minutes & active_since!
+        vault_state = export_local_state_for_vault(self.db)
+        other_db = Path(self.tmp.name) / "phone_mirror.db"
+        init_db(other_db)
+        merge_remote_state_into_db(vault_state, db_path=other_db)
+        mirrored = next(h for h in list_habits(db_path=other_db) if h["id"] == coding["id"])
+        self.assertEqual(mirrored["block_minutes"], 30)
+        self.assertEqual(mirrored["active_since"], "2026-11-26T09:00:00")
+
+        # Stop after 45 min -> 45/30 = 1.5 blocks logged with window_minutes=45
+        r_stop = client.post(
+            f"/api/habits/{coding['id']}/toggle-active",
+            json={"now_at": "2026-11-26T09:45:00"},
+        ).json()
+        self.assertFalse(r_stop["active"])
+        self.assertTrue(r_stop["logged"])
+        self.assertEqual(r_stop["amount"], 1.5)
+        self.assertEqual(r_stop["elapsed_minutes"], 45)
+        self.assertEqual(r_stop["event"]["window_minutes"], 45)
+
+        # Start again & stop with override_minutes=70 -> 70/30 = 2.33 -> rounds to 2.5
+        client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T10:00:00"})
+        r_ov = client.post(
+            f"/api/habits/{coding['id']}/toggle-active",
+            json={"now_at": "2026-11-26T23:55:00", "override_minutes": 70},
+        ).json()
+        self.assertEqual(r_ov["amount"], 2.5)
+
+        # Start again & cancel -> stops cleanly with zero event logged!
+        client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T12:00:00"})
+        r_can = client.post(f"/api/habits/{coding['id']}/toggle-active", json={"cancel": True}).json()
+        self.assertFalse(r_can["active"])
+        self.assertFalse(r_can["logged"])
 
 
 if __name__ == "__main__":

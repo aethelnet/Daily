@@ -72,6 +72,7 @@ class HabitCreate(BaseModel):
     nudge_alternatives: str = ""
     reminder_time: str = ""
     reminder_days: str = "0,1,2,3,4,5,6"
+    block_minutes: int | None = None
 
 
 class HabitUpdate(BaseModel):
@@ -87,8 +88,17 @@ class HabitUpdate(BaseModel):
     nudge_alternatives: str | None = None
     reminder_time: str | None = None
     reminder_days: str | None = None
+    block_minutes: int | None = None
+    clear_block_minutes: bool = False
+    active_since: str | None = None
     sort_order: int | None = None
     archived: bool | None = None
+
+
+class HabitToggleActive(BaseModel):
+    override_minutes: float | None = None
+    cancel: bool = False
+    now_at: str | None = None
 
 
 class StateDimensionCreate(BaseModel):
@@ -300,6 +310,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 nudge_alternatives=payload.nudge_alternatives,
                 reminder_time=payload.reminder_time,
                 reminder_days=payload.reminder_days,
+                block_minutes=payload.block_minutes,
                 db_path=resolved_db,
             )
         except Exception as exc:
@@ -311,12 +322,67 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         clear_target = raw.pop("clear_target", False)
         if clear_target:
             raw["target"] = None
+        clear_block = raw.pop("clear_block_minutes", False)
+        if clear_block:
+            raw["block_minutes"] = None
         try:
             return update_habit(habit_id, raw, db_path=resolved_db)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/habits/{habit_id}/toggle-active")
+    def api_toggle_habit_active(habit_id: str, payload: HabitToggleActive | None = None) -> dict[str, Any]:
+        from datetime import datetime
+        from .db import now_iso
+
+        p = payload or HabitToggleActive()
+        habits = {h["id"]: h for h in list_habits(include_archived=True, db_path=resolved_db)}
+        h = habits.get(habit_id)
+        if not h:
+            raise HTTPException(status_code=404, detail="Habit not found")
+
+        now_str = (p.now_at or now_iso())[:19]
+        cur_since = (h.get("active_since") or "").strip()
+        if not cur_since:
+            updated = update_habit(habit_id, {"active_since": now_str}, db_path=resolved_db)
+            return {"active": True, "active_since": now_str, "habit": updated}
+
+        # Stopping active session
+        updated = update_habit(habit_id, {"active_since": None}, db_path=resolved_db)
+        if p.cancel:
+            return {"active": False, "logged": False, "habit": updated}
+
+        if p.override_minutes is not None:
+            elapsed_min = max(1.0, float(p.override_minutes))
+        else:
+            try:
+                dt_start = datetime.fromisoformat(cur_since)
+                dt_end = datetime.fromisoformat(now_str)
+                elapsed_min = max(1.0, (dt_end - dt_start).total_seconds() / 60.0)
+            except Exception:
+                elapsed_min = float(h.get("block_minutes") or 30)
+
+        block_m = max(1, int(h.get("block_minutes") or 30))
+        amount = max(0.5, round((elapsed_min / block_m) * 2.0) / 2.0)
+        ev = log_event(
+            habit_id=habit_id,
+            amount=amount,
+            occurred_at=now_str,
+            window_minutes=int(round(elapsed_min)),
+            source="tap",
+            note="",
+            db_path=resolved_db,
+        )
+        return {
+            "active": False,
+            "logged": True,
+            "elapsed_minutes": int(round(elapsed_min)),
+            "amount": amount,
+            "event": ev,
+            "habit": updated,
+        }
 
     @app.post("/api/habits/reorder")
     def api_reorder_habits(payload: HabitReorder) -> dict[str, Any]:

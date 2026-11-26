@@ -129,6 +129,10 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
             conn.execute("ALTER TABLE habits ADD COLUMN reminder_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6'")
         if "target_period" not in hab_cols:
             conn.execute("ALTER TABLE habits ADD COLUMN target_period TEXT NOT NULL DEFAULT 'day'")
+        if "block_minutes" not in hab_cols:
+            conn.execute("ALTER TABLE habits ADD COLUMN block_minutes INTEGER")
+        if "active_since" not in hab_cols:
+            conn.execute("ALTER TABLE habits ADD COLUMN active_since TEXT")
         conn.execute("UPDATE habits SET updated_at = created_at WHERE updated_at IS NULL")
 
         edge_cols = {r[1] for r in conn.execute("PRAGMA table_info(habit_edges)").fetchall()}
@@ -300,6 +304,7 @@ def create_habit(
     nudge_alternatives: str = "",
     reminder_time: str = "",
     reminder_days: str = "0,1,2,3,4,5,6",
+    block_minutes: int | None = None,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
     clean_name = name.strip()
@@ -312,6 +317,7 @@ def create_habit(
         raise ValueError(f"Invalid target_period: {clean_period}")
     clean_rtime = _normalize_reminder_times(reminder_time)
     clean_rdays = _normalize_reminder_days(reminder_days)
+    clean_block = max(1, min(720, int(block_minutes))) if block_minutes is not None and int(block_minutes) > 0 else None
     base_id = slugify(clean_name)
     with get_conn(db_path) as conn:
         hid = base_id
@@ -323,8 +329,8 @@ def create_habit(
         ts_now = now_iso()
         conn.execute(
             """
-            INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, sort_order, archived, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, block_minutes, active_since, sort_order, archived, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)
             """,
             (
                 hid,
@@ -339,6 +345,7 @@ def create_habit(
                 nudge_alternatives.strip(),
                 clean_rtime,
                 clean_rdays,
+                clean_block,
                 int(max_order) + 1,
                 ts_now,
                 ts_now,
@@ -361,6 +368,8 @@ def update_habit(habit_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_
         "nudge_alternatives",
         "reminder_time",
         "reminder_days",
+        "block_minutes",
+        "active_since",
         "sort_order",
         "archived",
     }
@@ -383,6 +392,10 @@ def update_habit(habit_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_
             v = 1 if bool(v) else 0
         if k == "nudge_lead_min":
             v = max(5, min(180, int(v)))
+        if k == "block_minutes":
+            v = max(1, min(720, int(v))) if v is not None and int(v) > 0 else None
+        if k == "active_since":
+            v = str(v).strip() or None if v is not None else None
         if k == "reminder_time":
             v = _normalize_reminder_times(str(v or ""))
         if k == "reminder_days":

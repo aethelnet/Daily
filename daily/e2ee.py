@@ -213,8 +213,8 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                     continue
                 conn.execute(
                     """
-                    INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, sort_order, archived, created_at, updated_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, block_minutes, active_since, sort_order, archived, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         hid,
@@ -229,6 +229,8 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                         rh.get("nudge_alternatives", ""),
                         rh.get("reminder_time", ""),
                         rh.get("reminder_days", "0,1,2,3,4,5,6"),
+                        int(rh["block_minutes"]) if rh.get("block_minutes") else None,
+                        rh.get("active_since") or None,
                         int(rh.get("sort_order") or 0),
                         1 if rh.get("archived") else 0,
                         rh.get("created_at") or ts_now,
@@ -244,7 +246,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                         """
                         UPDATE habits SET name=?, kind=?, target=?, target_period=?, unit=?, color=?, nudge_enabled=?,
                             nudge_lead_min=?, nudge_alternatives=?, reminder_time=?, reminder_days=?,
-                            sort_order=?, archived=?, updated_at=?
+                            block_minutes=?, active_since=?, sort_order=?, archived=?, updated_at=?
                         WHERE id = ?
                         """,
                         (
@@ -259,6 +261,8 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                             rh.get("nudge_alternatives", ""),
                             rh.get("reminder_time", ""),
                             rh.get("reminder_days", "0,1,2,3,4,5,6"),
+                            int(rh["block_minutes"]) if rh.get("block_minutes") else None,
+                            rh.get("active_since") or None,
                             int(rh.get("sort_order") or 0),
                             1 if rh.get("archived") else 0,
                             r_upd,
