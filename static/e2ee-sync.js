@@ -213,7 +213,7 @@
         const copy = { ...rev, id: maxId++ };
         out.events.push(copy);
         evByUuid[cu] = copy;
-      } else if (rUpd > (lev.updated_at || lev.created_at || "")) {
+      } else if (rUpd > (lev.updated_at || lev.created_at || "") || (rUpd === (lev.updated_at || lev.created_at || "") && rev.deleted_at && !lev.deleted_at)) {
         Object.assign(lev, { ...rev, id: lev.id });
       }
     }
@@ -233,7 +233,7 @@
         const copy = { ...rsn, id: maxId++ };
         out.snapshots.push(copy);
         snByUuid[cu] = copy;
-      } else if (rUpd > (lsn.updated_at || lsn.created_at || "")) {
+      } else if (rUpd > (lsn.updated_at || lsn.created_at || "") || (rUpd === (lsn.updated_at || lsn.created_at || "") && rsn.deleted_at && !lsn.deleted_at)) {
         Object.assign(lsn, { ...rsn, id: lsn.id });
       }
     }
