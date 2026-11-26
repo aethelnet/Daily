@@ -59,25 +59,30 @@
     return out;
   }
 
-  function computeTagStats(db, limit = 24) {
+  function computeTagStats(db, limit = 24, daysWindow = 60) {
+    const cutoff = daysWindow > 0 ? shiftDayStr(todayStr(), -(daysWindow - 1)) : "";
     const byDay = {};
+    const lastSeen = {};
     for (const obj of [...(db.events || []), ...(db.snapshots || [])]) {
       if (obj.deleted_at || !obj.note) continue;
       const tags = extractNoteTags(obj.note);
       if (!tags.size) continue;
       const d = String(obj.occurred_at || "").slice(0, 10);
-      if (d.length !== 10) continue;
+      if (d.length !== 10 || (cutoff && d < cutoff)) continue;
       byDay[d] ||= new Set();
-      tags.forEach((t) => byDay[d].add(t));
+      tags.forEach((t) => {
+        byDay[d].add(t);
+        if (!lastSeen[t] || d > lastSeen[t]) lastSeen[t] = d;
+      });
     }
     const counts = {};
     for (const set of Object.values(byDay)) {
       for (const t of set) counts[t] = (counts[t] || 0) + 1;
     }
     return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .sort((a, b) => b[1] - a[1] || (lastSeen[b[0]] || "").localeCompare(lastSeen[a[0]] || "") || a[0].localeCompare(b[0]))
       .slice(0, limit)
-      .map(([tag, days]) => ({ tag, days, ai_active: days >= 2 }));
+      .map(([tag, days]) => ({ tag, days, ai_active: days >= 2, last_day: lastSeen[tag] || "" }));
   }
 
   function loadDB() {

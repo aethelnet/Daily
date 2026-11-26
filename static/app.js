@@ -612,7 +612,7 @@ function renderTagSuggestChips(containerSel, inputSel) {
   box.classList.remove("hidden");
   const curVal = inp.value || "";
   box.innerHTML = tags
-    .slice(0, 14)
+    .slice(0, 8)
     .map((tg) => {
       const sel = noteHasTag(curVal, tg.tag);
       const tip = tg.ai_active
@@ -767,7 +767,7 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
     const causeChip = causeTxt ? `<span class="chip">← ${esc(causeTxt)}</span>` : "";
     return `
     <div class="ev-row snap-row">
-      <span class="ev-dot" style="background:#7c3aed"></span>
+      <span class="ev-dot" style="background:var(--ai)"></span>
       <span class="mono muted sm-text">${hhmm}</span>
       <strong>${esc(t("btn_mood"))}</strong>
       <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
@@ -1762,11 +1762,11 @@ function renderStateCurveSection(curves, timelineMeta) {
     drawContinuousSeries(tl.ode, {
       id: "ode",
       label: "ODE",
-      stroke: "#0d9488",
+      stroke: "#368470",
       width: 2.1,
       dash: "",
       pastOpacity: 0.95,
-      pastFill: "rgba(13, 148, 136, 0.08)",
+      pastFill: "rgba(54, 132, 112, 0.08)",
     });
   }
   if (state.showTabpfnLine) {
@@ -3160,8 +3160,10 @@ function bindEvents() {
       toast(t("err_prefix", { msg: err.message }));
     }
   };
-  $("#nudge-mode-switch").addEventListener("click", handleModeSwitch);
-  $("#global-mode-switch").addEventListener("click", handleModeSwitch);
+  const nudgeSwitch = $("#nudge-mode-switch");
+  if (nudgeSwitch) nudgeSwitch.addEventListener("click", handleModeSwitch);
+  const globalSwitch = $("#global-mode-switch");
+  if (globalSwitch) globalSwitch.addEventListener("click", handleModeSwitch);
 
   $("#state-axis-pills").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-scurve]");

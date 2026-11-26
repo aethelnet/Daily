@@ -23,9 +23,12 @@ def compute_note_tag_stats(
     events: list[dict[str, Any]],
     snapshots: list[dict[str, Any]] | None = None,
     limit: int = 24,
+    days_window: int = 60,
 ) -> list[dict[str, Any]]:
-    """Count distinct local days per #tag across live events and snapshots (ai_active >= 2 days)."""
+    """Count distinct local days per #tag within a rolling recency window (old abandoned tags fade out naturally)."""
+    cutoff = (date.today() - timedelta(days=max(1, days_window) - 1)).isoformat() if days_window > 0 else ""
     by_day: dict[str, set[str]] = defaultdict(set)
+    last_seen: dict[str, str] = {}
     for obj in (*events, *(snapshots or [])):
         if obj.get("deleted_at") or not obj.get("note"):
             continue
@@ -33,11 +36,23 @@ def compute_note_tag_stats(
         if not tags:
             continue
         day_iso = str(obj.get("occurred_at") or "")[:10]
-        if len(day_iso) == 10:
-            by_day[day_iso].update(tags)
+        if len(day_iso) != 10 or (cutoff and day_iso < cutoff):
+            continue
+        by_day[day_iso].update(tags)
+        for tg in tags:
+            if day_iso > last_seen.get(tg, ""):
+                last_seen[tg] = day_iso
     counts = Counter(t for tags in by_day.values() for t in tags)
-    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
-    return [{"tag": t, "days": int(c), "ai_active": c >= 2} for t, c in ordered]
+    # Prefer frequency first, then most recently used, then alphabetical
+    ordered = sorted(
+        counts.items(),
+        key=lambda kv: (
+            -kv[1],
+            "" if not last_seen.get(kv[0]) else "".join(chr(255 - ord(c)) for c in last_seen[kv[0]]),
+            kv[0],
+        ),
+    )
+    return [{"tag": t, "days": int(c), "ai_active": c >= 2, "last_day": last_seen.get(t, "")} for t, c in ordered[:limit]]
 
 from .db import (
     DEFAULT_DB_PATH,
