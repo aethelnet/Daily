@@ -36,6 +36,9 @@ const state = {
   stateZoom: localStorage.getItem("daily_state_zoom") || "d14",
   showTabpfnLine: localStorage.getItem("daily_show_tabpfn") !== "0",
   showOdeLine: localStorage.getItem("daily_show_ode") !== "0",
+  showRhythmObs: localStorage.getItem("daily_rhythm_show_obs") !== "0",
+  showRhythmAi: localStorage.getItem("daily_rhythm_show_ai") !== "0",
+  lastRhythmsData: null,
   retroWindowMin: 180,
   retroAmounts: {},
   moodRatings: {},
@@ -1978,6 +1981,92 @@ async function loadWeekMatrix(endDay) {
   }
 }
 
+function renderRhythmsPanel() {
+  $$("#rhythm-legend [data-rline]").forEach((b) => {
+    const on = b.dataset.rline === "obs" ? state.showRhythmObs : state.showRhythmAi;
+    b.classList.toggle("active", on);
+  });
+  const rl = $("#rhythm-list");
+  if (!rl) return;
+  const data = state.lastRhythmsData;
+  const rhythms = (data && data.rhythms) || [];
+  const tomorrowMap = (data && data.tomorrowMap) || {};
+  if (!rhythms.length) {
+    rl.innerHTML = `<div class="muted sm-text">${esc(t("an_no_entries"))}</div>`;
+    return;
+  }
+  const nowHour = new Date().getHours();
+  rl.innerHTML = rhythms
+    .map((r) => {
+      const mx = Math.max(1, ...r.hours);
+      const tm = tomorrowMap[r.habit_id] || {};
+      const isMax = r.kind === "max";
+      const obsHours = Array.isArray(r.peak_hours) && r.peak_hours.length ? r.peak_hours : r.peak_hour != null ? [r.peak_hour] : [];
+      const obsTimes = Array.isArray(r.peak_times) && r.peak_times.length ? r.peak_times : r.peak_time ? [r.peak_time] : [];
+      const obsTimeByHr = {};
+      obsHours.forEach((hr, i) => { obsTimeByHr[hr] = obsTimes[i] || `${String(hr).padStart(2, "0")}:00`; });
+
+      const aiPeaks =
+        Array.isArray(tm.ai_peaks) && tm.ai_peaks.length
+          ? tm.ai_peaks
+          : tm.ai_peak_hour != null
+          ? [{ hour: tm.ai_peak_hour, time: tm.ai_peak_time || `${String(tm.ai_peak_hour).padStart(2, "0")}:00`, prob: (tm.ai_hours && tm.ai_hours[tm.ai_peak_hour]) || 0.5, pct: tm.ai_peak_pct || 50 }]
+          : [];
+      const aiPeakByHr = {};
+      aiPeaks.forEach((pk) => { aiPeakByHr[pk.hour] = pk; });
+      const aiMaxP = tm.ai_hours ? Math.max(0.05, ...tm.ai_hours) : 1;
+
+      const markers = Array.from({ length: 24 }, (_, hr) => {
+        const parts = [];
+        if (state.showRhythmObs && obsTimeByHr[hr]) {
+          parts.push(`<span class="dot-obs" style="background:${esc(r.color)}" title="${esc(t("leg_obs_peak"))} ~${obsTimeByHr[hr]}"></span>`);
+        }
+        if (state.showRhythmAi && aiPeakByHr[hr]) {
+          const pk = aiPeakByHr[hr];
+          const op = Math.max(0.24, Math.min(1, 0.16 + 0.92 * Number(pk.prob || 0.3))).toFixed(2);
+          parts.push(`<span class="dot-ai ${isMax ? "kind-max" : ""}" style="opacity:${op}" title="${esc(t("leg_ai_tom"))} ~${pk.time} (${pk.pct}%)"></span>`);
+        }
+        return `<div class="marker-slot">${parts.join("")}</div>`;
+      }).join("");
+
+      const bars = r.hours
+        .map((cnt, hr) => {
+          const pct = cnt > 0 ? Math.max(14, Math.round((cnt / mx) * 100)) : 0;
+          const bg = cnt > 0 ? r.color : "var(--surface-2)";
+          const aiPk = state.showRhythmAi ? aiPeakByHr[hr] : null;
+          const aiCls = aiPk ? `is-ai-peak ${isMax ? "kind-max" : ""}` : "";
+          const pTomorrow = tm.ai_hours ? tm.ai_hours[hr] || 0 : 0;
+          const haloPct = state.showRhythmAi && tm.ai_hours && pTomorrow > 0.08 ? Math.min(100, Math.round((pTomorrow / aiMaxP) * 92)) : 0;
+          const haloOp = Math.max(0.25, Math.min(1, 0.2 + pTomorrow)).toFixed(2);
+          const aiTip = tm.ai_hours ? ` · ${t("leg_ai_tom")}: ${Math.round(pTomorrow * 100)}%` : "";
+          const nowCls = hr === nowHour ? "is-now-hr" : "";
+          return `
+            <div class="spark-col ${nowCls}" title="${String(hr).padStart(2, "0")}:00 → ${cnt}×${aiTip}">
+              ${haloPct ? `<div class="spark-ai-halo ${isMax ? "kind-max" : ""}" style="height:${haloPct}%;opacity:${haloOp}"></div>` : ""}
+              <div class="spark-bar ${aiCls}" style="height:${pct || 6}%;background:${bg};opacity:${cnt ? 0.92 : 0.35}"></div>
+            </div>`;
+        })
+        .join("");
+
+      const metaParts = [];
+      if (state.showRhythmObs && obsTimes.length) metaParts.push(`${t("an_obs_short")} ~${obsTimes.join(", ")}`);
+      if (state.showRhythmAi && aiPeaks.length) metaParts.push(`${t("leg_ai_tom")} ~${aiPeaks.map((p) => p.time).join(", ")}`);
+      const meta = metaParts.join(" · ") || "—";
+
+      return `
+      <div class="rhythm-item">
+        <div class="rhythm-head">
+          <strong>${esc(r.habit_name)}</strong>
+          <span class="mono muted">${esc(meta)}</span>
+        </div>
+        <div class="spark-markers">${markers}</div>
+        <div class="spark24">${bars}</div>
+        <div class="spark-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+      </div>`;
+    })
+    .join("");
+}
+
 async function loadAnalysis() {
   const board = await api("/api/analysis?days=30");
   const ai = board.ai || {};
@@ -1990,63 +2079,9 @@ async function loadAnalysis() {
     renderWeekMatrix(board.last7_dates || [], board.week_matrix || [], null);
   }
 
-  // 2. 24h Rhythm + Tomorrow markers + subtle AI probability halo behind bars
-  const rl = $("#rhythm-list");
-  const tomorrowMap = ai.tomorrow || {};
-  if (!board.rhythms.length) {
-    rl.innerHTML = `<div class="muted sm-text">${esc(t("an_no_entries"))}</div>`;
-  } else {
-    rl.innerHTML = board.rhythms
-      .map((r) => {
-        const mx = Math.max(1, ...r.hours);
-        const tm = tomorrowMap[r.habit_id] || {};
-        const obsHr = r.peak_hour;
-        const aiHr = tm.ai_peak_hour != null ? tm.ai_peak_hour : null;
-        const aiMaxP = tm.ai_hours ? Math.max(0.05, ...tm.ai_hours) : 1;
-
-        const markers = Array.from({ length: 24 }, (_, hr) => {
-          const isObs = obsHr === hr;
-          const isAi = aiHr === hr;
-          const parts = [];
-          if (isObs) parts.push(`<span class="dot-obs" style="background:${esc(r.color)}" title="${esc(t("leg_obs_peak"))} ~${r.peak_time}"></span>`);
-          if (isAi) parts.push(`<span class="dot-ai" title="${esc(t("leg_ai_tom"))} ~${tm.ai_peak_time}"></span>`);
-          return `<div class="marker-slot">${parts.join("")}</div>`;
-        }).join("");
-
-        const bars = r.hours
-          .map((cnt, hr) => {
-            const pct = cnt > 0 ? Math.max(14, Math.round((cnt / mx) * 100)) : 0;
-            const bg = cnt > 0 ? r.color : "var(--surface-2)";
-            const aiCls = aiHr === hr ? "is-ai-peak" : "";
-            const pTomorrow = tm.ai_hours ? tm.ai_hours[hr] || 0 : 0;
-            const haloPct = tm.ai_hours && pTomorrow > 0.08 ? Math.min(100, Math.round((pTomorrow / aiMaxP) * 92)) : 0;
-            const aiTip = tm.ai_hours ? ` · ${t("leg_ai_tom")}: ${Math.round(pTomorrow * 100)}%` : "";
-            return `
-              <div class="spark-col" title="${String(hr).padStart(2, "0")}:00 → ${cnt}×${aiTip}">
-                ${haloPct ? `<div class="spark-ai-halo" style="height:${haloPct}%"></div>` : ""}
-                <div class="spark-bar ${aiCls}" style="height:${pct || 6}%;background:${bg};opacity:${cnt ? 0.92 : 0.35}"></div>
-              </div>`;
-          })
-          .join("");
-
-        const metaParts = [];
-        if (r.peak_time) metaParts.push(`${t("an_obs_short")} ~${r.peak_time}`);
-        if (tm.ai_peak_time) metaParts.push(`${t("leg_ai_tom")} ~${tm.ai_peak_time}`);
-        const meta = metaParts.join(" · ") || "—";
-
-        return `
-        <div class="rhythm-item">
-          <div class="rhythm-head">
-            <strong>${esc(r.habit_name)}</strong>
-            <span class="mono muted">${esc(meta)}</span>
-          </div>
-          <div class="spark-markers">${markers}</div>
-          <div class="spark24">${bars}</div>
-          <div class="spark-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-        </div>`;
-      })
-      .join("");
-  }
+  // 2. 24h Rhythm + Multi-Peak Tomorrow markers (confidence-scaled opacity + calm terracotta for Less/Weniger)
+  state.lastRhythmsData = { rhythms: board.rhythms || [], tomorrowMap: ai.tomorrow || {} };
+  renderRhythmsPanel();
 
   // 3. AI Prediction vs Actual (visible error right from Day 1!)
   const calBox = $("#ai-calibration-list");
@@ -3229,6 +3264,23 @@ function bindEvents() {
   if (nudgeSwitch) nudgeSwitch.addEventListener("click", handleModeSwitch);
   const globalSwitch = $("#global-mode-switch");
   if (globalSwitch) globalSwitch.addEventListener("click", handleModeSwitch);
+
+  // Toggleable 24h Rhythm legend (Ist-Peaks / Prognose morgen — same calm grammar as Befinden legend)
+  const rhythmLegend = $("#rhythm-legend");
+  if (rhythmLegend) {
+    rhythmLegend.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-rline]");
+      if (!btn) return;
+      if (btn.dataset.rline === "obs") {
+        state.showRhythmObs = !state.showRhythmObs;
+        localStorage.setItem("daily_rhythm_show_obs", state.showRhythmObs ? "1" : "0");
+      } else if (btn.dataset.rline === "ai") {
+        state.showRhythmAi = !state.showRhythmAi;
+        localStorage.setItem("daily_rhythm_show_ai", state.showRhythmAi ? "1" : "0");
+      }
+      renderRhythmsPanel();
+    });
+  }
 
   // 7-day matrix week-by-week paging
   $("#btn-matrix-prev").addEventListener("click", () => {

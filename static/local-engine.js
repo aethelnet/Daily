@@ -394,7 +394,29 @@
       }),
     }));
 
-    // 24h Rhythms + local browser tomorrow forecast
+    // 24h Rhythms + local browser tomorrow forecast (multi-modal peaks: up to 3, >= 3h apart)
+    const extractPeaks24 = (scores, rawVals = null, minSep = 3, relThresh = 0.52, minAbs = 0.14, maxPeaks = 3) => {
+      const top = Math.max(...scores);
+      if (top < minAbs) return [];
+      const cut = Math.max(minAbs, top * relThresh);
+      const cands = [];
+      for (let hr = 0; hr < 24; hr++) {
+        if (rawVals && rawVals[hr] <= 0) continue;
+        const v = scores[hr];
+        if (v < cut) continue;
+        const pv = scores[(hr + 23) % 24], nv = scores[(hr + 1) % 24];
+        if (v >= pv && v >= nv && (v > pv || v > nv || v === top)) cands.push([v, hr]);
+      }
+      cands.sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+      const picked = [];
+      for (const [, hr] of cands) {
+        if (picked.every((p) => Math.min((hr - p + 24) % 24, (p - hr + 24) % 24) >= minSep)) {
+          picked.push(hr);
+          if (picked.length >= maxPeaks) break;
+        }
+      }
+      return picked.sort((a, b) => a - b);
+    };
     const rhythms = [];
     const tomorrow = {};
     for (const h of activeHabits) {
@@ -409,19 +431,30 @@
         }
       }
       const total = hist.reduce((a, b) => a + b, 0);
+      const pad = (n) => String(n).padStart(2, "0");
       let peakHr = null;
       let peakMin = 0;
+      let peakHours = [];
+      let peakTimes = [];
       if (total >= 1) {
-        let best = -1;
-        for (let hr = 0; hr < 24; hr++) {
-          const s = hist[hr] + 0.35 * hist[(hr + 23) % 24] + 0.35 * hist[(hr + 1) % 24];
-          if (hist[hr] > 0 && s > best) { best = s; peakHr = hr; }
+        const scores = hist.map((_, hr) => hist[hr] + 0.35 * hist[(hr + 23) % 24] + 0.35 * hist[(hr + 1) % 24]);
+        peakHours = extractPeaks24(scores, hist, 3, 0.52, 0.5, 3);
+        if (!peakHours.length) {
+          let best = -1;
+          for (let hr = 0; hr < 24; hr++) {
+            if (hist[hr] > 0 && scores[hr] > best) { best = scores[hr]; peakHours = [hr]; }
+          }
         }
-        if (peakHr != null && minsByHr[peakHr]) {
+        peakHr = peakHours.reduce((best, hr) => (scores[hr] > scores[best] ? hr : best), peakHours[0]);
+        peakTimes = peakHours.map((hr) => {
+          const ms = minsByHr[hr];
+          const mm = ms ? Math.round(ms.reduce((a, b) => a + b, 0) / ms.length) : 0;
+          return `${pad(hr)}:${pad(mm)}`;
+        });
+        if (minsByHr[peakHr]) {
           peakMin = Math.round(minsByHr[peakHr].reduce((a, b) => a + b, 0) / minsByHr[peakHr].length);
         }
       }
-      const pad = (n) => String(n).padStart(2, "0");
       rhythms.push({
         habit_id: h.id,
         habit_name: h.name,
@@ -431,6 +464,8 @@
         hours: hist,
         peak_hour: peakHr,
         peak_time: peakHr != null ? `${pad(peakHr)}:${pad(peakMin)}` : null,
+        peak_hours: peakHours,
+        peak_times: peakTimes,
         nudge_enabled: !!h.nudge_enabled,
       });
 
@@ -439,11 +474,14 @@
       const smMax = Math.max(1, ...smooth);
       const probs = total > 0 ? smooth.map((v) => Math.round((v / (smMax * 1.15)) * 1000) / 1000) : new Array(24).fill(0.05);
       const aiPeak = total > 0 ? probs.indexOf(Math.max(...probs)) : null;
+      const aiPeakHrs = total > 0 ? extractPeaks24(probs, null, 3, 0.58, 0.14, 3) : [];
+      if (aiPeak != null && !aiPeakHrs.length) aiPeakHrs.push(aiPeak);
       tomorrow[h.id] = {
         habit_id: h.id,
         ai_hours: probs,
         ai_peak_hour: aiPeak,
         ai_peak_time: aiPeak != null ? `${pad(aiPeak)}:00` : null,
+        ai_peaks: aiPeakHrs.map((hr) => ({ hour: hr, time: `${pad(hr)}:00`, prob: probs[hr], pct: Math.round(probs[hr] * 100) })),
       };
     }
 

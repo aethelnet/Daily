@@ -793,6 +793,18 @@ class TestDailyCore(unittest.TestCase):
         d24 = next(c for c in c_row["days"] if c["day"] == "2026-11-24")
         self.assertEqual(d24["effective"], 1.0)
 
+        # Multi-modal 24h peak detection: morning (09:00) + evening (20:00) habit yields 2 distinct peaks!
+        for d_off in range(4):
+            d_s = (date.today() - timedelta(days=d_off)).isoformat()
+            client.post("/api/events", json={"habit_id": coding["id"], "amount": 1, "occurred_at": f"{d_s}T09:15:00"})
+            client.post("/api/events", json={"habit_id": coding["id"], "amount": 1, "occurred_at": f"{d_s}T20:10:00"})
+        an_mp = client.get("/api/analysis").json()
+        r_cod = next(r for r in an_mp["rhythms"] if r["habit_id"] == coding["id"])
+        self.assertIn(9, r_cod["peak_hours"])
+        self.assertIn(20, r_cod["peak_hours"])
+        tm_cod = an_mp["ai"]["tomorrow"][coding["id"]]
+        self.assertGreaterEqual(len(tm_cod["ai_peaks"]), 2)
+
     def test_retroactive_edits_and_deletions_clean_tabpfn_liquid_ode_and_e2ee(self) -> None:
         from daily.db import get_conn, list_events
         from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db

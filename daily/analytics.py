@@ -261,11 +261,41 @@ def compute_day_summary(
     }
 
 
+def _extract_circular_peaks(scores: list[float], raw_vals: list[float] | None = None, min_sep: int = 3, rel_thresh: float = 0.52, min_abs: float = 0.18, max_peaks: int = 3) -> list[int]:
+    """Find up to max_peaks circular local maxima on a 24h clock, at least min_sep hours apart."""
+    n = len(scores)
+    if n != 24:
+        return []
+    top = max(scores)
+    if top < min_abs:
+        return []
+    cutoff = max(min_abs, top * rel_thresh)
+    cands: list[tuple[float, int]] = []
+    for hr in range(24):
+        if raw_vals is not None and raw_vals[hr] <= 0:
+            continue
+        v = scores[hr]
+        if v < cutoff:
+            continue
+        prev_v = scores[(hr - 1) % 24]
+        next_v = scores[(hr + 1) % 24]
+        if v >= prev_v and v >= next_v and (v > prev_v or v > next_v or v == top):
+            cands.append((v, hr))
+    cands.sort(key=lambda x: (-x[0], x[1]))
+    picked: list[int] = []
+    for _v, hr in cands:
+        if all(min((hr - p) % 24, (p - hr) % 24) >= min_sep for p in picked):
+            picked.append(hr)
+            if len(picked) >= max_peaks:
+                break
+    return sorted(picked)
+
+
 def compute_hourly_peaks(
     habits: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Compute 24-hour distribution & strongest trigger peak per habit."""
+    """Compute 24-hour distribution & multi-modal trigger peaks (up to 3) per habit."""
     buckets: dict[str, list[int]] = {h["id"]: [0] * 24 for h in habits}
     minute_sums: dict[str, dict[int, list[int]]] = {h["id"]: defaultdict(list) for h in habits}
 
@@ -285,23 +315,28 @@ def compute_hourly_peaks(
         peak_hour = None
         peak_minute = 0
         peak_count = 0
+        peak_hours: list[int] = []
+        peak_times: list[str] = []
         nudge_time_str = None
         if total >= 1:
-            # Smooth 2-hour sliding preference to pick peak hour (active from the very first entry!)
-            best_score = -1.0
-            for hr in range(24):
-                score = hist[hr] + 0.35 * hist[(hr - 1) % 24] + 0.35 * hist[(hr + 1) % 24]
-                if hist[hr] > 0 and score > best_score:
-                    best_score = score
-                    peak_hour = hr
-                    peak_count = hist[hr]
-            if peak_hour is not None:
-                mins = minute_sums[hid][peak_hour]
-                peak_minute = int(round(sum(mins) / len(mins))) if mins else 0
-                lead = int(h.get("nudge_lead_min") or 20)
-                peak_total_min = (peak_hour * 60 + peak_minute - lead) % (24 * 60)
-                nh, nm = divmod(peak_total_min, 60)
-                nudge_time_str = f"{nh:02d}:{nm:02d}"
+            smooth = [hist[hr] + 0.35 * hist[(hr - 1) % 24] + 0.35 * hist[(hr + 1) % 24] for hr in range(24)]
+            peak_hours = _extract_circular_peaks(smooth, raw_vals=[float(x) for x in hist], min_sep=3, rel_thresh=0.52, min_abs=0.5, max_peaks=3)
+            if not peak_hours:
+                best_hr = max((hr for hr in range(24) if hist[hr] > 0), key=lambda hr: smooth[hr])
+                peak_hours = [best_hr]
+            # Primary peak (strongest smoothed bucket) kept for backwards compatibility
+            peak_hour = max(peak_hours, key=lambda hr: smooth[hr])
+            peak_count = hist[peak_hour]
+            for hr in peak_hours:
+                ms = minute_sums[hid][hr]
+                mm = int(round(sum(ms) / len(ms))) if ms else 0
+                peak_times.append(f"{hr:02d}:{mm:02d}")
+            mins = minute_sums[hid][peak_hour]
+            peak_minute = int(round(sum(mins) / len(mins))) if mins else 0
+            lead = int(h.get("nudge_lead_min") or 20)
+            peak_total_min = (peak_hour * 60 + peak_minute - lead) % (24 * 60)
+            nh, nm = divmod(peak_total_min, 60)
+            nudge_time_str = f"{nh:02d}:{nm:02d}"
 
         out[hid] = {
             "habit_id": hid,
@@ -312,6 +347,8 @@ def compute_hourly_peaks(
             "hours": hist,
             "peak_hour": peak_hour,
             "peak_time": f"{peak_hour:02d}:{peak_minute:02d}" if peak_hour is not None else None,
+            "peak_hours": peak_hours,
+            "peak_times": peak_times,
             "peak_count": peak_count,
             "nudge_time": nudge_time_str,
             "nudge_enabled": bool(h.get("nudge_enabled")),

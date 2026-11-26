@@ -513,9 +513,9 @@
         <div class="panel">
           <div class="panel-head">
             <h3 data-i18n="an_rhythm_title">Rhythmus &amp; Morgen (24h)</h3>
-            <span class="legend-inline sm-text">
-              <span class="leg-item"><span class="dot-obs"></span><span data-i18n="leg_obs_peak">Ist-Peak</span></span>
-              <span class="leg-item"><span class="dot-ai"></span><span data-i18n="leg_ai_tom">Prognose morgen</span></span>
+            <span class="legend-inline sm-text" id="rhythm-legend">
+              <button type="button" class="leg-toggle active" data-rline="obs" data-i18n-title="leg_obs_toggle_title" title="Ist-Peaks ein-/ausblenden"><span class="dot-obs"></span><span data-i18n="leg_obs_peak">Ist-Peaks</span></button>
+              <button type="button" class="leg-toggle active" data-rline="ai" data-i18n-title="leg_ai_toggle_title" title="Prognose morgen ein-/ausblenden"><span class="dot-ai"></span><span data-i18n="leg_ai_tom">Prognose morgen</span></button>
             </span>
           </div>
           <div id="rhythm-list" class="stack"></div>

@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 
-from .analytics import classify_time_window, compute_signed_rollups, extract_note_tags
+from .analytics import _extract_circular_peaks, classify_time_window, compute_signed_rollups, extract_note_tags
 
 DEFAULT_TABPFN_THRESHOLD = 0.55
 
@@ -356,13 +356,32 @@ def _predict_tomorrow_hourly(
                 peak_hr = int(np.argmax(probs))
                 peak_prob = float(probs[peak_hr])
 
+            prob_list = [round(float(p), 3) for p in probs]
+            ai_peak_hrs = (
+                _extract_circular_peaks(prob_list, min_sep=3, rel_thresh=0.58, min_abs=0.14, max_peaks=3)
+                if peak_hr is not None
+                else []
+            )
+            if peak_hr is not None and not ai_peak_hrs:
+                ai_peak_hrs = [peak_hr]
+            ai_peaks = [
+                {
+                    "hour": hr,
+                    "time": f"{hr:02d}:00",
+                    "prob": prob_list[hr],
+                    "pct": int(round(prob_list[hr] * 100)),
+                }
+                for hr in ai_peak_hrs
+            ]
+
             out[hid] = {
                 "habit_id": hid,
                 "tomorrow_day": tomorrow.isoformat(),
-                "ai_hours": [round(float(p), 3) for p in probs],
+                "ai_hours": prob_list,
                 "ai_peak_hour": peak_hr,
                 "ai_peak_time": f"{peak_hr:02d}:00" if peak_hr is not None else None,
                 "ai_peak_pct": int(round(peak_prob * 100)) if peak_hr is not None else None,
+                "ai_peaks": ai_peaks,
             }
 
     return out
