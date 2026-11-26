@@ -60,6 +60,7 @@ from .db import (
     list_edges,
     list_events,
     list_habits,
+    list_log_range,
     list_snapshots,
     list_state_dimensions,
     today_str,
@@ -318,6 +319,66 @@ def compute_hourly_peaks(
             "nudge_alternatives": h.get("nudge_alternatives") or "",
         }
     return out
+
+
+def compute_week_matrix(
+    end_day: str | None = None,
+    span_days: int = 7,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Compute a fast 7-day habit matrix (incl. signed +/- rollups) ending on any date."""
+    today = date.today()
+    end_d = date.fromisoformat(end_day[:10]) if end_day else today
+    if end_d > today:
+        end_d = today
+    span = max(1, min(14, int(span_days)))
+    dates = [(end_d - timedelta(days=i)).isoformat() for i in range(span - 1, -1, -1)]
+    all_habits = list_habits(include_archived=True, db_path=db_path)
+    habits = [h for h in all_habits if not h.get("archived")]
+    all_by_id = {h["id"]: h for h in all_habits}
+    edges = list_edges(db_path=db_path)
+    events = list_log_range(dates[0], dates[-1], db_path=db_path)["events"]
+
+    by_day_direct: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for ev in events:
+        hid = ev["habit_id"]
+        if hid not in all_by_id:
+            continue
+        d_str = str(ev["occurred_at"])[:10]
+        by_day_direct[d_str][hid] += float(ev["amount"])
+
+    by_day_eff: dict[str, dict[str, float]] = {}
+    for d_str in dates:
+        direct = {hid: by_day_direct[d_str].get(hid, 0.0) for hid in all_by_id}
+        routed, _ = compute_signed_rollups(direct, all_by_id, edges)
+        by_day_eff[d_str] = {hid: round(direct[hid] + routed.get(hid, 0.0), 2) for hid in all_by_id}
+
+    week_matrix: list[dict[str, Any]] = []
+    for h in habits:
+        hid = h["id"]
+        cells = []
+        for d_str in dates:
+            eff = by_day_eff.get(d_str, {}).get(hid, 0.0)
+            cells.append({"day": d_str, "effective": eff, "status": evaluate_goal_status(h, eff)})
+        week_matrix.append(
+            {
+                "habit_id": hid,
+                "name": h["name"],
+                "kind": h["kind"],
+                "target": h["target"],
+                "unit": h["unit"],
+                "color": h["color"],
+                "days": cells,
+            }
+        )
+
+    return {
+        "start": dates[0],
+        "end": dates[-1],
+        "is_latest": end_d >= today,
+        "dates": dates,
+        "week_matrix": week_matrix,
+    }
 
 
 def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:

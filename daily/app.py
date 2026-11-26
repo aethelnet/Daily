@@ -18,7 +18,13 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from .analytics import compute_analysis_board, compute_day_summary, compute_note_tag_stats, export_tabpfn_features_csv
+from .analytics import (
+    compute_analysis_board,
+    compute_day_summary,
+    compute_note_tag_stats,
+    compute_week_matrix,
+    export_tabpfn_features_csv,
+)
 from .db import (
     DEFAULT_DB_PATH,
     create_habit,
@@ -605,6 +611,13 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         if not delete_event(event_id, db_path=resolved_db):
             raise HTTPException(status_code=404, detail="Event not found")
         return {"deleted": True, "id": event_id}
+
+    @app.get("/api/matrix")
+    def api_matrix(end: str | None = Query(default=None), days: int = Query(default=7, ge=1, le=14)) -> dict[str, Any]:
+        try:
+            return compute_week_matrix(end_day=end, span_days=days, db_path=resolved_db)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/analysis")
     def api_analysis(days: int = Query(default=30, ge=7, le=365)) -> dict[str, Any]:

@@ -785,6 +785,14 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(len(r_log["snapshots"]), 1)
         self.assertEqual(r_log["snapshots"][0]["note"], "rough day")
 
+        # Fast 7-day matrix paging (/api/matrix?end=...) cleanly computes older weeks
+        r_mat = client.get("/api/matrix?end=2026-11-24").json()
+        self.assertEqual(r_mat["end"], "2026-11-24")
+        self.assertEqual(len(r_mat["dates"]), 7)
+        c_row = next(r for r in r_mat["week_matrix"] if r["habit_id"] == coding["id"])
+        d24 = next(c for c in c_row["days"] if c["day"] == "2026-11-24")
+        self.assertEqual(d24["effective"], 1.0)
+
     def test_retroactive_edits_and_deletions_clean_tabpfn_liquid_ode_and_e2ee(self) -> None:
         from daily.db import get_conn, list_events
         from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
