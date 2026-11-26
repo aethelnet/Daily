@@ -902,6 +902,8 @@
         nudge_alternatives: (body.nudge_alternatives || "").trim(),
         reminder_time: (body.reminder_time || "").trim(),
         reminder_days: body.reminder_days || "0,1,2,3,4,5,6",
+        block_minutes: body.block_minutes != null && Number(body.block_minutes) > 0 ? Math.max(1, Math.min(720, Math.round(Number(body.block_minutes)))) : null,
+        active_since: null,
         sort_order: db.habits.length,
         archived: 0,
         created_at: nowIso(),
@@ -956,15 +958,63 @@
       saveDB(db);
       return { merged: true, source_name: src.name, target_name: dst.name, moved_events: moved };
     }
+    const mToggle = path.match(/^\/api\/habits\/([^/]+)\/toggle-active$/);
+    if (mToggle && method === "POST") {
+      const hid = decodeURIComponent(mToggle[1]);
+      const h = db.habits.find((x) => x.id === hid);
+      if (!h) throw new Error("Habit nicht gefunden");
+      const nowStr = (body.now_at || nowIso()).slice(0, 19);
+      if (!h.active_since) {
+        h.active_since = nowStr;
+        h.updated_at = nowIso();
+        saveDB(db);
+        return { active: true, active_since: nowStr, habit: h };
+      }
+      const prevSince = h.active_since;
+      h.active_since = null;
+      h.updated_at = nowIso();
+      if (body.cancel) {
+        saveDB(db);
+        return { active: false, logged: false, habit: h };
+      }
+      let elapsedMin = body.override_minutes != null ? Math.max(1, Number(body.override_minutes)) : 0;
+      if (!elapsedMin) {
+        const ms = new Date(nowStr).getTime() - new Date(prevSince).getTime();
+        elapsedMin = Number.isFinite(ms) && ms > 0 ? Math.max(1, ms / 60000) : Number(h.block_minutes || 30);
+      }
+      const blockM = Math.max(1, Number(h.block_minutes || 30));
+      const amount = Math.max(0.5, Math.round((elapsedMin / blockM) * 2) / 2);
+      const ts = nowIso();
+      const ev = {
+        id: db.next_id++,
+        habit_id: hid,
+        amount,
+        occurred_at: nowStr,
+        window_minutes: Math.round(elapsedMin),
+        source: "tap",
+        note: "",
+        client_uuid: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        created_at: ts,
+        updated_at: ts,
+        deleted_at: null,
+      };
+      db.events.push(ev);
+      saveDB(db);
+      return { active: false, logged: true, elapsed_minutes: Math.round(elapsedMin), amount, event: ev, habit: h };
+    }
     const mHab = path.match(/^\/api\/habits\/([^/]+)$/);
     if (mHab && method === "PATCH") {
       const hid = decodeURIComponent(mHab[1]);
       const h = db.habits.find((x) => x.id === hid);
       if (!h) throw new Error("Habit nicht gefunden");
       if (body.clear_target) h.target = null;
-      ["name", "kind", "target", "target_period", "unit", "color", "nudge_lead_min", "nudge_alternatives", "reminder_time", "reminder_days", "sort_order"].forEach((k) => {
+      if (body.clear_block_minutes) h.block_minutes = null;
+      ["name", "kind", "target", "target_period", "unit", "color", "nudge_lead_min", "nudge_alternatives", "reminder_time", "reminder_days", "active_since", "sort_order"].forEach((k) => {
         if (body[k] !== undefined) h[k] = body[k];
       });
+      if (body.block_minutes !== undefined) {
+        h.block_minutes = body.block_minutes != null && Number(body.block_minutes) > 0 ? Math.max(1, Math.min(720, Math.round(Number(body.block_minutes)))) : null;
+      }
       if (body.nudge_enabled !== undefined) h.nudge_enabled = body.nudge_enabled ? 1 : 0;
       if (body.archived !== undefined) h.archived = body.archived ? 1 : 0;
       h.updated_at = nowIso();
