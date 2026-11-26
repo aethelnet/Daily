@@ -872,6 +872,45 @@ class TestDailyCore(unittest.TestCase):
         merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
         self.assertEqual(list_events(day=today_iso, db_path=other_db), [])
 
+    def test_rolling_24h_rhythm_respects_left_and_right_censoring(self) -> None:
+        from daily.ml import _predict_tomorrow_hourly, get_ml_engine_info
+
+        engine = get_ml_engine_info()["engine"]
+        if engine == "none":
+            self.skipTest("No ML engine installed")
+
+        today_d = date(2026, 11, 26)
+        yest_d = date(2026, 11, 25)
+        habits = [
+            {"id": "h_eve", "name": "EveningHabit", "kind": "max", "color": "#c85a44"},
+            {"id": "h_morn", "name": "MorningHabit", "kind": "neutral", "color": "#368470"},
+        ]
+        # User started tracking yesterday at 16:00, logged h_eve 5x in the evening and 1x today at 09:00;
+        # h_morn only happened today at 08:00. Now it is 12:00!
+        events = [
+            {"habit_id": "h_eve", "amount": 1.0, "occurred_at": f"{yest_d.isoformat()}T16:20:00"},
+            {"habit_id": "h_eve", "amount": 1.0, "occurred_at": f"{yest_d.isoformat()}T18:10:00"},
+            {"habit_id": "h_eve", "amount": 1.0, "occurred_at": f"{yest_d.isoformat()}T19:40:00"},
+            {"habit_id": "h_eve", "amount": 1.0, "occurred_at": f"{yest_d.isoformat()}T21:15:00"},
+            {"habit_id": "h_eve", "amount": 1.0, "occurred_at": f"{yest_d.isoformat()}T23:05:00"},
+            {"habit_id": "h_morn", "amount": 1.0, "occurred_at": f"{today_d.isoformat()}T08:10:00"},
+            {"habit_id": "h_eve", "amount": 1.0, "occurred_at": f"{today_d.isoformat()}T09:45:00"},
+        ]
+        out = _predict_tomorrow_hourly(engine, habits, events, today_d, now_hour=12, snapshots=[])
+
+        eve_res = out["h_eve"]
+        self.assertEqual(eve_res["now_hour"], 12)
+        self.assertEqual(eve_res["ai_scopes"][11], "tomorrow")
+        self.assertEqual(eve_res["ai_scopes"][12], "today")
+        # Must NOT collapse today's future evening hours to ~0%; must predict strong "today" evening peak!
+        today_eve_peaks = [p for p in eve_res["ai_peaks"] if p["scope"] == "today" and 16 <= p["hour"] <= 23]
+        self.assertTrue(today_eve_peaks, f"Expected a later-today evening peak, got {eve_res['ai_peaks']}")
+        self.assertGreater(max(eve_res["ai_hours"][17:22]), 0.45)
+
+        # Morning-only habit should peak tomorrow morning (not hallucinate an evening peak)
+        morn_res = out["h_morn"]
+        self.assertTrue(any(p["scope"] == "tomorrow" and 6 <= p["hour"] <= 10 for p in morn_res["ai_peaks"]))
+
 
 if __name__ == "__main__":
     unittest.main()

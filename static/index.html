@@ -368,56 +368,8 @@
                 Noch nicht gekoppelt — Daten liegen lokal auf diesem Gerät. Alle Einträge werden vor dem Sync per <strong>AES-256-GCM</strong> verschlüsselt und automatisch konfliktfrei zusammengeführt (egal welches Gerät zuletzt online war).
               </div>
 
-              <div class="nudge-box stack" id="e2ee-box">
-                <strong class="sm-text" data-i18n="sync_step1">Schritt 1 · Verschlüsselten Briefkasten verbinden</strong>
-                <div class="row-inline">
-                  <select id="e2ee-provider">
-                    <option value="gist" data-i18n="sync_prov_gist">Privater GitHub-Gist (kostenlos, 0 Server)</option>
-                    <option value="url" data-i18n="sync_prov_url">Eigener WebDAV-Ordner (Nextcloud, Mailbox.org, eigener Relay)</option>
-                  </select>
-                </div>
-
-                <div id="e2ee-gist-fields" class="stack">
-                  <span class="muted sm-text" data-i18n-html="sync_gist_help_html">
-                    Token mit ausschließlich dem Recht <code>gist</code> erzeugen (funktioniert auch mit einem separaten leeren Account):
-                    <a href="https://github.com/settings/tokens/new?description=Daily-Sync&amp;scopes=gist" target="_blank" rel="noreferrer">Token erstellen →</a>
-                  </span>
-                  <div class="row-inline">
-                    <input type="password" id="e2ee-token" data-i18n-placeholder="sync_token_ph" placeholder="Token einfügen (nur gist-Recht)" class="mono sm-text" style="flex:1;" />
-                    <button type="button" class="btn primary sm" id="btn-e2ee-create-gist" data-i18n="btn_sync_start">Sync starten</button>
-                  </div>
-                </div>
-
-                <div id="e2ee-url-fields" class="stack hidden">
-                  <input type="text" id="e2ee-url" placeholder="https://.../daily-vault.json" class="mono sm-text" />
-                  <div class="row-inline">
-                    <input type="password" id="e2ee-url-token" data-i18n-placeholder="sync_url_tok_ph" placeholder="Token / Authorization-Header (optional)" class="mono sm-text" style="flex:1;" />
-                    <button type="button" class="btn primary sm" id="btn-e2ee-save" data-i18n="btn_sync_start">Sync starten</button>
-                  </div>
-                </div>
-
-                <details class="sm-text" style="margin-top:2px;">
-                  <summary class="muted" style="cursor:pointer;" data-i18n="sync_adv_summary">Erweitert (bestehende Gist-ID oder eigenen 256-Bit-Schlüssel eintragen)</summary>
-                  <div class="stack" style="margin-top:8px;">
-                    <input type="text" id="e2ee-gist-id" data-i18n-placeholder="sync_gist_id_ph" placeholder="Bestehende Gist-ID (optional)" class="mono sm-text" />
-                    <div class="row-inline">
-                      <input type="password" id="e2ee-key" data-i18n-placeholder="sync_key_ph" placeholder="256-Bit-Schlüssel (wird sonst automatisch erzeugt)" class="mono sm-text" style="flex:1;" />
-                      <button type="button" class="btn ghost sm" id="btn-e2ee-save-adv" data-i18n="btn_save">Speichern</button>
-                    </div>
-                  </div>
-                </details>
-              </div>
-
-              <div id="e2ee-join-box" class="nudge-box stack">
-                <strong class="sm-text" data-i18n="sync_join_title">Schon auf einem anderen Gerät aktiv? (z. B. iPhone Home-Screen)</strong>
-                <div class="row-inline">
-                  <input type="text" id="e2ee-join-link" data-i18n-placeholder="sync_join_ph" placeholder="Koppel-Link (#e2ee=...) hier einfügen" class="mono sm-text" style="flex:1;" />
-                  <button type="button" class="btn sm" id="btn-e2ee-join" data-i18n="btn_connect">Verbinden</button>
-                </div>
-              </div>
-
               <div id="e2ee-pair-wrap" class="nudge-box stack hidden">
-                <strong class="sm-text" data-i18n="sync_step2">Schritt 2 · Handy &amp; Tablet koppeln (kein Tippen)</strong>
+                <strong class="sm-text" data-i18n="sync_step2">Handy &amp; Tablet koppeln (nur kopieren / scannen)</strong>
                 <span class="muted sm-text" data-i18n-html="sync_step2_desc_html">QR-Code scannen oder Link auf dem anderen Gerät öffnen — der Schlüssel steckt nur im <code>#</code>-Fragment und landet in keinem Server-Log.</span>
                 <div class="sync-grid">
                   <div id="e2ee-qr-box" class="qr-box hidden"></div>
@@ -433,6 +385,61 @@
                   </div>
                 </div>
               </div>
+
+              <details id="e2ee-setup-details" class="nudge-box sync-setup-details" open>
+                <summary id="e2ee-setup-summary" data-i18n="sync_setup_summary_unpaired">Sync einrichten oder anderes Gerät verbinden</summary>
+                <div class="stack">
+                  <div class="stack" id="e2ee-box">
+                    <strong class="sm-text" data-i18n="sync_step1">Schritt 1 · Verschlüsselten Briefkasten verbinden</strong>
+                    <div class="row-inline">
+                      <select id="e2ee-provider">
+                        <option value="gist" data-i18n="sync_prov_gist">Privater GitHub-Gist (kostenlos, 0 Server)</option>
+                        <option value="url" data-i18n="sync_prov_url">Eigener WebDAV-Ordner (Nextcloud, Mailbox.org, eigener Relay)</option>
+                      </select>
+                    </div>
+
+                    <div id="e2ee-gist-fields" class="stack">
+                      <span class="muted sm-text" data-i18n-html="sync_gist_help_html">
+                        Token mit ausschließlich dem Recht <code>gist</code> erzeugen (funktioniert auch mit einem separaten leeren Account):
+                        <a href="https://github.com/settings/tokens/new?description=Daily-Sync&amp;scopes=gist" target="_blank" rel="noreferrer">Token erstellen →</a>
+                      </span>
+                      <div class="row-inline">
+                        <input type="password" id="e2ee-token" data-i18n-placeholder="sync_token_ph" placeholder="Token einfügen (nur gist-Recht)" class="mono sm-text" style="flex:1;" />
+                        <button type="button" class="btn primary sm" id="btn-e2ee-create-gist" data-i18n="btn_sync_start">Sync starten</button>
+                      </div>
+                    </div>
+
+                    <div id="e2ee-url-fields" class="stack hidden">
+                      <input type="text" id="e2ee-url" placeholder="https://.../daily-vault.json" class="mono sm-text" />
+                      <div class="row-inline">
+                        <input type="password" id="e2ee-url-token" data-i18n-placeholder="sync_url_tok_ph" placeholder="Token / Authorization-Header (optional)" class="mono sm-text" style="flex:1;" />
+                        <button type="button" class="btn primary sm" id="btn-e2ee-save" data-i18n="btn_sync_start">Sync starten</button>
+                      </div>
+                    </div>
+
+                    <details class="sm-text" style="margin-top:2px;">
+                      <summary class="muted" style="cursor:pointer;" data-i18n="sync_adv_summary">Erweitert (bestehende Gist-ID oder eigenen 256-Bit-Schlüssel eintragen)</summary>
+                      <div class="stack" style="margin-top:8px;">
+                        <input type="text" id="e2ee-gist-id" data-i18n-placeholder="sync_gist_id_ph" placeholder="Bestehende Gist-ID (optional)" class="mono sm-text" />
+                        <div class="row-inline">
+                          <input type="password" id="e2ee-key" data-i18n-placeholder="sync_key_ph" placeholder="256-Bit-Schlüssel (wird sonst automatisch erzeugt)" class="mono sm-text" style="flex:1;" />
+                          <button type="button" class="btn ghost sm" id="btn-e2ee-save-adv" data-i18n="btn_save">Speichern</button>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+
+                  <hr class="sep" style="margin:6px 0;" />
+
+                  <div id="e2ee-join-box" class="stack">
+                    <strong class="sm-text" data-i18n="sync_join_title">Schon auf einem anderen Gerät aktiv? (z. B. iPhone Home-Screen)</strong>
+                    <div class="row-inline">
+                      <input type="text" id="e2ee-join-link" data-i18n-placeholder="sync_join_ph" placeholder="Koppel-Link (#e2ee=...) hier einfügen" class="mono sm-text" style="flex:1;" />
+                      <button type="button" class="btn sm" id="btn-e2ee-join" data-i18n="btn_connect">Verbinden</button>
+                    </div>
+                  </div>
+                </div>
+              </details>
 
               <div class="row-inline">
                 <button type="button" class="btn ghost sm" id="btn-export-json" data-i18n="btn_export_json">JSON-Backup</button>
@@ -455,10 +462,12 @@
                         <input type="text" id="sync-pair-url" readonly class="mono sm-text" style="flex:1;min-width:140px;" />
                         <button type="button" class="btn sm" id="btn-copy-pair" data-i18n="btn_copy">Kopieren</button>
                       </div>
-                      <input type="text" id="sync-custom-server" data-i18n-placeholder="lan_server_ph" placeholder="z. B. http://192.168.x.x:8090" class="mono sm-text" />
-                      <div class="row-inline">
-                        <input type="text" id="sync-custom-token" data-i18n-placeholder="lan_token_ph" placeholder="Sync-Token" class="mono sm-text" style="flex:1;" />
-                        <button type="button" class="btn sm" id="btn-save-remote" data-i18n="btn_connect">Verbinden</button>
+                      <div id="sync-lan-client-fields" class="stack">
+                        <input type="text" id="sync-custom-server" data-i18n-placeholder="lan_server_ph" placeholder="z. B. http://192.168.x.x:8090" class="mono sm-text" />
+                        <div class="row-inline">
+                          <input type="text" id="sync-custom-token" data-i18n-placeholder="lan_token_ph" placeholder="Sync-Token" class="mono sm-text" style="flex:1;" />
+                          <button type="button" class="btn sm" id="btn-save-remote" data-i18n="btn_connect">Verbinden</button>
+                        </div>
                       </div>
                     </div>
                   </div>

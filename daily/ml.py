@@ -287,12 +287,15 @@ def _predict_tomorrow_hourly(
     by_day_events: dict[str, list[tuple[int, str, float]]] = defaultdict(list)
     by_day_hours: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
     by_day_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    first_obs_dt: datetime | None = None
 
     for ev in events:
         hid = ev["habit_id"]
         if hid not in habits_by_id or float(ev["amount"]) <= 0:
             continue
         dt = datetime.fromisoformat(ev["occurred_at"])
+        if first_obs_dt is None or dt < first_obs_dt:
+            first_obs_dt = dt
         d_str = dt.date().isoformat()
         amt = float(ev["amount"])
         by_day_events[d_str].append((dt.hour, hid, amt))
@@ -310,9 +313,12 @@ def _predict_tomorrow_hourly(
             dt = datetime.fromisoformat(sn["occurred_at"])
         except Exception:
             continue
+        if first_obs_dt is None or dt < first_obs_dt:
+            first_obs_dt = dt
         by_day_moods[dt.date().isoformat()].append((dt.hour, sum(vals) / len(vals)))
 
     observed_days = sorted(by_day_hours.keys())
+    obs_set = set(observed_days)
     cur_hr = datetime.now().hour if now_hour is None else max(0, min(23, int(now_hour)))
     today_iso = today_date.isoformat()
     yesterday_iso = (today_date - timedelta(days=1)).isoformat()
@@ -324,6 +330,19 @@ def _predict_tomorrow_hourly(
         ms = [m for h_s, m in by_day_moods.get(d_str, []) if h_s <= hr_cutoff]
         return float(ms[-1]) if ms else float("nan")
 
+    out: dict[str, dict[str, Any]] = {}
+    if engine == "none" or not observed_days:
+        return out
+
+    first_day_iso = first_obs_dt.date().isoformat() if first_obs_dt else observed_days[0]
+    first_day_hr = first_obs_dt.hour if first_obs_dt else 0
+    # Progressive feature unlocking prevents day-ID memorization on Day 1-2:
+    # - Always: circular time-of-day + today's same-habit progress so far
+    # - >= 3 observed days: previous-day total, cross-habit count, and latest Mood
+    # - >= 7 observed days: weekday seasonality (only repeats after a week)
+    use_ctx = len(observed_days) >= 3
+    use_wd = len(observed_days) >= 7
+
     def hour_row(
         wd: float,
         hr: int,
@@ -333,11 +352,12 @@ def _predict_tomorrow_hourly(
         mood_val: float,
     ) -> list[float]:
         rad = 2.0 * math.pi * (hr / 24.0)
-        return [wd, float(hr), math.sin(rad), math.cos(rad), prev_total, so_far_same, so_far_other, mood_val]
-
-    out: dict[str, dict[str, Any]] = {}
-    if engine == "none" or not observed_days:
-        return out
+        row: list[float] = [float(hr), math.sin(rad), math.cos(rad), so_far_same]
+        if use_ctx:
+            row.extend([prev_total, so_far_other, mood_val])
+        if use_wd:
+            row.append(wd)
+        return row
 
     # Precompute today's live state up to right now (powers "Later today" predictions!)
     today_evs = by_day_events.get(today_iso, [])
@@ -348,24 +368,38 @@ def _predict_tomorrow_hourly(
         warnings.simplefilter("ignore")
         for h in habits:
             hid = h["id"]
-            X_rows: list[list[float]] = []
-            y_rows: list[int] = []
 
-            for d_str in observed_days[-45:]:
-                dt_d = date.fromisoformat(d_str)
-                wd = float(dt_d.weekday())
-                prev_d = (dt_d - timedelta(days=1)).isoformat()
-                prev_tot = float(by_day_totals.get(prev_d, {}).get(hid, 0.0))
-                hrs = by_day_hours[d_str].get(hid, set())
-                d_evs = by_day_events.get(d_str, [])
-                for hr in range(24):
-                    so_far_same = sum(a for eh, ehid, a in d_evs if eh < hr and ehid == hid)
-                    so_far_other = float(sum(1 for eh, ehid, _a in d_evs if eh < hr and ehid != hid))
-                    mood_v = latest_mood_before(d_str, hr)
-                    X_rows.append(hour_row(wd, hr, prev_tot, so_far_same, so_far_other, mood_v))
-                    # 2-hour smooth occurrence target so adjacent hours share signal naturally
-                    hit = 1 if (hr in hrs or (hr + 1) % 24 in hrs) else 0
-                    y_rows.append(hit)
+            def collect_rows(apply_left_censor: bool, apply_right_censor: bool) -> tuple[list[list[float]], list[int]]:
+                xr: list[list[float]] = []
+                yr: list[int] = []
+                for d_str in observed_days[-45:]:
+                    dt_d = date.fromisoformat(d_str)
+                    wd = float(dt_d.weekday())
+                    prev_d = (dt_d - timedelta(days=1)).isoformat()
+                    prev_tot = float(by_day_totals.get(prev_d, {}).get(hid, 0.0)) if prev_d in obs_set else float("nan")
+                    hrs = by_day_hours[d_str].get(hid, set())
+                    d_evs = by_day_events.get(d_str, [])
+                    for hr in range(24):
+                        # 2-hour smooth occurrence target so adjacent hours share signal naturally
+                        hit = 1 if (hr in hrs or (hr + 1) % 24 in hrs) else 0
+                        # Left-censoring: hours before the user's very first tracked timestamp were not observed
+                        if apply_left_censor and d_str == first_day_iso and hr < max(0, first_day_hr - 1) and hit == 0:
+                            continue
+                        # Right-censoring: future/unfinished hours of today have NOT happened yet — never label y=0!
+                        if apply_right_censor and d_str == today_iso and hr >= max(0, cur_hr - 1) and hit == 0:
+                            continue
+                        so_far_same = sum(a for eh, ehid, a in d_evs if eh < hr and ehid == hid)
+                        so_far_other = float(sum(1 for eh, ehid, _a in d_evs if eh < hr and ehid != hid))
+                        mood_v = latest_mood_before(d_str, hr)
+                        xr.append(hour_row(wd, hr, prev_tot, so_far_same, so_far_other, mood_v))
+                        yr.append(hit)
+                return xr, yr
+
+            X_rows, y_rows = collect_rows(True, True)
+            if sum(1 for v in y_rows if v == 0) < 3:
+                X_rows, y_rows = collect_rows(False, True)
+            if sum(1 for v in y_rows if v == 0) < 3:
+                X_rows, y_rows = collect_rows(False, False)
 
             X_train = np.array(X_rows, dtype=np.float32)
             y_train = np.array(y_rows, dtype=np.int32)
@@ -373,7 +407,7 @@ def _predict_tomorrow_hourly(
             # Build rolling next-24h query rows: hr >= cur_hr => TODAY (live context!), hr < cur_hr => TOMORROW
             today_same_now = sum(a for eh, ehid, a in today_evs if eh <= cur_hr and ehid == hid)
             today_other_now = float(sum(1 for eh, ehid, _a in today_evs if eh <= cur_hr and ehid != hid))
-            yest_tot_h = float(by_day_totals.get(yesterday_iso, {}).get(hid, 0.0))
+            yest_tot_h = float(by_day_totals.get(yesterday_iso, {}).get(hid, 0.0)) if yesterday_iso in obs_set else float("nan")
             today_tot_h = float(by_day_totals.get(today_iso, {}).get(hid, 0.0))
             X_next24 = np.array(
                 [
@@ -406,6 +440,11 @@ def _predict_tomorrow_hourly(
                     probs = clf.predict_proba(X_next24)[:, 1]
                 except Exception:
                     probs = np.full(24, n_pos / max(1, len(y_train)), dtype=np.float32)
+                # Honest low-N calibration: keep Day 1-2 confidence modest (~50-75%) without inflating quiet hours,
+                # converging smoothly toward raw TabPFN probabilities as observed 24h cycles grow.
+                eff_days = max(0.5, len(y_train) / 24.0)
+                conf_scale = 0.62 + 0.38 * (eff_days / (eff_days + 2.0))
+                probs = np.clip(probs * conf_scale, 0.01, 0.96)
                 peak_hr = int(np.argmax(probs))
                 peak_prob = float(probs[peak_hr])
 

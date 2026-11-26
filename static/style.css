@@ -223,6 +223,27 @@ input:focus, select:focus {
   background: var(--surface);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+input[readonly] {
+  background: var(--surface-2);
+  color: var(--muted);
+  border-style: dashed;
+  cursor: default;
+}
+input[readonly]:focus {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.sync-setup-details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  user-select: none;
+}
+.sync-setup-details[open] > summary {
+  margin-bottom: 8px;
+}
 .num-sm { width: 80px; }
 .num-xs { width: 52px; padding: 4px 6px !important; text-align: center; }
 

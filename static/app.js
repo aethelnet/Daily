@@ -1260,12 +1260,25 @@ function renderE2EEPanel(cfg) {
     $("#e2ee-pair-wrap").classList.add("hidden");
   }
 
-  if (cfg.enabled && cfg.key_b64u) {
+  const isActive = !!(cfg.enabled && cfg.key_b64u);
+  state.e2eeActive = isActive;
+  const setupDetails = $("#e2ee-setup-details");
+  const setupSummary = $("#e2ee-setup-summary");
+  if (setupDetails) {
+    setupDetails.open = !isActive;
+  }
+  if (setupSummary) {
+    setupSummary.textContent = t(isActive ? "sync_setup_summary_active" : "sync_setup_summary_unpaired");
+  }
+
+  if (isActive) {
     const ts = cfg.last_sync_at ? ` · ${t("sync_last", { ts: cfg.last_sync_at.slice(0, 16).replace("T", " ") })}` : "";
     const provLbl = prov === "gist" ? t("sync_prov_gist_short") : t("sync_prov_url_short");
     const gistTag = prov === "gist" && cfg.gist_id ? ` ${cfg.gist_id.slice(0, 6)}…` : "";
     const keyTag = ` · Key ${cfg.key_b64u.slice(0, 6)}…`;
     $("#e2ee-status-line").innerHTML = `<strong class="pos">${esc(t("sync_status_active"))}</strong> · ${esc(provLbl)}<span class="mono">${esc(gistTag)}${esc(keyTag)}</span>${esc(ts)}`;
+  } else {
+    $("#e2ee-status-line").innerHTML = t("sync_status_unpaired_html");
   }
 }
 
@@ -1335,13 +1348,17 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
   }
 
   // Sync & Pairing info
+  const lanClientFields = $("#sync-lan-client-fields");
   if (pairInfo && pairInfo.standalone) {
     $("#sync-qr-box").classList.add("hidden");
     $("#sync-pair-row").classList.add("hidden");
+    if (lanClientFields) lanClientFields.classList.remove("hidden");
     $("#sync-hint-text").innerHTML = t("lan_standalone_html");
   } else if (pairInfo) {
     $("#sync-qr-box").classList.remove("hidden");
     $("#sync-pair-row").classList.remove("hidden");
+    // On the local PC server itself, hide client-only LAN server/token inputs to avoid confusion
+    if (lanClientFields) lanClientFields.classList.add("hidden");
     $("#sync-pair-url").value = pairInfo.primary_url || "";
     $("#sync-qr-box").innerHTML = pairInfo.qr_svg || `<span class="muted sm-text">QR</span>`;
   }
@@ -2869,6 +2886,9 @@ function bindEvents() {
       toast(t("sync_need_token"));
       return;
     }
+    if (state.e2eeActive && !confirm(t("sync_confirm_new_gist"))) {
+      return;
+    }
     try {
       if (isStandaloneBrowserMode()) {
         const res = await window.DailyE2EE.createGistVaultFromBrowser(tok);
@@ -3006,6 +3026,11 @@ function bindEvents() {
     }
   });
 
+  // Auto-select read-only pairing links on click for quick copy
+  ["#e2ee-pair-url", "#sync-pair-url"].forEach((sel) => {
+    const inp = $(sel);
+    if (inp) inp.addEventListener("focus", () => inp.select());
+  });
   $("#btn-copy-pair").addEventListener("click", async () => {
     const url = $("#sync-pair-url").value;
     if (!url) return;
