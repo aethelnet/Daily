@@ -8,6 +8,7 @@ A calm, sharp scalpel for your habits and daily rhythms — works **100% locally
 
 - **Try instantly / install on your phone:** **[https://daily.aethelburg.network](https://daily.aethelburg.network)**  
   *(iOS Safari/Firefox: Share → Add to Home Screen · Android Chrome: Install App — works offline out of the box.)*
+- **Prebuilt Desktop & Android Downloads:** **[GitHub Releases](https://github.com/aethelnet/Daily/releases/latest)** *(self-contained `.deb`, `.rpm`, Windows `.exe`, macOS, Android `.apk`, and Offline Web `.zip` — zero Python or package installs required.)*
 
 <p align="center">
   <img src="docs/preview-today.png" alt="Daily Today view — signed +/- habit cards and interleaved mood log" width="100%" />
@@ -58,9 +59,21 @@ Everything is encrypted **on your device with AES-256-GCM** (random 96-bit IV pe
 
 > **Note on running a server on a phone:** iOS suspends background servers within ~30s and mobile carriers place phones behind CGNAT (blocking incoming ports). On phones, Daily runs locally in the browser/WebView via `local-engine.js` instead. If you want a Python/TabPFN server, run it on your PC/laptop or home Raspberry Pi.
 
+#### Prebuilt Packages (Zero Python Needed)
+Download the latest release from **[GitHub Releases](https://github.com/aethelnet/Daily/releases/latest)**:
+- **Ubuntu / Debian / Mint:** `sudo apt install ./daily_0.1.0_amd64.deb`
+- **Fedora / Bazzite / openSUSE:** `sudo dnf install ./daily-0.1.0-1.x86_64.rpm`
+- **Windows / macOS / Portable Linux:** Extract and run `daily` (opens `http://127.0.0.1:8090` automatically).
+- **Flathub / Flatpak:** Packaging metadata & manifest live in [`packaging/linux/`](packaging/linux) and [`packaging/flatpak/`](packaging/flatpak).
+
+#### From Source (with Optional Full TabPFN v2)
 ```bash
 git clone https://github.com/aethelnet/Daily.git
 cd Daily
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt          # core + lean CPU XGBoost fallback
+# Optional upgrade for full local TabPFN v2 foundation model:
+# .venv/bin/pip install -r requirements-ai.txt
 ./start.sh
 # Local browser: http://127.0.0.1:8090
 ```

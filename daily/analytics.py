@@ -101,7 +101,13 @@ def compute_signed_rollups(
             nxt = edge["target_id"]
             if nxt in path or nxt not in habits_by_id:
                 continue
-            delta = val * float(edge["weight"])
+            w = float(edge["weight"])
+            # Prevent double-negative sign reversals (- x - = +):
+            # A deficit/penalty on B (val < 0) propagates to positive parents of B (e.g. Sport -> +Upgrade),
+            # but must never flip across a negative edge (Sport -> -Laundry) to conjure phantom positive progress.
+            if val < 0 and w < 0:
+                continue
+            delta = val * w
             is_ai_step = via_ai or bool(edge.get("is_ai"))
             routed[nxt] = routed.get(nxt, 0.0) + delta
             contrib_map[nxt][origin_id] += delta

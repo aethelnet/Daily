@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>network.aethelburg.daily</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Daily</name>
+  <summary>Local-first signed-graph habit tracker &amp; rhythm observer</summary>
+  <summary xml:lang="de">Lokaler Habit-Tracker mit Graph-Routing, Liquid ODE &amp; E2EE-Sync</summary>
+  <description>
+    <p>
+      Daily is a calm, local-first habit and daily-rhythm tracker with zero presets,
+      zero cloud accounts, and zero telemetry.
+    </p>
+    <ul>
+      <li>Arbitrary signed (+/-) live graph routing between habits</li>
+      <li>Continuous-time Liquid Relaxation ODE and optional local TabPFN v2 / XGBoost insights</li>
+      <li>Sparse Momentaufnahme mood &amp; state snapshots with custom axes and groups</li>
+      <li>Optional AES-256-GCM end-to-end encrypted multi-device sync (WebDAV or private Gist)</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">network.aethelburg.daily.desktop</launchable>
+  <url type="homepage">https://daily.aethelburg.network</url>
+  <url type="vcs-browser">https://github.com/aethelnet/Daily</url>
+  <url type="bugtracker">https://github.com/aethelnet/Daily/issues</url>
+  <developer id="network.aethelburg">
+    <name>Niklas Herlyn</name>
+  </developer>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Today view — signed habit cards, live routing, and interleaved mood log</caption>
+      <image>https://raw.githubusercontent.com/aethelnet/Daily/main/docs/preview-today.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Analysis view — TabPFN v2 and Continuous-Time Liquid ODE curves</caption>
+      <image>https://raw.githubusercontent.com/aethelnet/Daily/main/docs/preview-analysis.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-11-26">
+      <description>
+        <p>Initial public beta release: signed live graph routing, compact habit groups, adaptive mood state curves, Liquid Relaxation ODE, and AES-256-GCM multi-device sync.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -5,6 +5,7 @@ import asyncio
 import hmac
 import os
 import secrets
+import sys
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -67,7 +68,16 @@ from .ml import DEFAULT_TABPFN_THRESHOLD, compute_ai_insights, compute_ai_routin
 from .nudges import NudgeScheduler, send_desktop_notification
 from .sync import apply_sync_batch, get_pairing_info, get_sync_token
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+def _resolve_static_dir() -> Path:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / "static"
+        if cand.is_dir():
+            return cand
+    return Path(__file__).resolve().parent.parent / "static"
+
+
+STATIC_DIR = _resolve_static_dir()
 
 
 class HabitCreate(BaseModel):

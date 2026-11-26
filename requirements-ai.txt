@@ -1,0 +1,4 @@
+# Optional upgrade: full local TabPFN v2 tabular foundation model on CPU (includes PyTorch)
+-r requirements.txt
+tabpfn>=2.0
+scikit-learn>=1.5

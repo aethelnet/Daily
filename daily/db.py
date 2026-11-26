@@ -12,9 +12,20 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-DEFAULT_DB_PATH = Path(
-    os.environ.get("DAILY_DB_PATH", str(Path.home() / ".local" / "share" / "daily" / "daily.db"))
-)
+def _default_db_path() -> Path:
+    env_path = os.environ.get("DAILY_DB_PATH", "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "Daily" / "daily.db"
+    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data:
+        return Path(xdg_data).expanduser() / "daily" / "daily.db"
+    return Path.home() / ".local" / "share" / "daily" / "daily.db"
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 VALID_KINDS = {"min", "max", "neutral"}
 VALID_PERIODS = {"day", "week", "month"}

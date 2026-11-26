@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Daily
+GenericName=Habit & Rhythm Tracker
+GenericName[de]=Habit- & Rhythmus-Tracker
+Comment=Local-first signed-graph habit tracker with Liquid ODE & E2EE sync
+Comment[de]=Lokaler Habit-Tracker mit Graph-Routing, Liquid ODE & E2EE-Sync
+Exec=daily
+Icon=network.aethelburg.daily
+Terminal=false
+Categories=Utility;Office;
+Keywords=habit;tracker;mood;routine;local;offline;privacy;
+StartupNotify=true

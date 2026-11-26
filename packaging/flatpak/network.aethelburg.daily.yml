@@ -1,0 +1,40 @@
+# Flathub submission manifest template for Daily (network.aethelburg.daily)
+#
+# To submit to Flathub:
+#   1. Generate offline Python wheel sources once using flatpak-pip-generator:
+#        flatpak-pip-generator --runtime=org.freedesktop.Sdk//24.08 -r requirements.txt -o python3-deps
+#   2. Copy this manifest + python3-deps.json into a fork of https://github.com/flathub/flathub
+#      on branch `new-pr` and open a Pull Request.
+app-id: network.aethelburg.daily
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: daily
+finish-args:
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  # Uncomment after generating offline wheel sources with flatpak-pip-generator:
+  # - python3-deps.json
+  - name: daily
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/daily /app/bin
+      - cp -r daily static /app/lib/daily/
+      - |
+        cat <<'EOF' > /app/bin/daily
+        #!/bin/sh
+        export PYTHONPATH="/app/lib/daily:${PYTHONPATH:-}"
+        exec python3 -m daily.launcher "$@"
+        EOF
+      - chmod 755 /app/bin/daily
+      - install -Dm644 packaging/linux/network.aethelburg.daily.desktop /app/share/applications/network.aethelburg.daily.desktop
+      - install -Dm644 packaging/linux/network.aethelburg.daily.metainfo.xml /app/share/metainfo/network.aethelburg.daily.metainfo.xml
+      - install -Dm644 static/icon.svg /app/share/icons/hicolor/scalable/apps/network.aethelburg.daily.svg
+      - install -Dm644 static/icon-512.png /app/share/icons/hicolor/512x512/apps/network.aethelburg.daily.png
+    sources:
+      - type: archive
+        url: https://github.com/aethelnet/Daily/archive/refs/tags/v0.1.0.tar.gz
+        sha256: REPLACE_WITH_TAG_TARBALL_SHA256

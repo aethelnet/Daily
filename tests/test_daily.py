@@ -67,6 +67,31 @@ class TestDailyCore(unittest.TestCase):
 
         self.assertEqual(by_id[espresso["id"]]["status"], "warning")  # 1/1 = 100% of max limit
 
+        # Multi-hop sign invariant:
+        # (- then +) propagates deficit (e.g. smoke -0.6 -> sport +0.6 -> upgrade = -0.36),
+        # while (- then -) must NEVER flip sign into phantom positive gain (sport -0.2 -> laundry != +0.12)!
+        smoke = create_habit("Smoke", kind="max", db_path=self.db)
+        sport = create_habit("Sport", kind="min", target=1, db_path=self.db)
+        upgrade = create_habit("Upgrade", kind="min", target=1, db_path=self.db)
+        laundry = create_habit("Laundry", kind="neutral", db_path=self.db)
+        upsert_edge(smoke["id"], sport["id"], "rollup", -0.6, db_path=self.db)
+        upsert_edge(sport["id"], upgrade["id"], "rollup", +0.6, db_path=self.db)
+        upsert_edge(sport["id"], laundry["id"], "rollup", -0.2, db_path=self.db)
+
+        day2 = "2026-11-26"
+        log_event(smoke["id"], 1.0, f"{day2}T10:00:00", db_path=self.db)
+        sum2 = compute_day_summary(day=day2, db_path=self.db)
+        by2 = {h["id"]: h for h in sum2["habits"]}
+        self.assertEqual(by2[sport["id"]]["routed"], -0.6)
+        self.assertEqual(by2[upgrade["id"]]["routed"], -0.36)
+        self.assertEqual(by2[laundry["id"]]["routed"], 0.0)
+
+        # Direct positive Sport (+1) still applies its -0.2 cost onto Laundry cleanly
+        log_event(sport["id"], 1.0, f"{day2}T12:00:00", db_path=self.db)
+        sum3 = compute_day_summary(day=day2, db_path=self.db)
+        by3 = {h["id"]: h for h in sum3["habits"]}
+        self.assertEqual(by3[laundry["id"]]["routed"], -0.2)
+
     def test_retro_batch_spreads_timestamps_across_window(self) -> None:
         code = create_habit("Programmieren", kind="neutral", db_path=self.db)
         lesen = create_habit("Buch lesen", kind="neutral", db_path=self.db)
@@ -180,7 +205,7 @@ class TestDailyCore(unittest.TestCase):
 
         analysis = client.get("/api/analysis?days=30").json()
         ai = analysis["ai"]
-        self.assertEqual(ai["engine"], "tabpfn-v2")
+        self.assertIn(ai["engine"], ("tabpfn-v2", "xgboost"))
         self.assertEqual(ai["status"], "ready")
         self.assertGreaterEqual(len(ai["assumptions"]), 1)
 

@@ -23,7 +23,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
 
 from .analytics import _extract_circular_peaks, classify_time_window, compute_signed_rollups, extract_note_tags
 
@@ -47,6 +50,12 @@ WINDOW_DE = {
 
 def get_ml_engine_info() -> dict[str, Any]:
     """Detect available local tabular ML engine (prefers TabPFN v2, falls back cleanly to XGBoost)."""
+    if np is None:
+        return {
+            "engine": "none",
+            "label": "Aus",
+            "tabpfn_ready": False,
+        }
     tabpfn_ok = False
     try:
         import tabpfn  # noqa: F401
@@ -84,6 +93,72 @@ def get_ml_engine_info() -> dict[str, Any]:
         }
 
 
+class _CoreXGBRegressor:
+    """Zero-sklearn XGBoost regressor wrapper (keeps standalone binaries lean)."""
+
+    def __init__(self) -> None:
+        self._bst = None
+
+    def fit(self, X, y):
+        import xgboost as xgb
+
+        dtrain = xgb.DMatrix(np.asarray(X, dtype=np.float32), label=np.asarray(y, dtype=np.float32))
+        self._bst = xgb.train(
+            {
+                "objective": "reg:squarederror",
+                "max_depth": 2,
+                "eta": 0.12,
+                "subsample": 0.85,
+                "lambda": 2.0,
+                "seed": 42,
+                "nthread": 1,
+                "verbosity": 0,
+            },
+            dtrain,
+            num_boost_round=24,
+        )
+        return self
+
+    def predict(self, X):
+        import xgboost as xgb
+
+        return self._bst.predict(xgb.DMatrix(np.asarray(X, dtype=np.float32)))
+
+
+class _CoreXGBClassifier:
+    """Zero-sklearn XGBoost binary classifier wrapper."""
+
+    def __init__(self) -> None:
+        self._bst = None
+
+    def fit(self, X, y):
+        import xgboost as xgb
+
+        dtrain = xgb.DMatrix(np.asarray(X, dtype=np.float32), label=np.asarray(y, dtype=np.float32))
+        self._bst = xgb.train(
+            {
+                "objective": "binary:logistic",
+                "max_depth": 2,
+                "eta": 0.12,
+                "min_child_weight": 0.1,
+                "subsample": 0.85,
+                "lambda": 2.0,
+                "seed": 42,
+                "nthread": 1,
+                "verbosity": 0,
+            },
+            dtrain,
+            num_boost_round=24,
+        )
+        return self
+
+    def predict_proba(self, X):
+        import xgboost as xgb
+
+        p1 = np.clip(self._bst.predict(xgb.DMatrix(np.asarray(X, dtype=np.float32))), 0.0, 1.0)
+        return np.column_stack([1.0 - p1, p1])
+
+
 def _make_regressor(engine: str):
     if engine == "tabpfn-v2":
         from tabpfn import TabPFNRegressor
@@ -95,18 +170,7 @@ def _make_regressor(engine: str):
             ignore_pretraining_limits=True,
         )
     if engine == "xgboost":
-        from xgboost import XGBRegressor
-
-        return XGBRegressor(
-            n_estimators=24,
-            max_depth=2,
-            learning_rate=0.12,
-            subsample=0.85,
-            reg_lambda=2.0,
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
-        )
+        return _CoreXGBRegressor()
     raise RuntimeError("No tabular ML engine available")
 
 
@@ -121,19 +185,7 @@ def _make_classifier(engine: str):
             ignore_pretraining_limits=True,
         )
     if engine == "xgboost":
-        from xgboost import XGBClassifier
-
-        return XGBClassifier(
-            n_estimators=24,
-            max_depth=2,
-            learning_rate=0.12,
-            subsample=0.85,
-            reg_lambda=2.0,
-            random_state=42,
-            n_jobs=1,
-            eval_metric="logloss",
-            verbosity=0,
-        )
+        return _CoreXGBClassifier()
     raise RuntimeError("No tabular ML engine available")
 
 

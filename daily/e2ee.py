@@ -22,7 +22,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+except ImportError:
+    AESGCM = None  # type: ignore[assignment]
 
 from .db import (
     DEFAULT_DB_PATH,
@@ -64,6 +67,8 @@ def encrypt_vault_payload(payload: dict[str, Any], key_b64u: str) -> dict[str, A
         raise ValueError("E2EE-Schlüssel muss exakt 256 Bit (32 Bytes) lang sein")
     iv = os.urandom(12)
     plaintext = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if AESGCM is None:
+        raise RuntimeError("Das Paket 'cryptography' wird für E2EE-Sync benötigt (pip install cryptography)")
     ct = AESGCM(key).encrypt(iv, plaintext, AAD_BYTES)
     return {
         "v": 1,
@@ -85,6 +90,8 @@ def decrypt_vault_payload(envelope: dict[str, Any], key_b64u: str) -> dict[str, 
     iv = _b64u_dec(str(envelope["iv"]))
     ct = _b64u_dec(str(envelope["ct"]))
     aad = str(envelope.get("aad") or AAD_STR).encode("utf-8")
+    if AESGCM is None:
+        raise RuntimeError("Das Paket 'cryptography' wird für E2EE-Sync benötigt (pip install cryptography)")
     plaintext = AESGCM(key).decrypt(iv, ct, aad)
     return json.loads(plaintext.decode("utf-8"))
 

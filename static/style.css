@@ -730,6 +730,16 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
   gap: 10px;
 }
+.focus-dir-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.focus-dir-group + .focus-dir-group {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
 .toggle-caret {
   font-family: var(--mono);
   font-size: 11px;

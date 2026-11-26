@@ -20,7 +20,14 @@ mobile/android/local.properties
 mobile/ios/Pods/
 mobile/ios/App/build/
 
-# OS / Editor
+# OS / Editor / Release build outputs
 .DS_Store
 .env
 *.log
+build/
+dist/
+release-out/
+*.deb
+*.rpm
+*.AppImage
+
