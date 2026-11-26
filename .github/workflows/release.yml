@@ -176,7 +176,7 @@ jobs:
           cp static/sw.js "$DST/sw.js"
           cp static/manifest.webmanifest "$DST/manifest.webmanifest"
           cp static/icon.svg static/icon-192.png static/icon-512.png static/apple-touch-icon.png "$DST/"
-          cp static/app.js static/style.css static/i18n.js static/local-engine.js static/e2ee-sync.js static/qr.js "$DST/static/"
+          cp static/app.js static/style.css static/i18n.js static/local-engine.js static/e2ee-sync.js static/qr.js static/graph-view.js "$DST/static/"
           cp README.md LICENSE "$DST/"
           (cd stage && zip -rq "../release-out/daily-${{ needs.meta.outputs.tag }}-web-offline.zip" "daily-${{ needs.meta.outputs.tag }}-web-offline")
       - uses: actions/upload-artifact@v4
