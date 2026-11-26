@@ -121,6 +121,7 @@ const state = {
   moodGroups: [],
   activeMoodGroup: "alltag",
   mgDraftDims: new Set(),
+  editingDimId: null,
   editingSnapId: null,
   editingEvent: null,
   logEventsById: {},
@@ -1150,6 +1151,7 @@ async function openMoodModal(editSnap = null) {
     }
   }
   state.editingSnapId = snap ? snap.id : null;
+  state.editingDimId = null;
   state.moodRatings = snap ? { ...(snap.ratings || {}) } : {};
   state.moodCauses = new Set(snap ? snap.causes || [] : []);
   resetMoodGroupForm();
@@ -1166,6 +1168,7 @@ async function openMoodModal(editSnap = null) {
 
 function closeMoodModal() {
   state.editingSnapId = null;
+  state.editingDimId = null;
   $("#mood-modal").classList.add("hidden");
 }
 
@@ -1400,6 +1403,7 @@ function renderMoodModal() {
         .map((d) => {
           const col = dimColor(d);
           const cur = state.moodRatings[d.id];
+          const isEditing = state.editingDimId === d.id;
           const btns = [1, 2, 3, 4, 5]
             .map(
               (v) =>
@@ -1408,14 +1412,36 @@ function renderMoodModal() {
             .join("");
           const lo = dimLow(d);
           const hi = dimHigh(d);
+          const dotPicker = `<label class="dim-dot-picker" style="background:${esc(col)}" title="${esc(t("dim_pick_color_title"))}"><input type="color" data-dim-color="${esc(d.id)}" value="${esc(col)}" /></label>`;
+          if (isEditing) {
+            return `
+      <div class="mood-axis" style="--axis-c:${esc(col)}">
+        <form class="dim-inline-edit" data-dim-edit-form="${esc(d.id)}">
+          <div class="row-inline" style="gap:6px;">
+            ${dotPicker}
+            <input type="text" id="dim-edit-name" value="${esc(dimName(d))}" required style="flex:1;" />
+            <button type="submit" class="btn primary sm">${esc(t("btn_save"))}</button>
+            <button type="button" class="btn ghost sm" data-dim-edit-cancel="1" title="${esc(t("btn_cancel"))}">✕</button>
+          </div>
+          <div class="row-2" style="gap:6px;">
+            <input type="text" id="dim-edit-low" value="${esc(lo)}" placeholder="${esc(t("ma_low_ph"))}" />
+            <input type="text" id="dim-edit-high" value="${esc(hi)}" placeholder="${esc(t("ma_high_ph"))}" />
+          </div>
+        </form>
+        <div class="mood-scale">${btns}</div>
+      </div>`;
+          }
           const anchors =
             lo || hi
-              ? `<div class="mood-anchors"><span>${esc(lo)}</span><span>${esc(hi)}</span></div>`
+              ? `<div class="mood-anchors editable" data-dim-inline-edit="${esc(d.id)}" data-focus="low" title="${esc(t("dim_rename_title"))}"><span>${esc(lo)}</span><span>${esc(hi)}</span></div>`
               : "";
           return `
       <div class="mood-axis" style="--axis-c:${esc(col)}">
         <div class="mood-axis-head">
-          <span class="row-inline" style="gap:6px;"><span class="ev-dot" style="background:${esc(col)}"></span><strong>${esc(dimName(d))}</strong></span>
+          <span class="row-inline" style="gap:6px;">
+            ${dotPicker}
+            <strong class="mood-axis-title" data-dim-inline-edit="${esc(d.id)}" title="${esc(t("dim_rename_title"))}">${esc(dimName(d))}</strong>
+          </span>
           <button type="button" class="btn ghost sm" data-hide-dim="${esc(d.id)}" title="${esc(t("mood_hide_title"))}" style="padding:1px 6px;font-size:11px;">✕</button>
         </div>
         <div class="mood-scale">${btns}</div>
@@ -1425,19 +1451,6 @@ function renderMoodModal() {
         .join("")
     : `<div class="muted sm-text">${esc(t("mg_empty_group"))}</div>`;
 
-  // Color & group controls stay neatly tucked inside the collapsed <details> drawer (zero everyday clutter!)
-  const colorBox = $("#mood-color-list");
-  if (colorBox) {
-    colorBox.innerHTML = state.stateDims
-      .map(
-        (d) => `
-      <label class="dim-color-item">
-        <input type="color" class="dim-color-inp" data-dim-color="${esc(d.id)}" value="${esc(dimColor(d))}" />
-        <span>${esc(dimName(d))}</span>
-      </label>`
-      )
-      .join("");
-  }
   renderMoodGroupManager();
 
   const archBox = $("#mood-archived-axes");
@@ -3104,6 +3117,20 @@ function bindEvents() {
       toast(t("mg_deleted"));
       return;
     }
+    const inlineEditBtn = e.target.closest("[data-dim-inline-edit]");
+    if (inlineEditBtn) {
+      state.editingDimId = inlineEditBtn.dataset.dimInlineEdit;
+      const focusTarget = inlineEditBtn.dataset.focus === "low" ? "#dim-edit-low" : "#dim-edit-name";
+      renderMoodModal();
+      const inp = $(focusTarget);
+      if (inp) setTimeout(() => { inp.focus(); inp.select(); }, 15);
+      return;
+    }
+    if (e.target.closest("[data-dim-edit-cancel]")) {
+      state.editingDimId = null;
+      renderMoodModal();
+      return;
+    }
     const mBtn = e.target.closest("[data-mdim]");
     if (mBtn) {
       const dimId = mBtn.dataset.mdim;
@@ -3139,7 +3166,8 @@ function bindEvents() {
       await openMoodModal();
     }
   });
-  $("#mood-color-list").addEventListener("change", async (e) => {
+  // Tap directly on any axis color dot to update color immediately
+  $("#mood-axes-list").addEventListener("change", async (e) => {
     const inp = e.target.closest("[data-dim-color]");
     if (!inp) return;
     const dimId = inp.dataset.dimColor;
@@ -3153,6 +3181,36 @@ function bindEvents() {
       if (local) local.color = updated.color || color;
       renderMoodModal();
       toast(t("axis_color_saved", { name: dimName(local || { id: dimId, name: dimId }) }));
+      if (state.tab === "today") await refreshAfterLogMutation();
+      if (state.tab === "analysis") await loadAnalysis();
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+    }
+  });
+  // Save inline axis rename / 1-5 anchor labels on Enter or Save click
+  $("#mood-axes-list").addEventListener("submit", async (e) => {
+    const form = e.target.closest("[data-dim-edit-form]");
+    if (!form) return;
+    e.preventDefault();
+    const dimId = form.dataset.dimEditForm;
+    const name = ($("#dim-edit-name").value || "").trim();
+    const low_label = ($("#dim-edit-low").value || "").trim();
+    const high_label = ($("#dim-edit-high").value || "").trim();
+    if (!name) return;
+    try {
+      const updated = await api(`/api/state/dimensions/${encodeURIComponent(dimId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, low_label, high_label }),
+      });
+      const local = state.stateDims.find((d) => d.id === dimId);
+      if (local) {
+        local.name = updated.name;
+        local.low_label = updated.low_label;
+        local.high_label = updated.high_label;
+      }
+      state.editingDimId = null;
+      renderMoodModal();
+      toast(t("axis_updated", { name: updated.name }));
       if (state.tab === "today") await refreshAfterLogMutation();
       if (state.tab === "analysis") await loadAnalysis();
     } catch (err) {
@@ -4324,6 +4382,11 @@ function bindEvents() {
     const tag = (e.target.tagName || "").toLowerCase();
     const typing = tag === "input" || tag === "textarea" || tag === "select";
     if (e.key === "Escape") {
+      if (state.editingDimId) {
+        state.editingDimId = null;
+        renderMoodModal();
+        return;
+      }
       closeRetroModal();
       closeCustomLog();
       closeEditEventModal();
