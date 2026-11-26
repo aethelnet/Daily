@@ -1888,9 +1888,8 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           )
           .join("");
         return `
-        <div class="list-row setup-drag-row" data-habit-id="${esc(h.id)}">
+        <div class="list-row setup-drag-row" data-habit-id="${esc(h.id)}" title="${esc(t("drag_reorder_title"))}">
           <div class="row-inline" style="flex:1;min-width:0;">
-            <span class="drag-handle" title="${esc(t("drag_reorder_title"))}" aria-label="${esc(t("drag_reorder_title"))}">⋮⋮</span>
             <span class="ev-dot" style="background:${esc(h.color)}"></span>
             <strong>${esc(h.name)}</strong>
             <span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span>
@@ -1973,26 +1972,8 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
     }
   }
 
-  // Render rollup edges
-  $("#rollup-list").innerHTML = rollups.length
-    ? rollups
-        .map(
-          (e) => `
-      <div class="list-row">
-        <div class="row-inline">
-          <strong>${esc(e.source_name)}</strong>
-          <span class="chip ${e.weight >= 0 ? "pos-chip" : "neg-chip"}">${e.weight >= 0 ? "+" : ""}${fmtNum(e.weight)}</span>
-          <span class="arrow">→</span>
-          <strong>${esc(e.target_name)}</strong>
-        </div>
-        <div class="row-inline">
-          <button class="btn ghost sm" data-edit-rollup="${e.id}" title="${esc(t("edit_edge_title"))}">Edit</button>
-          <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
-        </div>
-      </div>`
-        )
-        .join("")
-    : `<div class="muted sm-text">${esc(t("no_rollups"))}</div>`;
+  // Render rollup edges clustered by target habit (following your Habit order!)
+  renderRollupList();
 
   // Render hypothesis edges
   const hyps = state.edges.filter((e) => e.relation_type === "hypothesis");
@@ -2022,6 +2003,100 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
   resetRollupForm();
   resetHypForm();
   renderHabitColorSwatches();
+}
+
+function renderRollupList() {
+  const box = $("#rollup-list");
+  if (!box) return;
+  const rollups = (state.edges || []).filter((e) => e.relation_type === "rollup");
+  if (!rollups.length) {
+    box.innerHTML = `<div class="muted sm-text">${esc(t("no_rollups"))}</div>`;
+    return;
+  }
+  const habitById = {};
+  const orderIdx = {};
+  (state.habits || []).forEach((h, i) => {
+    habitById[h.id] = h;
+    orderIdx[h.id] = i;
+  });
+  (state.archivedHabits || []).forEach((h, i) => {
+    if (!habitById[h.id]) {
+      habitById[h.id] = h;
+      orderIdx[h.id] = 10000 + i;
+    }
+  });
+
+  const groupsMap = new Map();
+  for (const e of rollups) {
+    if (!groupsMap.has(e.target_id)) {
+      groupsMap.set(e.target_id, {
+        target_id: e.target_id,
+        target_name: e.target_name || (habitById[e.target_id] && habitById[e.target_id].name) || e.target_id,
+        target: habitById[e.target_id] || null,
+        edges: [],
+      });
+    }
+    groupsMap.get(e.target_id).edges.push(e);
+  }
+
+  const groups = Array.from(groupsMap.values()).sort((a, b) => {
+    const oa = orderIdx[a.target_id] ?? 99999;
+    const ob = orderIdx[b.target_id] ?? 99999;
+    if (oa !== ob) return oa - ob;
+    return a.target_name.localeCompare(b.target_name);
+  });
+
+  box.innerHTML = groups
+    .map((g) => {
+      g.edges.sort((a, b) => {
+        const aPos = Number(a.weight) >= 0 ? 0 : 1;
+        const bPos = Number(b.weight) >= 0 ? 0 : 1;
+        if (aPos !== bPos) return aPos - bPos;
+        const magDiff = Math.abs(Number(b.weight)) - Math.abs(Number(a.weight));
+        if (Math.abs(magDiff) > 1e-6) return magDiff;
+        const sa = orderIdx[a.source_id] ?? 99999;
+        const sb = orderIdx[b.source_id] ?? 99999;
+        if (sa !== sb) return sa - sb;
+        return String(a.source_name || "").localeCompare(String(b.source_name || ""));
+      });
+      const tColor = (g.target && g.target.color) || "var(--muted)";
+      const tBadge =
+        g.target && g.target.kind !== "neutral"
+          ? `<span class="badge ${esc(kindBadgeClass(g.target))}">${esc(kindBadgeText(g.target))}</span>`
+          : "";
+      const rowsHtml = g.edges
+        .map((e) => {
+          const srcH = habitById[e.source_id];
+          const sColor = (srcH && srcH.color) || "var(--muted)";
+          return `
+          <div class="route-cluster-row">
+            <div class="row-inline" style="min-width:0;">
+              <span class="ev-dot" style="background:${esc(sColor)}"></span>
+              <strong>${esc(e.source_name)}</strong>
+              <span class="chip ${e.weight >= 0 ? "pos-chip" : "neg-chip"}">${e.weight >= 0 ? "+" : ""}${fmtNum(e.weight)}</span>
+            </div>
+            <div class="row-inline">
+              <button class="btn ghost sm" data-edit-rollup="${e.id}" title="${esc(t("edit_edge_title"))}">Edit</button>
+              <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
+            </div>
+          </div>`;
+        })
+        .join("");
+      return `
+      <div class="route-cluster">
+        <div class="route-cluster-head">
+          <div class="row-inline" style="min-width:0;">
+            <span class="arrow">→</span>
+            <span class="ev-dot" style="background:${esc(tColor)}"></span>
+            <strong>${esc(g.target_name)}</strong>
+            ${tBadge}
+          </div>
+          <span class="muted mono sm-text">${g.edges.length}</span>
+        </div>
+        <div class="route-cluster-items">${rowsHtml}</div>
+      </div>`;
+    })
+    .join("");
 }
 
 const DEFAULT_HABIT_SWATCHES = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0d9488", "#475569"];
@@ -3731,13 +3806,43 @@ function bindEvents() {
     if (btn) populateHabitForm(btn.dataset.setupEdit);
   });
 
-  // Smooth touch- & mouse-friendly pointer drag-and-drop reordering in Setup (zero accidental archive taps!)
+  // Clean whole-row drag-and-drop reordering in Setup (zero icons! Mouse: drag row; Touch: brief hold ~210ms)
   let dragRow = null;
+  let pendingRow = null;
   let dragStartOrder = [];
+  let dragPointerId = null;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let holdTimer = null;
+
+  const clearPendingDrag = () => {
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+    pendingRow = null;
+  };
+
+  const activateHabitDrag = (row, pointerId) => {
+    clearPendingDrag();
+    dragRow = row;
+    dragStartOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
+    row.classList.add("is-dragging");
+    try { row.setPointerCapture(pointerId); } catch {}
+    if (navigator.vibrate) {
+      try { navigator.vibrate(10); } catch {}
+    }
+  };
+
   const finishHabitDrag = async () => {
+    clearPendingDrag();
     if (!dragRow) return;
     dragRow.classList.remove("is-dragging");
+    if (dragPointerId != null) {
+      try { dragRow.releasePointerCapture(dragPointerId); } catch {}
+    }
     dragRow = null;
+    dragPointerId = null;
     const newOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
     const changed = newOrder.length === dragStartOrder.length && newOrder.some((id, i) => id !== dragStartOrder[i]);
     if (changed) {
@@ -3748,6 +3853,7 @@ function bindEvents() {
         });
         const byIdMap = Object.fromEntries(state.habits.map((h) => [h.id, h]));
         state.habits = newOrder.map((id, i) => ({ ...byIdMap[id], sort_order: i })).filter((x) => x && x.id);
+        renderRollupList();
         toast(t("reordered_toast"));
       } catch (err) {
         toast(t("err_prefix", { msg: err.message }));
@@ -3755,18 +3861,43 @@ function bindEvents() {
       }
     }
   };
+
+  setupList.addEventListener("contextmenu", (e) => {
+    if (e.target.closest(".setup-drag-row")) e.preventDefault();
+  });
+  setupList.addEventListener("touchmove", (e) => {
+    if (dragRow) e.preventDefault();
+  }, { passive: false });
   setupList.addEventListener("pointerdown", (e) => {
-    const handle = e.target.closest(".drag-handle");
-    if (!handle) return;
-    const row = handle.closest(".setup-drag-row");
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (e.target.closest("button, a, input, select")) return;
+    const row = e.target.closest(".setup-drag-row");
     if (!row) return;
-    e.preventDefault();
-    dragRow = row;
-    dragStartOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
-    row.classList.add("is-dragging");
-    try { handle.setPointerCapture(e.pointerId); } catch {}
+    pendingRow = row;
+    dragPointerId = e.pointerId;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    if (e.pointerType === "touch") {
+      holdTimer = setTimeout(() => {
+        if (pendingRow === row) activateHabitDrag(row, e.pointerId);
+      }, 210);
+    }
   });
   setupList.addEventListener("pointermove", (e) => {
+    if (pendingRow && !dragRow) {
+      const dx = Math.abs(e.clientX - dragStartX);
+      const dy = Math.abs(e.clientY - dragStartY);
+      if (e.pointerType === "touch") {
+        if (dx > 8 || dy > 8) clearPendingDrag();
+        return;
+      }
+      if (dy >= 4) {
+        e.preventDefault();
+        activateHabitDrag(pendingRow, e.pointerId);
+      } else {
+        return;
+      }
+    }
     if (!dragRow) return;
     e.preventDefault();
     const rows = Array.from(setupList.querySelectorAll(".setup-drag-row"));
