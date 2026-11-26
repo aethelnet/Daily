@@ -469,19 +469,41 @@
         nudge_enabled: !!h.nudge_enabled,
       });
 
-      // Smoothed browser forecast curve for tomorrow
+      // Rolling next-24h browser forecast: hr >= nowHr => later today (damped if already satisfied today); hr < nowHr => tomorrow
+      const nowHrCur = now.getHours();
+      const todayIsoNow = todayStr();
+      const todayDoneCount = liveEvents.filter((ev) => ev.habit_id === h.id && Number(ev.amount) > 0 && ev.occurred_at.slice(0, 10) === todayIsoNow).length;
+      const activeDaysForH = new Set(liveEvents.filter((ev) => ev.habit_id === h.id && Number(ev.amount) > 0).map((ev) => ev.occurred_at.slice(0, 10))).size;
+      const avgDailyFreq = activeDaysForH > 0 ? total / activeDaysForH : 1;
+      const todayDamp = todayDoneCount >= Math.max(1, avgDailyFreq) ? 0.45 : 1.0;
+
       const smooth = hist.map((_, hr) => 0.15 + hist[hr] + 0.45 * hist[(hr + 23) % 24] + 0.45 * hist[(hr + 1) % 24]);
       const smMax = Math.max(1, ...smooth);
-      const probs = total > 0 ? smooth.map((v) => Math.round((v / (smMax * 1.15)) * 1000) / 1000) : new Array(24).fill(0.05);
+      const scopes24 = Array.from({ length: 24 }, (_, hr) => (hr >= nowHrCur ? "today" : "tomorrow"));
+      const probs = total > 0
+        ? smooth.map((v, hr) => {
+            const baseP = v / (smMax * 1.15);
+            const adj = hr >= nowHrCur ? baseP * todayDamp : baseP;
+            return Math.round(Math.max(0.03, Math.min(0.95, adj)) * 1000) / 1000;
+          })
+        : new Array(24).fill(0.05);
       const aiPeak = total > 0 ? probs.indexOf(Math.max(...probs)) : null;
       const aiPeakHrs = total > 0 ? extractPeaks24(probs, null, 3, 0.58, 0.14, 3) : [];
       if (aiPeak != null && !aiPeakHrs.length) aiPeakHrs.push(aiPeak);
       tomorrow[h.id] = {
         habit_id: h.id,
+        now_hour: nowHrCur,
         ai_hours: probs,
+        ai_scopes: scopes24,
         ai_peak_hour: aiPeak,
         ai_peak_time: aiPeak != null ? `${pad(aiPeak)}:00` : null,
-        ai_peaks: aiPeakHrs.map((hr) => ({ hour: hr, time: `${pad(hr)}:00`, prob: probs[hr], pct: Math.round(probs[hr] * 100) })),
+        ai_peaks: aiPeakHrs.map((hr) => ({
+          hour: hr,
+          time: `${pad(hr)}:00`,
+          prob: probs[hr],
+          pct: Math.round(probs[hr] * 100),
+          scope: scopes24[hr],
+        })),
       };
     }
 

@@ -804,6 +804,11 @@ class TestDailyCore(unittest.TestCase):
         self.assertIn(20, r_cod["peak_hours"])
         tm_cod = an_mp["ai"]["tomorrow"][coding["id"]]
         self.assertGreaterEqual(len(tm_cod["ai_peaks"]), 2)
+        self.assertEqual(len(tm_cod["ai_scopes"]), 24)
+        nh = tm_cod["now_hour"]
+        self.assertTrue(all(tm_cod["ai_scopes"][h] == "today" for h in range(nh, 24)))
+        self.assertTrue(all(tm_cod["ai_scopes"][h] == "tomorrow" for h in range(0, nh)))
+        self.assertTrue(all(p["scope"] in {"today", "tomorrow"} for p in tm_cod["ai_peaks"]))
 
     def test_retroactive_edits_and_deletions_clean_tabpfn_liquid_ode_and_e2ee(self) -> None:
         from daily.db import get_conn, list_events

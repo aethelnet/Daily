@@ -277,9 +277,14 @@ def _predict_tomorrow_hourly(
     habits: list[dict[str, Any]],
     events: list[dict[str, Any]],
     today_date: date,
+    now_hour: int | None = None,
+    snapshots: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Predict tomorrow's 24-hour likelihood curve & peak hour per habit using TabPFN from Day 1."""
+    """Predict rolling next-24h likelihood curve & multi-modal peaks per habit via TabPFN from Day 1:
+    - Hours >= now_hour predict LATER TODAY conditioned on actual today habits & mood so far!
+    - Hours < now_hour predict TOMORROW MORNING with today's running total as previous day."""
     habits_by_id = {h["id"]: h for h in habits}
+    by_day_events: dict[str, list[tuple[int, str, float]]] = defaultdict(list)
     by_day_hours: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
     by_day_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
@@ -289,21 +294,55 @@ def _predict_tomorrow_hourly(
             continue
         dt = datetime.fromisoformat(ev["occurred_at"])
         d_str = dt.date().isoformat()
+        amt = float(ev["amount"])
+        by_day_events[d_str].append((dt.hour, hid, amt))
         by_day_hours[d_str][hid].add(dt.hour)
-        by_day_totals[d_str][hid] += float(ev["amount"])
+        by_day_totals[d_str][hid] += amt
+
+    by_day_moods: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    for sn in snapshots or []:
+        if sn.get("deleted_at"):
+            continue
+        vals = [float(v) for v in (sn.get("ratings") or {}).values() if v is not None]
+        if not vals:
+            continue
+        try:
+            dt = datetime.fromisoformat(sn["occurred_at"])
+        except Exception:
+            continue
+        by_day_moods[dt.date().isoformat()].append((dt.hour, sum(vals) / len(vals)))
 
     observed_days = sorted(by_day_hours.keys())
-    tomorrow = today_date + timedelta(days=1)
-    tomorrow_wd = float(tomorrow.weekday())
+    cur_hr = datetime.now().hour if now_hour is None else max(0, min(23, int(now_hour)))
     today_iso = today_date.isoformat()
+    yesterday_iso = (today_date - timedelta(days=1)).isoformat()
+    tomorrow = today_date + timedelta(days=1)
+    today_wd = float(today_date.weekday())
+    tomorrow_wd = float(tomorrow.weekday())
 
-    def hour_row(wd: float, hr: int, prev_total: float) -> list[float]:
+    def latest_mood_before(d_str: str, hr_cutoff: int) -> float:
+        ms = [m for h_s, m in by_day_moods.get(d_str, []) if h_s <= hr_cutoff]
+        return float(ms[-1]) if ms else float("nan")
+
+    def hour_row(
+        wd: float,
+        hr: int,
+        prev_total: float,
+        so_far_same: float,
+        so_far_other: float,
+        mood_val: float,
+    ) -> list[float]:
         rad = 2.0 * math.pi * (hr / 24.0)
-        return [wd, float(hr), math.sin(rad), math.cos(rad), prev_total]
+        return [wd, float(hr), math.sin(rad), math.cos(rad), prev_total, so_far_same, so_far_other, mood_val]
 
     out: dict[str, dict[str, Any]] = {}
     if engine == "none" or not observed_days:
         return out
+
+    # Precompute today's live state up to right now (powers "Later today" predictions!)
+    today_evs = by_day_events.get(today_iso, [])
+    today_latest_mood = latest_mood_before(today_iso, cur_hr)
+    scopes_24 = ["today" if hr >= cur_hr else "tomorrow" for hr in range(24)]
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -318,8 +357,12 @@ def _predict_tomorrow_hourly(
                 prev_d = (dt_d - timedelta(days=1)).isoformat()
                 prev_tot = float(by_day_totals.get(prev_d, {}).get(hid, 0.0))
                 hrs = by_day_hours[d_str].get(hid, set())
+                d_evs = by_day_events.get(d_str, [])
                 for hr in range(24):
-                    X_rows.append(hour_row(wd, hr, prev_tot))
+                    so_far_same = sum(a for eh, ehid, a in d_evs if eh < hr and ehid == hid)
+                    so_far_other = float(sum(1 for eh, ehid, _a in d_evs if eh < hr and ehid != hid))
+                    mood_v = latest_mood_before(d_str, hr)
+                    X_rows.append(hour_row(wd, hr, prev_tot, so_far_same, so_far_other, mood_v))
                     # 2-hour smooth occurrence target so adjacent hours share signal naturally
                     hit = 1 if (hr in hrs or (hr + 1) % 24 in hrs) else 0
                     y_rows.append(hit)
@@ -327,13 +370,24 @@ def _predict_tomorrow_hourly(
             X_train = np.array(X_rows, dtype=np.float32)
             y_train = np.array(y_rows, dtype=np.int32)
 
-            prev_for_tomorrow = float(by_day_totals.get(today_iso, {}).get(hid, 0.0))
-            X_tomorrow = np.array([hour_row(tomorrow_wd, hr, prev_for_tomorrow) for hr in range(24)], dtype=np.float32)
+            # Build rolling next-24h query rows: hr >= cur_hr => TODAY (live context!), hr < cur_hr => TOMORROW
+            today_same_now = sum(a for eh, ehid, a in today_evs if eh <= cur_hr and ehid == hid)
+            today_other_now = float(sum(1 for eh, ehid, _a in today_evs if eh <= cur_hr and ehid != hid))
+            yest_tot_h = float(by_day_totals.get(yesterday_iso, {}).get(hid, 0.0))
+            today_tot_h = float(by_day_totals.get(today_iso, {}).get(hid, 0.0))
+            X_next24 = np.array(
+                [
+                    hour_row(today_wd, hr, yest_tot_h, today_same_now, today_other_now, today_latest_mood)
+                    if hr >= cur_hr
+                    else hour_row(tomorrow_wd, hr, today_tot_h, 0.0, 0.0, float("nan"))
+                    for hr in range(24)
+                ],
+                dtype=np.float32,
+            )
 
             n_pos = int(np.sum(y_train == 1))
             n_neg = int(np.sum(y_train == 0))
             if n_pos == 0:
-                # Zero events ever logged for this habit -> flat neutral prior so chart stays honest
                 probs = np.full(24, 0.05, dtype=np.float32)
                 peak_hr = None
                 peak_prob = 0.05
@@ -342,7 +396,6 @@ def _predict_tomorrow_hourly(
                 peak_hr = 12
                 peak_prob = 0.95
             else:
-                # TabPFNClassifier needs >= 2 samples of minority class to be stable on tiny Day-1 logs
                 if n_pos == 1:
                     pos_idx = int(np.argmax(y_train == 1))
                     X_train = np.vstack([X_train, X_train[pos_idx : pos_idx + 1]])
@@ -350,7 +403,7 @@ def _predict_tomorrow_hourly(
                 try:
                     clf = _make_classifier(engine)
                     clf.fit(X_train, y_train)
-                    probs = clf.predict_proba(X_tomorrow)[:, 1]
+                    probs = clf.predict_proba(X_next24)[:, 1]
                 except Exception:
                     probs = np.full(24, n_pos / max(1, len(y_train)), dtype=np.float32)
                 peak_hr = int(np.argmax(probs))
@@ -370,6 +423,7 @@ def _predict_tomorrow_hourly(
                     "time": f"{hr:02d}:00",
                     "prob": prob_list[hr],
                     "pct": int(round(prob_list[hr] * 100)),
+                    "scope": scopes_24[hr],
                 }
                 for hr in ai_peak_hrs
             ]
@@ -377,7 +431,9 @@ def _predict_tomorrow_hourly(
             out[hid] = {
                 "habit_id": hid,
                 "tomorrow_day": tomorrow.isoformat(),
+                "now_hour": cur_hr,
                 "ai_hours": prob_list,
+                "ai_scopes": scopes_24,
                 "ai_peak_hour": peak_hr,
                 "ai_peak_time": f"{peak_hr:02d}:00" if peak_hr is not None else None,
                 "ai_peak_pct": int(round(peak_prob * 100)) if peak_hr is not None else None,
@@ -441,13 +497,14 @@ def compute_ai_insights(
             },
         }
 
-    today_d = date.today()
-    cache_key = ("insights", engine, today_d.isoformat(), _data_signature(habits, edges, events, snapshots, state_dims))
+    now_dt = datetime.now()
+    today_d = now_dt.date()
+    cache_key = ("insights", engine, today_d.isoformat(), now_dt.hour, _data_signature(habits, edges, events, snapshots, state_dims))
     if cache_key in _ANALYSIS_CACHE:
         return _ANALYSIS_CACHE[cache_key]
 
-    # 1. Tomorrow 24h hourly AI forecast per habit (works right from the very first event!)
-    tomorrow_map = _predict_tomorrow_hourly(engine, habits, events, today_d)
+    # 1. Rolling next-24h hourly forecast per habit (today remaining hours conditioned on live state + tomorrow morning!)
+    tomorrow_map = _predict_tomorrow_hourly(engine, habits, events, today_d, now_hour=now_dt.hour, snapshots=snapshots)
 
     habits_by_id = {h["id"]: h for h in habits}
     habit_ids = [h["id"] for h in habits]
