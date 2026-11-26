@@ -33,6 +33,7 @@ from .db import (
     list_edges,
     list_events,
     list_habits,
+    list_log_range,
     list_snapshots,
     list_state_dimensions,
     log_event,
@@ -287,6 +288,20 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 routing_mode="tabpfn",
             )
         return compute_day_summary(day=day, db_path=resolved_db, routing_mode="observed")
+
+    @app.get("/api/log")
+    def api_log_range(
+        start: str | None = Query(default=None),
+        end: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        from datetime import date, timedelta
+
+        try:
+            end_d = date.fromisoformat(end[:10]) if end else date.today()
+            start_d = date.fromisoformat(start[:10]) if start else (end_d - timedelta(days=6))
+            return list_log_range(start_d.isoformat(), end_d.isoformat(), db_path=resolved_db)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/habits")
     def api_list_habits(include_archived: bool = False) -> dict[str, Any]:

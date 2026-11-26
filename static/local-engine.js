@@ -22,6 +22,13 @@
     return nowIso().slice(0, 10);
   }
 
+  function shiftDayStr(iso, deltaDays) {
+    const [y, m, d] = String(iso || todayStr()).slice(0, 10).split("-").map(Number);
+    const dt = new Date(y, m - 1, d + deltaDays);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+  }
+
   function slugify(name) {
     return (
       String(name || "")
@@ -856,6 +863,28 @@
 
     if (path === "/api/health") return { status: "ok", mode: "browser-local" };
     if (path === "/api/today") return computeToday(db, u.searchParams.get("day"));
+    if (path === "/api/log" && method === "GET") {
+      const endParam = (u.searchParams.get("end") || todayStr()).slice(0, 10);
+      const startParam = (u.searchParams.get("start") || shiftDayStr(endParam, -6)).slice(0, 10);
+      const sIso = startParam <= endParam ? startParam : endParam;
+      const eIso = startParam <= endParam ? endParam : startParam;
+      const byId = Object.fromEntries(db.habits.map((h) => [h.id, h]));
+      const events = db.events
+        .filter((ev) => !ev.deleted_at && ev.occurred_at.slice(0, 10) >= sIso && ev.occurred_at.slice(0, 10) <= eIso)
+        .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at) || b.id - a.id)
+        .map((ev) => enrichEvent(ev, byId));
+      const snapshots = db.snapshots
+        .filter((sn) => !sn.deleted_at && sn.occurred_at.slice(0, 10) >= sIso && sn.occurred_at.slice(0, 10) <= eIso)
+        .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at) || b.id - a.id);
+      return {
+        start: sIso,
+        end: eIso,
+        events,
+        snapshots,
+        state_dimensions: [...db.state_dimensions],
+        habits: [...db.habits],
+      };
+    }
     if (path === "/api/analysis") return computeAnalysis(db);
     if (path === "/api/settings" && method === "GET") return db.settings;
     if (path === "/api/settings" && method === "PATCH") {

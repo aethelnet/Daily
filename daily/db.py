@@ -959,3 +959,44 @@ def list_snapshots(
                 "SELECT * FROM snapshots WHERE deleted_at IS NULL ORDER BY occurred_at ASC, id ASC"
             ).fetchall()
     return [_decode_snapshot(r) for r in rows]
+
+
+def list_log_range(
+    start_day: str,
+    end_day: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Return all non-deleted events and snapshots within [start_day, end_day] inclusive."""
+    d_start = date.fromisoformat(start_day[:10])
+    d_end = date.fromisoformat(end_day[:10])
+    if d_start > d_end:
+        d_start, d_end = d_end, d_start
+    if (d_end - d_start).days > 365:
+        d_start = d_end - timedelta(days=365)
+    s_iso, e_iso = d_start.isoformat(), d_end.isoformat()
+    with get_conn(db_path) as conn:
+        ev_rows = conn.execute(
+            """
+            SELECT ev.*, h.name AS habit_name, h.unit AS habit_unit, h.kind AS habit_kind, h.color AS habit_color
+            FROM events ev JOIN habits h ON h.id = ev.habit_id
+            WHERE substr(ev.occurred_at, 1, 10) BETWEEN ? AND ? AND ev.deleted_at IS NULL
+            ORDER BY ev.occurred_at DESC, ev.id DESC
+            """,
+            (s_iso, e_iso),
+        ).fetchall()
+        sn_rows = conn.execute(
+            """
+            SELECT * FROM snapshots
+            WHERE substr(occurred_at, 1, 10) BETWEEN ? AND ? AND deleted_at IS NULL
+            ORDER BY occurred_at DESC, id DESC
+            """,
+            (s_iso, e_iso),
+        ).fetchall()
+    return {
+        "start": s_iso,
+        "end": e_iso,
+        "events": [dict(r) for r in ev_rows],
+        "snapshots": [_decode_snapshot(r) for r in sn_rows],
+        "state_dimensions": list_state_dimensions(include_archived=True, db_path=db_path),
+        "habits": list_habits(include_archived=True, db_path=db_path),
+    }

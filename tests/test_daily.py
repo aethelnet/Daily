@@ -756,6 +756,19 @@ class TestDailyCore(unittest.TestCase):
         self.assertFalse(r_can["active"])
         self.assertFalse(r_can["logged"])
 
+        # Multi-day log range query (/api/log) returns events & snapshots across dates, handles swapped bounds!
+        client.post("/api/events", json={"habit_id": coding["id"], "amount": 1, "occurred_at": "2026-11-22T14:00:00", "note": "before"})
+        client.post("/api/events", json={"habit_id": coding["id"], "amount": 1, "occurred_at": "2026-11-24T16:00:00", "note": "inside"})
+        client.post("/api/snapshots", json={"ratings": {"stimmung": 2}, "occurred_at": "2026-11-25T19:00:00", "note": "rough day"})
+        r_log = client.get("/api/log?start=2026-11-26&end=2026-11-24").json()
+        self.assertEqual(r_log["start"], "2026-11-24")
+        self.assertEqual(r_log["end"], "2026-11-26")
+        ev_notes = [e["note"] for e in r_log["events"]]
+        self.assertIn("inside", ev_notes)
+        self.assertNotIn("before", ev_notes)
+        self.assertEqual(len(r_log["snapshots"]), 1)
+        self.assertEqual(r_log["snapshots"][0]["note"], "rough day")
+
 
 if __name__ == "__main__":
     unittest.main()
