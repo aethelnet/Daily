@@ -11,8 +11,8 @@
   --muted: #6f7582;
   --accent: #2563eb;
   --accent-soft: rgba(37, 99, 235, 0.10);
-  --ai: #6d28d9;
-  --ai-soft: rgba(109, 40, 217, 0.10);
+  --ai: #3d6b7d;
+  --ai-soft: rgba(61, 107, 125, 0.11);
   --pos: #15803d;
   --pos-bg: rgba(21, 128, 61, 0.11);
   --pos-tint: rgba(21, 128, 61, 0.035);
@@ -43,8 +43,8 @@ body.dark {
   --muted: #8890a2;
   --accent: #4f86ff;
   --accent-soft: rgba(79, 134, 255, 0.16);
-  --ai: #a78bfa;
-  --ai-soft: rgba(167, 139, 250, 0.16);
+  --ai: #7db0c4;
+  --ai-soft: rgba(125, 176, 196, 0.16);
   --pos: #4ade80;
   --pos-bg: rgba(74, 222, 128, 0.14);
   --pos-tint: rgba(74, 222, 128, 0.045);
@@ -964,7 +964,7 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   display: inline-block;
   width: 14px;
   height: 0;
-  border-top: 2px solid #0d9488;
+  border-top: 2px solid #368470;
 }
 .leg-toggle {
   display: inline-flex;

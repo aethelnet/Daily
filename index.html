@@ -40,10 +40,6 @@
 
     <div class="top-actions">
       <button type="button" class="sync-pill hidden" id="sync-pill" data-i18n-title="sync_pill_title" title="Offline-Warteschlange synchronisieren"></button>
-      <div class="mode-switch" id="global-mode-switch" role="group" data-i18n-title="mode_switch_title" title="Routing &amp; Benachrichtigungen: dein eigenes Routing oder Tabellen-KI">
-        <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="mode_manual">Manuell</button>
-        <button type="button" class="mode-btn" data-nudge-mode="tabpfn" data-i18n="mode_ai">KI</button>
-      </div>
       <button class="btn ghost sm" id="btn-open-mood" data-i18n-title="btn_mood_title" title="Kurze Momentaufnahme: Wie geht’s mir gerade? (Taste M · ohne Notification)">
         <span data-i18n="btn_mood">Befinden</span> <kbd>M</kbd>
       </button>
@@ -217,7 +213,7 @@
               <div class="stack" style="margin-top:10px;">
                 <label class="check-row">
                   <input type="checkbox" id="hf-nudge-enabled" />
-                  <span data-i18n="hf_nudge_chk">Adaptiver Impuls (vor Peak / Tabellen-KI)</span>
+                  <span data-i18n="hf_nudge_chk">Adaptiver Impuls (vor Peak / Prognose)</span>
                 </label>
                 <div class="row-2">
                   <label class="field">
@@ -336,8 +332,8 @@
               <div class="row-inline">
                 <span class="muted sm-text" data-i18n="notif_trigger">Auslöser:</span>
                 <div class="mode-switch" id="nudge-mode-switch" role="group">
-                  <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="notif_obs">Ist-Zustand (letzte Tage)</button>
-                  <button type="button" class="mode-btn" data-nudge-mode="tabpfn" data-i18n="notif_ai">Tabellen-KI</button>
+                  <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="notif_obs">Manuell (eigene Regeln)</button>
+                  <button type="button" class="mode-btn" data-nudge-mode="tabpfn" data-i18n="notif_ai">Adaptiv (TabPFN)</button>
                 </div>
               </div>
               <label class="check-row sm-text">
@@ -512,7 +508,7 @@
             <h3 data-i18n="an_rhythm_title">Rhythmus &amp; Morgen (24h)</h3>
             <span class="legend-inline sm-text">
               <span class="leg-item"><span class="dot-obs"></span><span data-i18n="leg_obs_peak">Ist-Peak</span></span>
-              <span class="leg-item"><span class="dot-ai"></span><span data-i18n="leg_ai_tom">KI morgen</span></span>
+              <span class="leg-item"><span class="dot-ai"></span><span data-i18n="leg_ai_tom">Prognose morgen</span></span>
             </span>
           </div>
           <div id="rhythm-list" class="stack"></div>
@@ -521,7 +517,7 @@
         <div class="stack">
           <div class="panel">
             <div class="panel-head">
-              <h3 data-i18n="an_cal_title">KI-Schätzung vs. Eingetragen</h3>
+              <h3 data-i18n="an_cal_title">Prognose vs. Eingetragen</h3>
               <span class="muted mono sm-text" id="ai-mae-badge"></span>
             </div>
             <div id="ai-calibration-list" class="table-wrap"></div>
@@ -530,7 +526,7 @@
           <div class="panel">
             <div class="panel-head">
               <h3 data-i18n="an_hyps_title">Annahmen</h3>
-              <span class="muted mono sm-text" data-i18n="an_hyps_sub">deine &amp; KI</span>
+              <span class="muted mono sm-text" data-i18n="an_hyps_sub">deine &amp; erkannt</span>
             </div>
             <div id="hyp-eval-list" class="stack"></div>
             <div id="ai-assumptions-list" class="stack" style="margin-top:10px;"></div>
@@ -544,7 +540,7 @@
 
       <details class="panel ai-audit-panel" id="ai-audit-details">
         <summary class="ai-audit-summary">
-          <span data-i18n="an_audit_title">Was die KI gerade sieht</span>
+          <span data-i18n="an_audit_title">Was das Modell gerade sieht</span>
           <span id="ai-audit-summary-meta" class="muted mono sm-text"></span>
         </summary>
         <div id="ai-audit-body" class="ai-audit-body"></div>
@@ -578,7 +574,7 @@
         <button type="submit" class="btn ghost sm" data-i18n="btn_add_inline">+ Hinzufügen</button>
       </form>
 
-      <input type="text" id="retro-note" data-i18n-placeholder="retro_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) lernt die KI mit..." style="margin-top:10px;width:100%;" />
+      <input type="text" id="retro-note" data-i18n-placeholder="retro_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." style="margin-top:10px;width:100%;" />
       <div id="retro-tag-chips" class="tag-suggest-row hidden"></div>
 
       <div class="row-end" style="margin-top:14px;">
@@ -624,7 +620,7 @@
 
       <div class="row-inline" style="margin-top:12px;">
         <input type="time" id="mood-time" class="time-input mono" />
-        <input type="text" id="mood-note" data-i18n-placeholder="mood_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) lernt die KI mit..." style="flex:1;min-width:160px;" />
+        <input type="text" id="mood-note" data-i18n-placeholder="mood_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." style="flex:1;min-width:160px;" />
       </div>
       <div id="mood-tag-chips" class="tag-suggest-row hidden"></div>
 
@@ -662,7 +658,7 @@
         </div>
         <label class="field">
           <span data-i18n="cl_note">Notiz (optional)</span>
-          <input type="text" id="cl-note" data-i18n-placeholder="cl_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) lernt die KI mit..." />
+          <input type="text" id="cl-note" data-i18n-placeholder="cl_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." />
         </label>
         <div id="cl-tag-chips" class="tag-suggest-row hidden"></div>
         <div class="row-end">
@@ -699,7 +695,7 @@
         <div class="nudge-box row-inline" style="justify-content:space-between;">
           <div>
             <strong class="sm-text" data-i18n="dh_step2">2. Erledigt / Archivieren</strong>
-            <div class="muted sm-text" data-i18n="dh_step2_sub">Aus Heute ausblenden, Historie bleibt für KI</div>
+            <div class="muted sm-text" data-i18n="dh_step2_sub">Aus Heute ausblenden, Historie bleibt erhalten</div>
           </div>
           <button type="button" class="btn sm" id="btn-confirm-archive" data-i18n="btn_archive">Archivieren</button>
         </div>
