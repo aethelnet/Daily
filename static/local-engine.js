@@ -204,9 +204,11 @@
     }
     const routed = {};
     const contribMap = {};
+    const contribVia = {};
     Object.keys(habitsById).forEach((hid) => {
       routed[hid] = 0;
       contribMap[hid] = {};
+      contribVia[hid] = {};
     });
 
     function dfs(originId, curId, val, path, depth) {
@@ -220,6 +222,9 @@
         const delta = val * w;
         routed[nxt] = (routed[nxt] || 0) + delta;
         contribMap[nxt][originId] = (contribMap[nxt][originId] || 0) + delta;
+        if (curId !== originId) {
+          (contribVia[nxt][originId] ||= new Set()).add(habitsById[curId].name);
+        }
         const nextPath = new Set(path);
         nextPath.add(nxt);
         dfs(originId, nxt, delta, nextPath, depth + 1);
@@ -241,6 +246,7 @@
           from_name: habitsById[fromId].name,
           delta: Math.round(delta * 100) / 100,
           is_ai: false,
+          via: Array.from(contribVia[hid]?.[fromId] || []).sort(),
         }))
         .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
       routed[hid] = Math.round((routed[hid] || 0) * 100) / 100;
