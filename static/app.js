@@ -2163,13 +2163,18 @@ function renderRollupList() {
   });
 
   const q = (state.routeFilterQuery || "").trim().toLowerCase();
-  const filteredRollups = q
-    ? rollups.filter(
-        (e) =>
-          String(e.source_name || "").toLowerCase().includes(q) ||
-          String(e.target_name || "").toLowerCase().includes(q)
-      )
+  const focusId = state.graphFocusHabitId && habitById[state.graphFocusHabitId] ? state.graphFocusHabitId : null;
+  const focusHabit = focusId ? habitById[focusId] : null;
+  let filteredRollups = focusId
+    ? rollups.filter((e) => e.source_id === focusId || e.target_id === focusId)
     : rollups;
+  if (q) {
+    filteredRollups = filteredRollups.filter(
+      (e) =>
+        String(e.source_name || "").toLowerCase().includes(q) ||
+        String(e.target_name || "").toLowerCase().includes(q)
+    );
+  }
 
   const groupsMap = new Map();
   for (const e of filteredRollups) {
@@ -2192,12 +2197,26 @@ function renderRollupList() {
   });
 
   const autoOpen = rollups.length <= 8;
-  const showTools = rollups.length > 8 || groups.length > 3 || !!q;
+  const showTools = !focusId && (rollups.length > 8 || groups.length > 3 || !!q);
   const allCurrentlyOpen =
     groups.length > 0 &&
     groups.every((g) =>
-      q ? true : state.routeClustersAllOpen !== null ? state.routeClustersAllOpen : autoOpen || state.openRouteClusters.has(g.target_id)
+      q || focusId
+        ? true
+        : state.routeClustersAllOpen !== null
+          ? state.routeClustersAllOpen
+          : autoOpen || state.openRouteClusters.has(g.target_id)
     );
+
+  const focusBannerHtml = focusHabit
+    ? `<div class="graph-focus-banner">
+        <span class="row-inline" style="gap:7px;min-width:0;">
+          <span class="ev-dot" style="background:${esc(focusHabit.color || "var(--accent)")}"></span>
+          <strong>${esc(t("route_graph_focus", { name: focusHabit.name }))}</strong>
+        </span>
+        <button type="button" class="btn ghost sm" id="btn-clear-graph-focus" title="${esc(t("btn_close"))}">✕</button>
+      </div>`
+    : "";
 
   const toolsHtml = showTools
     ? `<div class="route-tools-bar">
@@ -2233,11 +2252,12 @@ function renderRollupList() {
           ]
             .filter(Boolean)
             .join(" · ");
-          const isOpen = q
-            ? true
-            : state.routeClustersAllOpen !== null
-              ? state.routeClustersAllOpen
-              : autoOpen || state.openRouteClusters.has(g.target_id);
+          const isOpen =
+            q || focusId
+              ? true
+              : state.routeClustersAllOpen !== null
+                ? state.routeClustersAllOpen
+                : autoOpen || state.openRouteClusters.has(g.target_id);
           const rowsHtml = g.edges
             .map((e) => {
               const srcH = habitById[e.source_id];
@@ -2272,12 +2292,14 @@ function renderRollupList() {
       </details>`;
         })
         .join("")
-    : `<div class="muted sm-text">${esc(t("route_no_match"))}</div>`;
+    : `<div class="muted sm-text">${esc(
+        focusHabit ? t("route_no_edges_for", { name: focusHabit.name }) : t("route_no_match")
+      )}</div>`;
 
   // Preserve search focus & caret when filtering live
   const wasFocused = document.activeElement && document.activeElement.id === "route-filter-input";
   const selStart = wasFocused ? document.activeElement.selectionStart : null;
-  box.innerHTML = toolsHtml + clustersHtml;
+  box.innerHTML = focusBannerHtml + toolsHtml + clustersHtml;
   if (wasFocused) {
     const inp = $("#route-filter-input");
     if (inp) {
@@ -2303,6 +2325,10 @@ function ensureRoutingGraph() {
     canvas,
     readoutEl: $("#routing-graph-readout"),
     t,
+    onSelectChange: (habitId) => {
+      state.graphFocusHabitId = habitId || null;
+      renderRollupList();
+    },
     onNodeAction: (act, habitId) => {
       if (act === "edit") {
         populateHabitForm(habitId);
@@ -2316,6 +2342,7 @@ function ensureRoutingGraph() {
           if (other && other.value === habitId) {
             other.value = pickDefaultRouteTarget(habitId);
           }
+          syncRollupExistingMatch({ autofill: true });
           const form = $("#rollup-form");
           if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
           toast(
@@ -2447,6 +2474,39 @@ function renderHabitColorSwatches() {
   if (!qcColorDirty) syncQuickCreateColor(finalSwatches[0]);
 }
 
+function syncRollupExistingMatch({ autofill = false } = {}) {
+  const hint = $("#rf-existing-hint");
+  const saveBtn = $("#btn-save-rollup");
+  const editId = $("#rf-edit-id")?.value;
+  if (editId) {
+    if (hint) hint.classList.add("hidden");
+    return;
+  }
+  const srcId = $("#rf-source")?.value;
+  const dstId = $("#rf-target")?.value;
+  const existing =
+    srcId && dstId && srcId !== dstId
+      ? (state.edges || []).find(
+          (e) => e.relation_type === "rollup" && e.source_id === srcId && e.target_id === dstId
+        )
+      : null;
+  if (existing) {
+    const w = Number(existing.weight || 0);
+    if (autofill) {
+      if ($("#rf-sign")) $("#rf-sign").value = w >= 0 ? "1" : "-1";
+      if ($("#rf-weight")) $("#rf-weight").value = String(Math.max(0.05, Math.round(Math.abs(w) * 100) / 100));
+    }
+    if (hint) {
+      hint.innerHTML = `<span class="chip ${w >= 0 ? "pos-chip" : "neg-chip"}">${w >= 0 ? "+" : ""}${fmtNum(w)}</span><span>${esc(t("rf_existing_edge"))}</span>`;
+      hint.classList.remove("hidden");
+    }
+    if (saveBtn) saveBtn.textContent = t("btn_update");
+  } else {
+    if (hint) hint.classList.add("hidden");
+    if (saveBtn) saveBtn.textContent = t("btn_connect");
+  }
+}
+
 function resetRollupForm() {
   const idEl = $("#rf-edit-id");
   if (idEl) idEl.value = "";
@@ -2456,6 +2516,7 @@ function resetRollupForm() {
   if (saveBtn) saveBtn.textContent = t("btn_connect");
   const cancelBtn = $("#btn-cancel-rollup");
   if (cancelBtn) cancelBtn.classList.add("hidden");
+  syncRollupExistingMatch({ autofill: true });
 }
 
 function populateRollupForm(edge) {
@@ -2467,6 +2528,8 @@ function populateRollupForm(edge) {
   $("#rf-target").value = edge.target_id;
   $("#btn-save-rollup").textContent = t("btn_save");
   $("#btn-cancel-rollup").classList.remove("hidden");
+  const hint = $("#rf-existing-hint");
+  if (hint) hint.classList.add("hidden");
   $("#rf-weight").focus();
   $("#rf-weight").select();
 }
@@ -5213,6 +5276,8 @@ function bindEvents() {
   if (btnGraphZOut) btnGraphZOut.addEventListener("click", () => routingGraph && routingGraph.zoomBy(1 / 1.22));
 
   $("#btn-cancel-rollup").addEventListener("click", resetRollupForm);
+  $("#rf-source").addEventListener("change", () => syncRollupExistingMatch({ autofill: true }));
+  $("#rf-target").addEventListener("change", () => syncRollupExistingMatch({ autofill: true }));
   $("#btn-cancel-hyp").addEventListener("click", () => {
     resetHypForm();
     $("#hyp-note").value = "";
@@ -5275,6 +5340,12 @@ function bindEvents() {
       }
     });
     rollupListEl.addEventListener("click", (e) => {
+      if (e.target && e.target.id === "btn-clear-graph-focus") {
+        state.graphFocusHabitId = null;
+        if (routingGraph) routingGraph.clearSelection();
+        renderRollupList();
+        return;
+      }
       if (e.target && e.target.id === "btn-toggle-all-routes") {
         const allOpen = Array.from(rollupListEl.querySelectorAll("details.route-cluster")).every((d) => d.open);
         state.routeClustersAllOpen = !allOpen;

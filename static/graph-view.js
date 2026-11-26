@@ -207,7 +207,10 @@
           };
         });
 
-      if (selectedId && !nodeById.has(selectedId)) selectedId = null;
+      if (selectedId && !nodeById.has(selectedId)) {
+        selectedId = null;
+        if (opts.onSelectChange) opts.onSelectChange(null);
+      }
       if (hoveredId && !nodeById.has(hoveredId)) hoveredId = null;
 
       alpha = Math.max(alpha, reheat);
@@ -566,6 +569,7 @@
         const gid = btn.dataset.gid;
         if (act === "clear") {
           selectedId = null;
+          if (opts.onSelectChange) opts.onSelectChange(null);
           renderReadout();
           scheduleFrame();
           return;
@@ -644,9 +648,11 @@
       } catch {}
       if (dragNode && !dragMoved) {
         selectedId = selectedId === dragNode.id ? null : dragNode.id;
+        if (opts.onSelectChange) opts.onSelectChange(selectedId);
         renderReadout();
       } else if (isPanning && !dragMoved && selectedId) {
         selectedId = null;
+        if (opts.onSelectChange) opts.onSelectChange(null);
         renderReadout();
       }
       dragNode = null;
@@ -727,6 +733,12 @@
       fit: fitView,
       zoomBy(mult) {
         camZoom = clamp(camZoom * mult, 0.35, 3.2);
+        scheduleFrame();
+      },
+      clearSelection() {
+        if (!selectedId) return;
+        selectedId = null;
+        renderReadout();
         scheduleFrame();
       },
       refreshTheme() {
