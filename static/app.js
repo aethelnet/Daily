@@ -2209,7 +2209,7 @@ function populateRollupForm(edge) {
   $("#rf-edit-id").value = edge.id;
   $("#rf-source").value = edge.source_id;
   $("#rf-sign").value = edge.weight >= 0 ? "1" : "-1";
-  $("#rf-weight").value = String(Math.max(0.1, Math.round(Math.abs(Number(edge.weight || 1)) * 10) / 10));
+  $("#rf-weight").value = String(Math.max(0.05, Math.round(Math.abs(Number(edge.weight || 1)) * 100) / 100));
   $("#rf-target").value = edge.target_id;
   $("#btn-save-rollup").textContent = t("btn_save");
   $("#btn-cancel-rollup").classList.remove("hidden");
