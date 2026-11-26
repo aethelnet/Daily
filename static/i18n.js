@@ -347,9 +347,12 @@
 
       mood_title: "Momentaufnahme — Wie geht’s dir gerade?",
       mood_desc: "Alles optional — tippe nur an, was gerade relevant ist (oder 1 Zahl und fertig).",
-      mood_add_summary: "Achsen, Farben & Gruppen anpassen",
+      mood_add_summary: "Achsen & Gruppen verwalten",
       mood_colors_lbl: "Farben:",
       axis_color_saved: "Farbe für „{name}“ gespeichert",
+      axis_updated: "Achse „{name}“ aktualisiert",
+      dim_pick_color_title: "Farbe ändern",
+      dim_rename_title: "Antippen zum Umbenennen (inkl. 1/5-Skala)",
       mg_all: "Alle",
       mg_add_title: "Eigene Befinden-Gruppe anlegen",
       mg_head: "Gruppen / Fragebögen",
@@ -789,9 +792,12 @@
 
       mood_title: "Snapshot — How are you right now?",
       mood_desc: "Everything optional — tap only what fits right now (or just 1 number and done).",
-      mood_add_summary: "Customize axes, colors & groups",
+      mood_add_summary: "Manage axes & groups",
       mood_colors_lbl: "Colors:",
       axis_color_saved: "Color for “{name}” saved",
+      axis_updated: "Axis “{name}” updated",
+      dim_pick_color_title: "Change color",
+      dim_rename_title: "Tap to rename (incl. 1/5 labels)",
       mg_all: "All",
       mg_add_title: "Create a custom mood group",
       mg_head: "Groups / Questionnaires",
@@ -938,21 +944,27 @@
   function dimName(dim) {
     if (!dim) return "";
     const b = BUILTIN_DIMS[dim.id];
-    if (b && b[currentLang]) return b[currentLang].name;
+    if (b && b[currentLang] && (!dim.name || dim.name === b.de.name || dim.name === b.en.name)) {
+      return b[currentLang].name;
+    }
     return dim.name || dim.id;
   }
 
   function dimLow(dim) {
     if (!dim) return "";
     const b = BUILTIN_DIMS[dim.id];
-    if (b && b[currentLang]) return b[currentLang].low;
+    if (b && b[currentLang] && (dim.low_label == null || dim.low_label === b.de.low || dim.low_label === b.en.low)) {
+      return b[currentLang].low;
+    }
     return dim.low_label || "";
   }
 
   function dimHigh(dim) {
     if (!dim) return "";
     const b = BUILTIN_DIMS[dim.id];
-    if (b && b[currentLang]) return b[currentLang].high;
+    if (b && b[currentLang] && (dim.high_label == null || dim.high_label === b.de.high || dim.high_label === b.en.high)) {
+      return b[currentLang].high;
+    }
     return dim.high_label || "";
   }
 

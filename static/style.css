@@ -1235,6 +1235,58 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 .dim-color-inp::-webkit-color-swatch-wrapper { padding: 0; }
 .dim-color-inp::-webkit-color-swatch { border: none; border-radius: 50%; }
 .dim-color-inp::-moz-color-swatch { border: none; border-radius: 50%; }
+.dim-dot-picker {
+  position: relative;
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.25);
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease);
+}
+.dim-dot-picker:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 2px var(--border-strong);
+}
+.dim-dot-picker input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0;
+  border: 0;
+}
+.mood-axis-title {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 3px;
+  margin-left: -3px;
+  transition: background 0.12s var(--ease);
+}
+.mood-axis-title:hover {
+  background: var(--surface-hover);
+}
+.mood-anchors.editable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 2px;
+  transition: color 0.12s var(--ease);
+}
+.mood-anchors.editable:hover { color: var(--text-2); }
+.dim-inline-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.dim-inline-edit input[type="text"] {
+  padding: 4px 8px;
+  font-size: 12px;
+}
 .mood-group-bar {
   margin-bottom: 10px;
   gap: 5px;

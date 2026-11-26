@@ -233,7 +233,7 @@ def _data_signature(
             for s in live_snaps
         ],
         "sd": [
-            (d.get("id"), d.get("name"), d.get("color") or "", bool(d.get("archived")))
+            (d.get("id"), d.get("name"), d.get("low_label") or "", d.get("high_label") or "", d.get("color") or "", bool(d.get("archived")))
             for d in (state_dims or [])
         ],
     }
