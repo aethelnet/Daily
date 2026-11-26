@@ -32,6 +32,7 @@ const state = {
   lastTimelineMeta: null,
   selectedChartTag: null,
   chartView: null, // continuous pan/zoom viewport { startHr, endHr } relative to today 00:00
+  matrixEndDay: null, // null = latest 7 days ending today; or "YYYY-MM-DD" when paging back
   stateZoom: localStorage.getItem("daily_state_zoom") || "d14",
   showTabpfnLine: localStorage.getItem("daily_show_tabpfn") !== "0",
   showOdeLine: localStorage.getItem("daily_show_ode") !== "0",
@@ -1920,35 +1921,73 @@ function renderStateCurveSection(curves, timelineMeta) {
     </div>`;
 }
 
+function renderWeekMatrix(dates, weekMatrix, endDay) {
+  const wm = $("#week-matrix");
+  const titleEl = $("#matrix-title");
+  const nextBtn = $("#btn-matrix-next");
+  const nowBtn = $("#btn-matrix-now");
+  const todayIsoNow = localDateISO(new Date());
+  const isLatest = !endDay || endDay >= todayIsoNow;
+
+  if (titleEl) {
+    if (isLatest || !dates || !dates.length) {
+      titleEl.innerHTML = t("an_last7_html");
+    } else {
+      const s = dates[0], e = dates[dates.length - 1];
+      const rangeStr = `${s.slice(8, 10)}.${s.slice(5, 7)}.–${e.slice(8, 10)}.${e.slice(5, 7)}.`;
+      titleEl.innerHTML = t("an_matrix_range_html", { range: esc(rangeStr) });
+    }
+  }
+  if (nextBtn) nextBtn.disabled = isLatest;
+  if (nowBtn) nowBtn.classList.toggle("hidden", isLatest);
+
+  if (!weekMatrix || !weekMatrix.length) {
+    wm.innerHTML = `<div class="muted sm-text">${esc(t("no_habits_yet"))}</div>`;
+    return;
+  }
+  const headerDays = (dates || [])
+    .map((d) => `<th class="${d === todayIsoNow ? "col-today" : ""}">${d.slice(8, 10)}.${d.slice(5, 7)}.</th>`)
+    .join("");
+  const rows = weekMatrix
+    .map(
+      (r) => `
+    <tr>
+      <td><span class="ev-dot" style="background:${esc(r.color)};display:inline-block;margin-right:6px;"></span>${esc(r.name)}</td>
+      ${r.days
+        .map(
+          (c) =>
+            `<td class="${c.day === todayIsoNow ? "col-today" : ""}"><span class="cell-val cell-${esc(c.status)}">${c.effective !== 0 ? fmtNum(c.effective) : "·"}</span></td>`
+        )
+        .join("")}
+    </tr>`
+    )
+    .join("");
+  wm.innerHTML = `<table class="matrix"><thead><tr><th>${esc(t("th_habit"))}</th>${headerDays}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function loadWeekMatrix(endDay) {
+  const todayIsoNow = localDateISO(new Date());
+  const clamped = !endDay || endDay >= todayIsoNow ? null : endDay;
+  state.matrixEndDay = clamped;
+  try {
+    const q = clamped ? `?end=${encodeURIComponent(clamped)}` : "";
+    const res = await api(`/api/matrix${q}`);
+    renderWeekMatrix(res.dates || [], res.week_matrix || [], clamped);
+  } catch (err) {
+    toast(t("err_prefix", { msg: err.message }));
+  }
+}
+
 async function loadAnalysis() {
   const board = await api("/api/analysis?days=30");
   const ai = board.ai || {};
   renderStateCurveSection(ai.state_curves || [], ai.timeline_meta || null);
 
-  // 1. 7-day matrix (with subtle highlight on today's column)
-  const wm = $("#week-matrix");
-  const todayIsoNow = localDateISO(new Date());
-  if (!board.week_matrix.length) {
-    wm.innerHTML = `<div class="muted sm-text">${esc(t("no_habits_yet"))}</div>`;
+  // 1. 7-day matrix (supports instant week-by-week paging into older history!)
+  if (state.matrixEndDay) {
+    await loadWeekMatrix(state.matrixEndDay);
   } else {
-    const headerDays = board.last7_dates
-      .map((d) => `<th class="${d === todayIsoNow ? "col-today" : ""}">${d.slice(8, 10)}.${d.slice(5, 7)}.</th>`)
-      .join("");
-    const rows = board.week_matrix
-      .map(
-        (r) => `
-      <tr>
-        <td><span class="ev-dot" style="background:${esc(r.color)};display:inline-block;margin-right:6px;"></span>${esc(r.name)}</td>
-        ${r.days
-          .map(
-            (c) =>
-              `<td class="${c.day === todayIsoNow ? "col-today" : ""}"><span class="cell-val cell-${esc(c.status)}">${c.effective !== 0 ? fmtNum(c.effective) : "·"}</span></td>`
-          )
-          .join("")}
-      </tr>`
-      )
-      .join("");
-    wm.innerHTML = `<table class="matrix"><thead><tr><th>${esc(t("th_habit"))}</th>${headerDays}</tr></thead><tbody>${rows}</tbody></table>`;
+    renderWeekMatrix(board.last7_dates || [], board.week_matrix || [], null);
   }
 
   // 2. 24h Rhythm + Tomorrow markers + subtle AI probability halo behind bars
@@ -3190,6 +3229,17 @@ function bindEvents() {
   if (nudgeSwitch) nudgeSwitch.addEventListener("click", handleModeSwitch);
   const globalSwitch = $("#global-mode-switch");
   if (globalSwitch) globalSwitch.addEventListener("click", handleModeSwitch);
+
+  // 7-day matrix week-by-week paging
+  $("#btn-matrix-prev").addEventListener("click", () => {
+    const base = state.matrixEndDay || localDateISO(new Date());
+    loadWeekMatrix(shiftDate(base, -7));
+  });
+  $("#btn-matrix-next").addEventListener("click", () => {
+    if (!state.matrixEndDay) return;
+    loadWeekMatrix(shiftDate(state.matrixEndDay, +7));
+  });
+  $("#btn-matrix-now").addEventListener("click", () => loadWeekMatrix(null));
 
   $("#state-axis-pills").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-scurve]");

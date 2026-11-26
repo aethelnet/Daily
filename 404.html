@@ -474,7 +474,14 @@
     <section id="view-analysis" class="view">
       <div class="panel">
         <div class="panel-head">
-          <h3 data-i18n-html="an_last7_html">Letzte 7 Tage <span class="muted mono sm-text">inkl. +/− Routing</span></h3>
+          <div class="row-inline" style="gap:8px;">
+            <h3 id="matrix-title" data-i18n-html="an_last7_html">Letzte 7 Tage <span class="muted mono sm-text">inkl. +/− Routing</span></h3>
+            <div class="row-inline" style="gap:3px;">
+              <button type="button" class="btn ghost sm" id="btn-matrix-prev" data-i18n-title="matrix_prev_title" title="7 Tage zurück">‹</button>
+              <button type="button" class="btn ghost sm" id="btn-matrix-next" data-i18n-title="matrix_next_title" title="7 Tage vor" disabled>›</button>
+              <button type="button" class="btn ghost sm hidden" id="btn-matrix-now" data-i18n="matrix_now">Aktuell</button>
+            </div>
+          </div>
           <a class="btn ghost sm" id="btn-export-csv" href="/api/export/features.csv" download="daily_features.csv">CSV</a>
         </div>
         <div id="week-matrix" class="table-wrap"></div>

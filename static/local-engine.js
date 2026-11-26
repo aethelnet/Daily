@@ -1029,6 +1029,48 @@
         habits: [...db.habits],
       };
     }
+    if (path === "/api/matrix" && method === "GET") {
+      const todayIsoCur = todayStr();
+      let endIso = (u.searchParams.get("end") || todayIsoCur).slice(0, 10);
+      if (endIso > todayIsoCur) endIso = todayIsoCur;
+      const span = Math.max(1, Math.min(14, Number(u.searchParams.get("days") || 7)));
+      const dates = [];
+      for (let i = span - 1; i >= 0; i--) dates.push(shiftDayStr(endIso, -i));
+      const allHabits = [...db.habits].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const activeHabits = allHabits.filter((h) => !h.archived);
+      const byId = Object.fromEntries(allHabits.map((h) => [h.id, h]));
+      const edges = enrichEdges(db);
+      const sIso = dates[0], eIso = dates[dates.length - 1];
+      const byDayDirect = {};
+      for (const ev of db.events) {
+        if (ev.deleted_at || !byId[ev.habit_id]) continue;
+        const dStr = ev.occurred_at.slice(0, 10);
+        if (dStr < sIso || dStr > eIso) continue;
+        byDayDirect[dStr] ||= {};
+        byDayDirect[dStr][ev.habit_id] = (byDayDirect[dStr][ev.habit_id] || 0) + Number(ev.amount);
+      }
+      const byDayEff = {};
+      for (const dStr of dates) {
+        const direct = {};
+        allHabits.forEach((h) => { direct[h.id] = (byDayDirect[dStr] && byDayDirect[dStr][h.id]) || 0; });
+        const { routed } = computeRollups(direct, byId, edges);
+        byDayEff[dStr] = {};
+        allHabits.forEach((h) => { byDayEff[dStr][h.id] = Math.round((direct[h.id] + (routed[h.id] || 0)) * 100) / 100; });
+      }
+      const week_matrix = activeHabits.map((h) => ({
+        habit_id: h.id,
+        name: h.name,
+        kind: h.kind,
+        target: h.target,
+        unit: h.unit,
+        color: h.color,
+        days: dates.map((dStr) => {
+          const eff = (byDayEff[dStr] && byDayEff[dStr][h.id]) || 0;
+          return { day: dStr, effective: eff, status: evalStatus(h, eff) };
+        }),
+      }));
+      return { start: sIso, end: eIso, is_latest: endIso >= todayIsoCur, dates, week_matrix };
+    }
     if (path === "/api/analysis") return computeAnalysis(db);
     if (path === "/api/settings" && method === "GET") return db.settings;
     if (path === "/api/settings" && method === "PATCH") {

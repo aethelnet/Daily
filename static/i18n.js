@@ -242,6 +242,10 @@
 
       // Analysis
       an_last7_html: 'Letzte 7 Tage <span class="muted mono sm-text">inkl. +/− Routing</span>',
+      an_matrix_range_html: '{range} <span class="muted mono sm-text">inkl. +/− Routing</span>',
+      matrix_prev_title: "7 Tage zurück",
+      matrix_next_title: "7 Tage vor",
+      matrix_now: "Aktuell",
       an_mood_title: "Befinden",
       an_zoom_title: "Zoom-Stufen (oder stufenlos ziehen & scrollen im Chart)",
       btn_chart_now: "Jetzt",
@@ -645,6 +649,10 @@
 
       // Analysis
       an_last7_html: 'Last 7 Days <span class="muted mono sm-text">incl. +/− routing</span>',
+      an_matrix_range_html: '{range} <span class="muted mono sm-text">incl. +/− routing</span>',
+      matrix_prev_title: "Previous 7 days",
+      matrix_next_title: "Next 7 days",
+      matrix_now: "Latest",
       an_mood_title: "Mood & State",
       an_zoom_title: "Zoom presets (or pan & zoom smoothly in chart)",
       btn_chart_now: "Now",
