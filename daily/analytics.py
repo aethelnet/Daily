@@ -176,21 +176,46 @@ def compute_day_summary(
 
     routed, contributors = compute_signed_rollups(direct, habits_by_id, edges)
 
+    # Compute fast cadence & current time-of-day fit signals for Smart ("Jetzt") Today sorting
+    active_ids = {h["id"] for h in active_habits}
+    all_hist_events = list_events(db_path=db_path)
+    target_d_obj = date.fromisoformat(target_day)
+    now_hr = datetime.now().hour
+    hist_days_by_h: dict[str, set[str]] = defaultdict(set)
+    hist_hours_by_h: dict[str, list[int]] = defaultdict(lambda: [0] * 24)
+    hist_total_by_h: dict[str, int] = defaultdict(int)
+    for ev in all_hist_events:
+        if float(ev["amount"]) <= 0:
+            continue
+        eh = ev["habit_id"]
+        if eh not in active_ids:
+            continue
+        ts_str = str(ev.get("occurred_at") or "")
+        if len(ts_str) < 13:
+            continue
+        hist_days_by_h[eh].add(ts_str[:10])
+        try:
+            hr_i = int(ts_str[11:13])
+            if 0 <= hr_i <= 23:
+                hist_hours_by_h[eh][hr_i] += 1
+        except ValueError:
+            pass
+        hist_total_by_h[eh] += 1
+
     # Period totals (week / month) for habits with target_period != 'day'
     period_eff_map: dict[str, float] = {}
     has_non_daily = any((h.get("target_period") or "day") != "day" for h in active_habits)
     if has_non_daily:
-        d_obj = date.fromisoformat(target_day)
+        d_obj = target_d_obj
         week_start = (d_obj - timedelta(days=d_obj.weekday())).isoformat()
         week_end = (d_obj + timedelta(days=6 - d_obj.weekday())).isoformat()
         month_start = d_obj.replace(day=1).isoformat()
         next_m = (d_obj.replace(day=28) + timedelta(days=4)).replace(day=1)
         month_end = (next_m - timedelta(days=1)).isoformat()
 
-        span_events = list_events(db_path=db_path)
         week_direct: dict[str, float] = {h["id"]: 0.0 for h in all_habits}
         month_direct: dict[str, float] = {h["id"]: 0.0 for h in all_habits}
-        for ev in span_events:
+        for ev in all_hist_events:
             eh = ev["habit_id"]
             if eh not in week_direct:
                 continue
@@ -210,7 +235,6 @@ def compute_day_summary(
             elif per == "month":
                 period_eff_map[hid] = round(month_direct[hid] + month_routed.get(hid, 0.0), 2)
 
-    active_ids = {h["id"] for h in active_habits}
     outgoing_rollups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for e in edges:
         if e["relation_type"] == "rollup" and e["target_id"] in active_ids:
@@ -234,6 +258,45 @@ def compute_day_summary(
         eff = round(d_val + r_val, 2)
         per = h.get("target_period") or "day"
         p_eff = period_eff_map.get(hid, eff)
+
+        # Cadence metrics (median interval between distinct logged days + days since last/created)
+        sorted_days = sorted(hist_days_by_h.get(hid, set()))
+        days_since_last: int | None = None
+        median_interval_days: float | None = None
+        if sorted_days:
+            past_or_today = [d_s for d_s in sorted_days if d_s <= target_day]
+            ref_last = past_or_today[-1] if past_or_today else sorted_days[-1]
+            days_since_last = max(0, (target_d_obj - date.fromisoformat(ref_last)).days)
+            if len(sorted_days) >= 2:
+                gaps = sorted(
+                    (date.fromisoformat(sorted_days[i]) - date.fromisoformat(sorted_days[i - 1])).days
+                    for i in range(1, len(sorted_days))
+                )
+                mid = len(gaps) // 2
+                median_interval_days = float(gaps[mid]) if len(gaps) % 2 == 1 else round((gaps[mid - 1] + gaps[mid]) / 2.0, 2)
+
+        days_since_created = 0
+        c_str = str(h.get("created_at") or "")
+        if len(c_str) >= 10:
+            try:
+                days_since_created = max(0, (target_d_obj - date.fromisoformat(c_str[:10])).days)
+            except ValueError:
+                days_since_created = 0
+
+        # Smooth circular time-of-day density at now_hr (+/- 2h window)
+        h_hist = hist_hours_by_h.get(hid)
+        hour_fit = 0.0
+        if h_hist and sum(h_hist) > 0:
+            smooth24 = [
+                h_hist[hr]
+                + 0.65 * (h_hist[(hr - 1) % 24] + h_hist[(hr + 1) % 24])
+                + 0.30 * (h_hist[(hr - 2) % 24] + h_hist[(hr + 2) % 24])
+                for hr in range(24)
+            ]
+            mx_s = max(smooth24)
+            if mx_s > 0:
+                hour_fit = round(smooth24[now_hr] / mx_s, 3)
+
         cards.append(
             {
                 **h,
@@ -243,6 +306,11 @@ def compute_day_summary(
                 "effective": eff,
                 "period_effective": p_eff,
                 "event_count": counts[hid],
+                "total_events": hist_total_by_h.get(hid, 0),
+                "days_since_last": days_since_last,
+                "median_interval_days": median_interval_days,
+                "days_since_created": days_since_created,
+                "hour_fit": hour_fit,
                 "last_used_at": last_used.get(hid),
                 "status": evaluate_goal_status(h, p_eff),
                 "contributors": contributors.get(hid, []),

@@ -1071,6 +1071,32 @@ class TestDailyCore(unittest.TestCase):
         self.assertIn("kreativ", [g["id"] for g in other_groups])
         self.assertEqual(other_s["active_mood_group"], "kreativ")
 
+    def test_today_cadence_signals_for_smart_now_mode(self) -> None:
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        laundry = client.post("/api/habits", json={"name": "Wäsche", "kind": "min", "target": 1, "target_period": "week"}).json()
+        rare = client.post("/api/habits", json={"name": "RareEvent", "kind": "neutral"}).json()
+
+        # Laundry every ~5 days (last 4 days ago -> due ratio 0.8 >= 0.72!)
+        for d_ago in (14, 9, 4):
+            d_iso = (date.today() - timedelta(days=d_ago)).isoformat()
+            client.post("/api/events", json={"habit_id": laundry["id"], "amount": 1.0, "occurred_at": f"{d_iso}T14:00:00"})
+
+        # RareEvent every ~100 days (last 5 days ago -> due ratio 0.05 -> cleanly folded as dormant!)
+        for d_ago in (105, 5):
+            d_iso = (date.today() - timedelta(days=d_ago)).isoformat()
+            client.post("/api/events", json={"habit_id": rare["id"], "amount": 1.0, "occurred_at": f"{d_iso}T15:00:00"})
+
+        today_res = client.get(f"/api/today?day={date.today().isoformat()}").json()
+        by_id = {h["id"]: h for h in today_res["habits"]}
+        self.assertEqual(by_id[laundry["id"]]["median_interval_days"], 5.0)
+        self.assertEqual(by_id[laundry["id"]]["days_since_last"], 4)
+        self.assertEqual(by_id[rare["id"]]["median_interval_days"], 100.0)
+        self.assertEqual(by_id[rare["id"]]["days_since_last"], 5)
+        self.assertGreaterEqual(by_id[laundry["id"]]["hour_fit"], 0.0)
+        self.assertLessEqual(by_id[laundry["id"]]["hour_fit"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

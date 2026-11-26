@@ -510,6 +510,62 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   border-color: var(--card-accent, var(--accent));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--card-accent, var(--accent)) 18%, transparent), var(--shadow-md);
 }
+.habit-card.card-soft-dim {
+  opacity: 0.54;
+}
+.habit-card.card-soft-dim:hover,
+.habit-card.card-soft-dim:focus-within,
+.habit-card.card-soft-dim:active {
+  opacity: 1;
+}
+.habit-card.card-synergy {
+  border-color: color-mix(in srgb, var(--pos) 45%, var(--border));
+}
+.focus-anchors-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
+  gap: 10px;
+}
+.dormant-wrap,
+.matrix-fold-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.dormant-toggle-row {
+  display: flex;
+  justify-content: center;
+}
+.drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  color: var(--muted);
+  font-size: 14px;
+  letter-spacing: -1px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  border-radius: 5px;
+  flex-shrink: 0;
+  transition: color 0.12s var(--ease), background 0.12s var(--ease);
+}
+.drag-handle:hover { color: var(--text); background: var(--surface-hover); }
+.drag-handle:active { cursor: grabbing; }
+.setup-drag-row {
+  transition: background 0.12s var(--ease), box-shadow 0.12s var(--ease), transform 0.12s var(--ease);
+}
+.setup-drag-row.is-dragging {
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  border-radius: 8px;
+  opacity: 0.92;
+  position: relative;
+  z-index: 5;
+}
 
 /* Multi-toggle connected routing clusters on Today */
 .focus-clusters {

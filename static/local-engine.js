@@ -342,12 +342,70 @@
       }
     }
 
+    // Fast cadence & current time-of-day fit signals for Smart ("Jetzt") Today sorting
+    const [tY, tM, tD] = day.split("-").map(Number);
+    const targetDayMs = Date.UTC(tY, tM - 1, tD);
+    const nowHrCur = new Date().getHours();
+    const dayDiff = (aIso, bIso) => {
+      const [ay, am, ad] = aIso.split("-").map(Number);
+      const [by, bm, bd] = bIso.split("-").map(Number);
+      return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+    };
+    const histDaysByH = {};
+    const histHoursByH = {};
+    const histTotalByH = {};
+    for (const ev of liveEvents) {
+      if (Number(ev.amount) <= 0 || !activeIds.has(ev.habit_id)) continue;
+      const ts = String(ev.occurred_at || "");
+      if (ts.length < 13) continue;
+      (histDaysByH[ev.habit_id] ||= new Set()).add(ts.slice(0, 10));
+      const hh = parseInt(ts.slice(11, 13), 10);
+      if (hh >= 0 && hh <= 23) {
+        (histHoursByH[ev.habit_id] ||= new Array(24).fill(0))[hh] += 1;
+      }
+      histTotalByH[ev.habit_id] = (histTotalByH[ev.habit_id] || 0) + 1;
+    }
+
     const cards = activeHabits.map((h) => {
       const dVal = Math.round((direct[h.id] || 0) * 100) / 100;
       const rVal = Math.round((routed[h.id] || 0) * 100) / 100;
       const eff = Math.round((dVal + rVal) * 100) / 100;
       const per = h.target_period || "day";
       const pEff = periodEffMap[h.id] != null ? periodEffMap[h.id] : eff;
+
+      const sortedDays = Array.from(histDaysByH[h.id] || []).sort();
+      let daysSinceLast = null;
+      let medianInterval = null;
+      if (sortedDays.length) {
+        const pastOrToday = sortedDays.filter((d) => d <= day);
+        const refLast = pastOrToday.length ? pastOrToday[pastOrToday.length - 1] : sortedDays[sortedDays.length - 1];
+        daysSinceLast = Math.max(0, dayDiff(refLast, day));
+        if (sortedDays.length >= 2) {
+          const gaps = [];
+          for (let i = 1; i < sortedDays.length; i++) gaps.push(dayDiff(sortedDays[i - 1], sortedDays[i]));
+          gaps.sort((a, b) => a - b);
+          const mid = Math.floor(gaps.length / 2);
+          medianInterval = gaps.length % 2 === 1 ? gaps[mid] : Math.round(((gaps[mid - 1] + gaps[mid]) / 2) * 100) / 100;
+        }
+      }
+      let daysSinceCreated = 0;
+      const cStr = String(h.created_at || "");
+      if (cStr.length >= 10) {
+        const [cy, cm, cd] = cStr.slice(0, 10).split("-").map(Number);
+        if (cy && cm && cd) daysSinceCreated = Math.max(0, Math.round((targetDayMs - Date.UTC(cy, cm - 1, cd)) / 86400000));
+      }
+      let hourFit = 0;
+      const hHist = histHoursByH[h.id];
+      if (hHist) {
+        const sm = hHist.map((_, hr) =>
+          hHist[hr] +
+          0.65 * (hHist[(hr + 23) % 24] + hHist[(hr + 1) % 24]) +
+          0.3 * (hHist[(hr + 22) % 24] + hHist[(hr + 2) % 24])
+        );
+        const mxS = Math.max(...sm);
+        if (mxS > 0) hourFit = Math.round((sm[nowHrCur] / mxS) * 1000) / 1000;
+      }
+
       return {
         ...h,
         target_period: per,
@@ -356,6 +414,11 @@
         effective: eff,
         period_effective: pEff,
         event_count: counts[h.id] || 0,
+        total_events: histTotalByH[h.id] || 0,
+        days_since_last: daysSinceLast,
+        median_interval_days: medianInterval,
+        days_since_created: daysSinceCreated,
+        hour_fit: hourFit,
         last_used_at: lastUsed[h.id] || null,
         status: evalStatus(h, pEff),
         contributors: contributors[h.id] || [],
@@ -369,7 +432,7 @@
 
     return {
       day,
-      routing_mode: db.settings.nudge_mode || "observed",
+      routing_mode: db.settings.routing_mode || "observed",
       active_edges: edges.filter((e) => e.relation_type === "rollup" && activeIds.has(e.source_id) && activeIds.has(e.target_id)),
       habits: cards,
       events: dayEvents,
