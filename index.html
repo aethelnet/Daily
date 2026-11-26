@@ -147,6 +147,35 @@
 
     <!-- ==================== TAB 2: SETUP & ROUTING ==================== -->
     <section id="view-setup" class="view">
+      <details id="routing-graph-panel" class="panel graph-panel">
+        <summary class="graph-summary">
+          <div class="row-inline" style="gap:8px;min-width:0;">
+            <span class="route-caret"></span>
+            <h3 style="margin:0;" data-i18n="graph_title">Routing-Graph</h3>
+            <span class="muted mono sm-text" id="graph-meta"></span>
+          </div>
+          <span class="muted sm-text graph-summary-hint" data-i18n="graph_summary_hint">Ziehen · Tippen · Zoom</span>
+        </summary>
+        <div class="graph-body">
+          <div class="graph-toolbar">
+            <div class="row-inline" style="gap:6px;flex-wrap:wrap;">
+              <button type="button" class="pill" id="btn-graph-hyps" data-i18n="graph_toggle_hyps">+ Annahmen</button>
+              <button type="button" class="pill" id="btn-graph-linked" data-i18n="graph_only_linked">Nur verbundene</button>
+            </div>
+            <div class="row-inline" style="gap:4px;">
+              <button type="button" class="btn ghost sm icon-btn" id="btn-graph-zoom-out" data-i18n-title="graph_zoom_out" title="Herauszoomen">−</button>
+              <button type="button" class="btn ghost sm icon-btn" id="btn-graph-zoom-in" data-i18n-title="graph_zoom_in" title="Hineinzoomen">+</button>
+              <button type="button" class="btn ghost sm" id="btn-graph-fit" data-i18n="graph_fit">Zentrieren</button>
+              <button type="button" class="btn ghost sm" id="btn-graph-reheat" data-i18n="graph_reheat">Neu ordnen</button>
+            </div>
+          </div>
+          <div class="graph-canvas-wrap">
+            <canvas id="routing-graph-canvas" class="graph-canvas"></canvas>
+          </div>
+          <div id="routing-graph-readout" class="graph-readout"></div>
+        </div>
+      </details>
+
       <div class="split-2">
         <!-- Left: Habit Editor & Order -->
         <div class="panel">
@@ -867,6 +896,7 @@
   <script src="/static/qr.js"></script>
   <script src="/static/local-engine.js"></script>
   <script src="/static/e2ee-sync.js"></script>
+  <script src="/static/graph-view.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

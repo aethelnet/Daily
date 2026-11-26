@@ -389,6 +389,7 @@ function initTheme() {
   $("#btn-theme").addEventListener("click", () => {
     document.body.classList.toggle("dark");
     localStorage.setItem("daily_theme", document.body.classList.contains("dark") ? "dark" : "light");
+    if (routingGraph) routingGraph.refreshTheme();
   });
 }
 
@@ -2108,6 +2109,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
 
   // Render rollup edges clustered by target habit (following your Habit order!)
   renderRollupList();
+  renderRoutingGraph();
 
   // Render hypothesis edges
   const hyps = state.edges.filter((e) => e.relation_type === "hypothesis");
@@ -2288,6 +2290,77 @@ function renderRollupList() {
 const DEFAULT_HABIT_SWATCHES = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0d9488", "#475569"];
 const RECENT_COLORS_KEY = "daily_recent_colors";
 let qcColorDirty = false;
+let routingGraph = null;
+let graphShowHyps = false;
+let graphOnlyLinked = false;
+let graphOpenInitialized = false;
+
+function ensureRoutingGraph() {
+  if (routingGraph || !window.DailyForceGraph) return routingGraph;
+  const canvas = $("#routing-graph-canvas");
+  if (!canvas) return null;
+  routingGraph = window.DailyForceGraph.create({
+    canvas,
+    readoutEl: $("#routing-graph-readout"),
+    t,
+    onNodeAction: (act, habitId) => {
+      if (act === "edit") {
+        populateHabitForm(habitId);
+        return;
+      }
+      if (act === "src" || act === "dst") {
+        const sel = act === "src" ? $("#rf-source") : $("#rf-target");
+        const other = act === "src" ? $("#rf-target") : $("#rf-source");
+        if (sel) {
+          sel.value = habitId;
+          if (other && other.value === habitId) {
+            other.value = pickDefaultRouteTarget(habitId);
+          }
+          const form = $("#rollup-form");
+          if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
+          toast(
+            `${(state.habits.find((h) => h.id === habitId) || {}).name || ""} → ${
+              act === "src" ? t("graph_set_src") : t("graph_set_dst")
+            }`
+          );
+        }
+      }
+    },
+  });
+  return routingGraph;
+}
+
+function renderRoutingGraph(reheat = 0.5) {
+  const panel = $("#routing-graph-panel");
+  const metaEl = $("#graph-meta");
+  const rollups = (state.edges || []).filter((e) => e.relation_type === "rollup");
+  if (metaEl) {
+    metaEl.textContent = t("graph_meta", { h: (state.habits || []).length, e: rollups.length });
+  }
+  if (!panel) return;
+  if (!graphOpenInitialized) {
+    graphOpenInitialized = true;
+    const saved = localStorage.getItem("daily_graph_open");
+    if (saved === "1") panel.open = true;
+    else if (saved === "0") panel.open = false;
+    else panel.open = window.innerWidth >= 920 && rollups.length >= 1;
+  }
+  if (!panel.open) return;
+  const g = ensureRoutingGraph();
+  if (!g) return;
+  g.update({
+    habits: state.habits || [],
+    edges: state.edges || [],
+    todayHabits: (state.todayData && state.todayData.habits) || [],
+    reheat,
+  });
+  if (!g._didFirstFit) {
+    g._didFirstFit = true;
+    setTimeout(() => {
+      if (routingGraph && panel.open) routingGraph.fit();
+    }, 420);
+  }
+}
 
 function normalizeHexColor(val) {
   const s = String(val || "").trim().toLowerCase();
@@ -5102,6 +5175,43 @@ function bindEvents() {
   });
 
   // Routing & Hypotheses forms (create or edit in place!)
+  const graphPanel = $("#routing-graph-panel");
+  if (graphPanel) {
+    graphPanel.addEventListener("toggle", () => {
+      localStorage.setItem("daily_graph_open", graphPanel.open ? "1" : "0");
+      if (graphPanel.open) {
+        renderRoutingGraph(0.65);
+        setTimeout(() => {
+          if (routingGraph) routingGraph.fit();
+        }, 380);
+      }
+    });
+  }
+  const btnGraphHyps = $("#btn-graph-hyps");
+  if (btnGraphHyps) {
+    btnGraphHyps.addEventListener("click", () => {
+      graphShowHyps = !graphShowHyps;
+      btnGraphHyps.classList.toggle("active", graphShowHyps);
+      if (routingGraph) routingGraph.setOptions({ showHyps: graphShowHyps });
+    });
+  }
+  const btnGraphLinked = $("#btn-graph-linked");
+  if (btnGraphLinked) {
+    btnGraphLinked.addEventListener("click", () => {
+      graphOnlyLinked = !graphOnlyLinked;
+      btnGraphLinked.classList.toggle("active", graphOnlyLinked);
+      if (routingGraph) routingGraph.setOptions({ onlyConnected: graphOnlyLinked });
+    });
+  }
+  const btnGraphFit = $("#btn-graph-fit");
+  if (btnGraphFit) btnGraphFit.addEventListener("click", () => routingGraph && routingGraph.fit());
+  const btnGraphReheat = $("#btn-graph-reheat");
+  if (btnGraphReheat) btnGraphReheat.addEventListener("click", () => routingGraph && routingGraph.reheat());
+  const btnGraphZIn = $("#btn-graph-zoom-in");
+  if (btnGraphZIn) btnGraphZIn.addEventListener("click", () => routingGraph && routingGraph.zoomBy(1.22));
+  const btnGraphZOut = $("#btn-graph-zoom-out");
+  if (btnGraphZOut) btnGraphZOut.addEventListener("click", () => routingGraph && routingGraph.zoomBy(1 / 1.22));
+
   $("#btn-cancel-rollup").addEventListener("click", resetRollupForm);
   $("#btn-cancel-hyp").addEventListener("click", () => {
     resetHypForm();

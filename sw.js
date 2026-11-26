@@ -1,5 +1,5 @@
 /* Daily Offline-First Service Worker (caches app shell; API calls use in-app offline queue) */
-const CACHE_NAME = "daily-shell-v64";
+const CACHE_NAME = "daily-shell-v65";
 const SHELL_ASSETS = [
   "/",
   "/static/style.css",
@@ -7,6 +7,7 @@ const SHELL_ASSETS = [
   "/static/qr.js",
   "/static/local-engine.js",
   "/static/e2ee-sync.js",
+  "/static/graph-view.js",
   "/static/app.js",
   "/manifest.webmanifest",
   "/icon.svg",
