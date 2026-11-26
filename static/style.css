@@ -881,6 +881,8 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   margin: 3px 0;
   padding: 8px 10px;
 }
+.snap-chips { gap: 4px; flex: 1 1 auto; min-width: 0; }
+.snap-actions { margin-left: auto; flex-shrink: 0; gap: 6px; flex-wrap: nowrap; }
 
 .ev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .ev-dot.snap-orb {
