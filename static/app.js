@@ -444,6 +444,7 @@ async function loadToday() {
     syncRoutingModeUI(data.routing_mode || state.settings.routing_mode || "observed");
     syncNudgeModeUI(state.settings.nudge_mode || "observed");
     renderToday(data);
+    if (!qcColorDirty) syncQuickCreateColor();
     if (state.logRange) {
       await loadLogRange(state.logRange.start, state.logRange.end);
     }
@@ -2256,6 +2257,7 @@ function renderRollupList() {
 
 const DEFAULT_HABIT_SWATCHES = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0d9488", "#475569"];
 const RECENT_COLORS_KEY = "daily_recent_colors";
+let qcColorDirty = false;
 
 function normalizeHexColor(val) {
   const s = String(val || "").trim().toLowerCase();
@@ -2270,6 +2272,37 @@ function getStoredRecentColors() {
   } catch {
     return [];
   }
+}
+
+function getRecentHabitPalette(limit = 5) {
+  const seen = new Set();
+  const palette = [];
+  const push = (hex) => {
+    const c = normalizeHexColor(hex);
+    if (!c || seen.has(c)) return;
+    seen.add(c);
+    palette.push(c);
+  };
+  for (const c of getStoredRecentColors()) push(c);
+  const allHabits = [...(state.habits || []), ...(state.archivedHabits || [])].sort((a, b) =>
+    String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))
+  );
+  for (const h of allHabits) push(h.color);
+  for (const c of DEFAULT_HABIT_SWATCHES) push(c);
+  return palette.slice(0, limit);
+}
+
+function getDefaultHabitColor() {
+  return getRecentHabitPalette(1)[0] || "#2563eb";
+}
+
+function syncQuickCreateColor(hex) {
+  const inp = $("#qc-color");
+  const wrap = $("#qc-color-wrap");
+  if (!inp && !wrap) return;
+  const col = normalizeHexColor(hex) || getDefaultHabitColor();
+  if (inp) inp.value = col;
+  if (wrap) wrap.style.background = col;
 }
 
 function rememberHabitColor(hex) {
@@ -2293,35 +2326,22 @@ function syncActiveColorSwatch() {
 
 function renderHabitColorSwatches() {
   const box = $("#hf-colors");
-  if (!box) return;
-  const seen = new Set();
-  const palette = [];
-  const push = (hex) => {
-    const c = normalizeHexColor(hex);
-    if (!c || seen.has(c)) return;
-    seen.add(c);
-    palette.push(c);
-  };
-  for (const c of getStoredRecentColors()) push(c);
-  const allHabits = [...(state.habits || []), ...(state.archivedHabits || [])].sort((a, b) =>
-    String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))
-  );
-  for (const h of allHabits) push(h.color);
-  for (const c of DEFAULT_HABIT_SWATCHES) push(c);
-  const finalSwatches = palette.slice(0, 5);
-
-  box.querySelectorAll(".swatch").forEach((el) => el.remove());
-  for (const c of finalSwatches) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "swatch";
-    btn.dataset.color = c;
-    btn.style.background = c;
-    btn.title = c;
-    btn.setAttribute("aria-label", c);
-    box.appendChild(btn);
+  const finalSwatches = getRecentHabitPalette(5);
+  if (box) {
+    box.querySelectorAll(".swatch").forEach((el) => el.remove());
+    for (const c of finalSwatches) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "swatch";
+      btn.dataset.color = c;
+      btn.style.background = c;
+      btn.title = c;
+      btn.setAttribute("aria-label", c);
+      box.appendChild(btn);
+    }
+    syncActiveColorSwatch();
   }
-  syncActiveColorSwatch();
+  if (!qcColorDirty) syncQuickCreateColor(finalSwatches[0]);
 }
 
 function resetRollupForm() {
@@ -3564,6 +3584,20 @@ function bindEvents() {
   $("#qc-kind").addEventListener("change", syncQuickCreateKindUI);
   syncQuickCreateKindUI();
 
+  const qcColorInp = $("#qc-color");
+  if (qcColorInp) {
+    qcColorInp.addEventListener("input", (e) => {
+      qcColorDirty = true;
+      syncQuickCreateColor(e.target.value);
+    });
+    qcColorInp.addEventListener("change", (e) => {
+      qcColorDirty = true;
+      syncQuickCreateColor(e.target.value);
+      rememberHabitColor(e.target.value);
+    });
+    syncQuickCreateColor();
+  }
+
   $("#quick-create-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("#qc-name").value.trim();
@@ -3571,12 +3605,16 @@ function bindEvents() {
     const rawT = $("#qc-target").value.trim();
     const target = kind !== "neutral" && rawT !== "" ? Number(rawT) : null;
     const target_period = kind !== "neutral" ? ($("#qc-period").value || "day") : "day";
+    const color = normalizeHexColor($("#qc-color")?.value) || getDefaultHabitColor();
     if (!name) return;
     try {
       await api("/api/habits", {
         method: "POST",
-        body: JSON.stringify({ name, kind, target, target_period }),
+        body: JSON.stringify({ name, kind, target, target_period, color }),
       });
+      rememberHabitColor(color);
+      qcColorDirty = false;
+      syncQuickCreateColor(color);
       $("#qc-name").value = "";
       $("#qc-target").value = "";
       $("#qc-period").value = "day";
