@@ -48,6 +48,38 @@
     return "night";
   }
 
+  function extractNoteTags(note) {
+    const out = new Set();
+    if (!note) return out;
+    const re = /(?:^|[^\w])#([a-zA-Z0-9äöüÄÖÜß_-]{2,24})/g;
+    let m;
+    while ((m = re.exec(String(note))) !== null) {
+      out.add(m[1].toLowerCase());
+    }
+    return out;
+  }
+
+  function computeTagStats(db, limit = 24) {
+    const byDay = {};
+    for (const obj of [...(db.events || []), ...(db.snapshots || [])]) {
+      if (obj.deleted_at || !obj.note) continue;
+      const tags = extractNoteTags(obj.note);
+      if (!tags.size) continue;
+      const d = String(obj.occurred_at || "").slice(0, 10);
+      if (d.length !== 10) continue;
+      byDay[d] ||= new Set();
+      tags.forEach((t) => byDay[d].add(t));
+    }
+    const counts = {};
+    for (const set of Object.values(byDay)) {
+      for (const t of set) counts[t] = (counts[t] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([tag, days]) => ({ tag, days, ai_active: days >= 2 }));
+  }
+
   function loadDB() {
     try {
       const raw = localStorage.getItem(DB_KEY);
@@ -774,7 +806,9 @@
         };
       });
 
-    return {
+      const tagStats = computeTagStats(db);
+      const liveSnapsCount = db.snapshots.filter((x) => !x.deleted_at).length;
+      return {
       observed_days: observedDays.length,
       last7_dates: last7,
       week_matrix: weekMatrix,
@@ -793,6 +827,15 @@
         assumptions: [],
         state_curves: stateCurves,
         live_nudges: {},
+        feature_audit: {
+          habits_count: allHabits.length,
+          state_dims_count: db.state_dimensions.filter((d) => !d.archived).length,
+          observed_days: observedDays.length,
+          events_count: liveEvents.length,
+          snapshots_count: liveSnapsCount,
+          active_tags: tagStats.filter((x) => x.ai_active),
+          pending_tags: tagStats.filter((x) => !x.ai_active),
+        },
       },
     };
   }
@@ -908,7 +951,7 @@
       const habits = [...db.habits]
         .filter((h) => inc || !h.archived)
         .sort((a, b) => (a.archived - b.archived) || ((a.sort_order ?? 0) - (b.sort_order ?? 0)));
-      return { habits, edges: enrichEdges(db), settings: db.settings };
+      return { habits, edges: enrichEdges(db), settings: db.settings, tags: computeTagStats(db) };
     }
     if (path === "/api/habits" && method === "POST") {
       const name = (body.name || "").trim();

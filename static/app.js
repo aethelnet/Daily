@@ -22,6 +22,7 @@ const state = {
   archivedDims: [],
   edges: [],
   settings: {},
+  tags: [],
   filterKind: "all",
   filterQuery: "",
   sortMode: localStorage.getItem("daily_sort_mode") || "manual",
@@ -333,6 +334,7 @@ async function loadToday() {
     state.habits = data.habits;
     state.edges = data.active_edges || meta.edges || [];
     state.settings = meta.settings || {};
+    state.tags = meta.tags || [];
     localStorage.setItem(`daily_today_cache_${state.day}`, JSON.stringify(data));
     syncNudgeModeUI(data.routing_mode || state.settings.nudge_mode || "observed");
     renderToday(data);
@@ -573,6 +575,49 @@ function updateBrandMark(dayData) {
 
 function renderNoteWithTags(raw) {
   return esc(raw || "").replace(/(^|\s)(#[a-zA-Z0-9äöüÄÖÜß_-]{2,24})/g, '$1<span class="tag-pill">$2</span>');
+}
+
+function noteHasTag(text, tag) {
+  const escaped = String(tag || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)#${escaped}(?=\\s|$|[.,;:!?])`, "i").test(String(text || ""));
+}
+
+function toggleTagInInput(inputEl, tag) {
+  if (!inputEl || !tag) return;
+  const val = String(inputEl.value || "");
+  const escaped = String(tag).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(^|\\s)#${escaped}(?=\\s|$|[.,;:!?])`, "gi");
+  if (re.test(val)) {
+    inputEl.value = val.replace(re, "$1").replace(/\s{2,}/g, " ").trim();
+  } else {
+    const trimmed = val.trim();
+    inputEl.value = trimmed ? `${trimmed} #${tag}` : `#${tag}`;
+  }
+  inputEl.focus();
+}
+
+function renderTagSuggestChips(containerSel, inputSel) {
+  const box = $(containerSel);
+  const inp = $(inputSel);
+  if (!box || !inp) return;
+  const tags = state.tags || [];
+  if (!tags.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  const curVal = inp.value || "";
+  box.innerHTML = tags
+    .slice(0, 14)
+    .map((tg) => {
+      const sel = noteHasTag(curVal, tg.tag);
+      const tip = tg.ai_active
+        ? t("tag_ai_active_tip", { tag: tg.tag, n: tg.days })
+        : t("tag_ai_pending_tip", { tag: tg.tag, n: tg.days });
+      return `<button type="button" class="tag-suggest-chip ${tg.ai_active ? "is-ai" : ""} ${sel ? "selected" : ""}" data-tag-pick="${esc(tg.tag)}" data-tag-input="${esc(inputSel)}" data-tag-box="${esc(containerSel)}" title="${esc(tip)}">#${esc(tg.tag)} <span class="tag-days">${tg.days}${esc(t("day_short"))}</span></button>`;
+    })
+    .join("");
 }
 
 function renderToday(data) {
@@ -939,6 +984,7 @@ function openCustomLog(habitId) {
   $("#cl-amount").value = "1";
   $("#cl-time").value = localTimeHHMM(new Date());
   $("#cl-note").value = "";
+  renderTagSuggestChips("#cl-tag-chips", "#cl-note");
   $("#custom-log-modal").classList.remove("hidden");
   $("#cl-amount").focus();
 }
@@ -949,15 +995,17 @@ function closeCustomLog() {
 
 // ---- RETRO CHECK-IN MODAL ----
 async function openRetroModal() {
-  if (!state.habits.length) {
+  if (!state.habits.length || !state.tags.length) {
     const resp = await api("/api/habits");
-    state.habits = resp.habits;
+    if (!state.habits.length) state.habits = resp.habits;
+    if (resp.tags) state.tags = resp.tags;
   }
   state.retroAmounts = {};
   $("#retro-end-time").value = localTimeHHMM(new Date());
   $("#retro-note").value = "";
   $("#retro-new-habit").value = "";
   renderRetroRows();
+  renderTagSuggestChips("#retro-tag-chips", "#retro-note");
   $("#retro-modal").classList.remove("hidden");
 }
 
@@ -970,12 +1018,13 @@ async function openMoodModal() {
   try {
     const [dimResp, habResp] = await Promise.all([
       api("/api/state/dimensions?include_archived=true"),
-      state.habits.length ? Promise.resolve({ habits: state.habits }) : api("/api/habits"),
+      api("/api/habits"),
     ]);
     const allDims = dimResp.dimensions || [];
     state.stateDims = allDims.filter((d) => !d.archived);
     state.archivedDims = allDims.filter((d) => !!d.archived);
     if (!state.habits.length && habResp.habits) state.habits = habResp.habits;
+    if (habResp.tags) state.tags = habResp.tags;
   } catch {
     // Keep cached dimensions if offline
     if (!state.stateDims.length) {
@@ -993,6 +1042,7 @@ async function openMoodModal() {
   $("#mood-time").value = localTimeHHMM(new Date());
   $("#mood-note").value = "";
   renderMoodModal();
+  renderTagSuggestChips("#mood-tag-chips", "#mood-note");
   $("#mood-modal").classList.remove("hidden");
 }
 
@@ -1937,6 +1987,54 @@ async function loadAnalysis() {
   } else {
     $("#discovered-block").classList.add("hidden");
   }
+
+  // 5. Collapsible AI Transparency Ledger ("Was die KI gerade sieht" — zero blackbox!)
+  const audit = ai.feature_audit || {
+    habits_count: (board.week_matrix || []).length,
+    state_dims_count: (ai.state_curves || []).length,
+    observed_days: board.observed_days || 0,
+    events_count: 0,
+    snapshots_count: 0,
+    active_tags: [],
+    pending_tags: [],
+  };
+  const actTags = audit.active_tags || [];
+  const pendTags = audit.pending_tags || [];
+  const metaEl = $("#ai-audit-summary-meta");
+  if (metaEl) {
+    metaEl.textContent = t("an_audit_meta", {
+      h: audit.habits_count,
+      d: audit.state_dims_count,
+      tg: actTags.length,
+    });
+  }
+  const bodyEl = $("#ai-audit-body");
+  if (bodyEl) {
+    const actTagsHtml = actTags.length
+      ? actTags.map((x) => `<span class="tag-pill">#${esc(x.tag)} · ${x.days}${esc(t("day_short"))}</span>`).join("")
+      : `<span class="muted">${esc(t("an_audit_no_active_tags"))}</span>`;
+    const pendRowHtml = pendTags.length
+      ? `<div class="ai-audit-row">
+          <span class="ai-audit-lbl">${esc(t("an_audit_pending_lbl"))}</span>
+          <span class="ai-audit-val">${pendTags.map((x) => `<span class="chip">#${esc(x.tag)} · ${x.days}${esc(t("day_short"))}</span>`).join("")} <span class="sm-text">${esc(t("an_audit_pending_hint"))}</span></span>
+        </div>`
+      : "";
+    bodyEl.innerHTML = `
+      <div class="ai-audit-row">
+        <span class="ai-audit-lbl">${esc(t("an_audit_tabpfn_lbl", { engine: ai.engine_label || "TabPFN" }))}</span>
+        <span class="ai-audit-val">${esc(t("an_audit_tabpfn_val", { h: audit.habits_count, d: audit.state_dims_count, days: audit.observed_days }))} ${actTagsHtml}</span>
+      </div>
+      ${pendRowHtml}
+      <div class="ai-audit-row">
+        <span class="ai-audit-lbl">${esc(t("an_audit_ode_lbl"))}</span>
+        <span class="ai-audit-val">${esc(t("an_audit_ode_val", { ev: audit.events_count, sn: audit.snapshots_count }))}</span>
+      </div>
+      <div class="ai-audit-row">
+        <span class="ai-audit-lbl">${esc(t("an_audit_priv_lbl"))}</span>
+        <span class="ai-audit-val">${esc(t("an_audit_priv_val"))}</span>
+      </div>
+    `;
+  }
 }
 
 // ---- EVENT BINDING ----
@@ -2197,6 +2295,23 @@ function bindEvents() {
         await loadToday();
       }
     }
+  });
+
+  // Quick-pick existing #tag chips in Mood / Custom Log / Retro note fields
+  document.body.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-tag-pick]");
+    if (!chip) return;
+    const inp = $(chip.dataset.tagInput);
+    toggleTagInInput(inp, chip.dataset.tagPick);
+    renderTagSuggestChips(chip.dataset.tagBox, chip.dataset.tagInput);
+  });
+  [
+    ["#mood-tag-chips", "#mood-note"],
+    ["#cl-tag-chips", "#cl-note"],
+    ["#retro-tag-chips", "#retro-note"],
+  ].forEach(([boxSel, inpSel]) => {
+    const inp = $(inpSel);
+    if (inp) inp.addEventListener("input", () => renderTagSuggestChips(boxSel, inpSel));
   });
 
   // Custom log modal
