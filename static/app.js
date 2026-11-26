@@ -2213,10 +2213,78 @@ function populateHypForm(edge) {
   $("#hyp-note").focus();
 }
 
+function clearHabitNameMatches() {
+  const box = $("#hf-name-matches");
+  if (!box) return;
+  box.classList.add("hidden");
+  box.innerHTML = "";
+}
+
+function renderHabitNameMatches() {
+  const box = $("#hf-name-matches");
+  const inp = $("#hf-name");
+  if (!box || !inp) return;
+  if ($("#hf-id").value) {
+    clearHabitNameMatches();
+    return;
+  }
+  const q = inp.value.trim().toLowerCase();
+  if (!q) {
+    clearHabitNameMatches();
+    return;
+  }
+  const pool = [
+    ...(state.habits || []).map((h, i) => ({ h, archived: false, order: i })),
+    ...(state.archivedHabits || []).map((h, i) => ({ h, archived: true, order: 10000 + i })),
+  ].filter((x) => String(x.h.name || "").toLowerCase().includes(q));
+
+  if (!pool.length) {
+    clearHabitNameMatches();
+    return;
+  }
+
+  pool.sort((a, b) => {
+    const na = String(a.h.name || "").toLowerCase();
+    const nb = String(b.h.name || "").toLowerCase();
+    const ea = na === q ? 0 : na.startsWith(q) ? 1 : 2;
+    const eb = nb === q ? 0 : nb.startsWith(q) ? 1 : 2;
+    if (ea !== eb) return ea - eb;
+    if (a.archived !== b.archived) return a.archived ? 1 : -1;
+    return a.order - b.order;
+  });
+
+  box.innerHTML = pool
+    .slice(0, 6)
+    .map(({ h, archived }) => {
+      const exact = String(h.name || "").toLowerCase() === q;
+      const badge =
+        h.kind !== "neutral"
+          ? `<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span>`
+          : "";
+      const cta = archived
+        ? t("hf_match_restore")
+        : exact
+          ? t("hf_match_exists")
+          : "Edit →";
+      return `
+      <button type="button" class="name-match-item${exact ? " is-exact" : ""}" data-match-habit="${esc(h.id)}" data-match-archived="${archived ? "1" : "0"}">
+        <span class="row-inline" style="min-width:0;">
+          <span class="ev-dot" style="background:${esc(h.color || "var(--muted)")};${archived ? "opacity:0.55;" : ""}"></span>
+          <strong>${esc(h.name)}</strong>
+          ${badge}
+        </span>
+        <span class="name-match-cta">${esc(cta)}</span>
+      </button>`;
+    })
+    .join("");
+  box.classList.remove("hidden");
+}
+
 function resetHabitForm() {
   $("#habit-form-title").textContent = t("hf_title_new");
   $("#hf-id").value = "";
   $("#hf-name").value = "";
+  clearHabitNameMatches();
   $("#hf-kind").value = "neutral";
   $("#hf-target").value = "";
   $("#hf-period").value = "day";
@@ -2263,6 +2331,7 @@ function syncEdgeSourceToHabit(habitId) {
 function populateHabitForm(habitId) {
   const h = state.habits.find((x) => x.id === habitId);
   if (!h) return;
+  clearHabitNameMatches();
   $("#habit-form-title").textContent = t("hf_title_edit", { name: h.name });
   $("#hf-id").value = h.id;
   $("#hf-name").value = h.name;
@@ -3799,6 +3868,30 @@ function bindEvents() {
   });
   $("#hf-color").addEventListener("input", syncActiveColorSwatch);
   $("#hf-color").addEventListener("change", (e) => rememberHabitColor(e.target.value));
+  $("#hf-name").addEventListener("input", renderHabitNameMatches);
+  $("#hf-name").addEventListener("focus", renderHabitNameMatches);
+  $("#hf-name-matches").addEventListener("click", async (e) => {
+    const item = e.target.closest("[data-match-habit]");
+    if (!item) return;
+    const hid = item.dataset.matchHabit;
+    const isArch = item.dataset.matchArchived === "1";
+    clearHabitNameMatches();
+    if (isArch) {
+      try {
+        await api(`/api/habits/${encodeURIComponent(hid)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ archived: false }),
+        });
+        toast(t("habit_restored"));
+        await loadSetup();
+        populateHabitForm(hid);
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+    } else {
+      populateHabitForm(hid);
+    }
+  });
   $("#btn-cancel-edit").addEventListener("click", resetHabitForm);
   const setupList = $("#setup-habit-list");
   setupList.addEventListener("click", (e) => {
