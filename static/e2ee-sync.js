@@ -186,6 +186,7 @@
         }
       }
     }
+    out.state_dimensions.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 
     // 3. Edges (semantic key + LWW on updated_at)
     const edgeKey = (e) => `${e.source_id}::${e.target_id}::${e.relation_type || "rollup"}::${e.context_window || "any"}`;
