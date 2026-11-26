@@ -10,8 +10,16 @@
     { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck", color: "#c85a44", sort_order: 2, archived: 0 },
     { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt", color: "#b4783c", sort_order: 3, archived: 0 },
     { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit", color: "#6e68a8", sort_order: 4, archived: 0 },
+    { id: "kraempfe", name: "Krämpfe", low_label: "keine", high_label: "stark", color: "#a85d73", sort_order: 5, archived: 0 },
   ];
   const DEFAULT_DIM_COLOR_MAP = Object.fromEntries(DEFAULT_DIMS.map((d) => [d.id, d.color]));
+  function makeDefaultMoodGroups(dims) {
+    const everyday = (dims || []).filter((d) => !d.archived && d.id !== "kraempfe").map((d) => d.id);
+    return [
+      { id: "alltag", name: "Alltag", dim_ids: everyday.length ? everyday : ["stimmung", "mental-fit", "stress", "anspannung", "antrieb"] },
+      { id: "zyklus", name: "Zyklus", dim_ids: ["stimmung", "stress", "antrieb", "kraempfe"] },
+    ];
+  }
 
   function nowIso() {
     const d = new Date();
@@ -128,10 +136,25 @@
             migrated = true;
           }
         }
+        if (parsed.settings.mood_groups_seeded !== "1") {
+          const tsMg = nowIso();
+          if (!(parsed.state_dimensions || []).some((d) => d.id === "kraempfe")) {
+            parsed.state_dimensions.push({ ...DEFAULT_DIMS[5], created_at: tsMg, updated_at: tsMg });
+          }
+          if (!parsed.settings.mood_groups) {
+            parsed.settings.mood_groups = JSON.stringify(makeDefaultMoodGroups(parsed.state_dimensions));
+          }
+          if (!parsed.settings.active_mood_group) parsed.settings.active_mood_group = "alltag";
+          if (!parsed.settings.mood_groups_updated_at) parsed.settings.mood_groups_updated_at = tsMg;
+          parsed.settings.mood_groups_seeded = "1";
+          migrated = true;
+        }
         if (migrated) saveDB(parsed);
         return parsed;
       }
     } catch {}
+    const tsFresh = nowIso();
+    const freshDims = DEFAULT_DIMS.map((d) => ({ ...d, created_at: tsFresh, updated_at: tsFresh }));
     const fresh = {
       version: 1,
       next_id: 1,
@@ -139,7 +162,7 @@
       edges: [],
       events: [],
       snapshots: [],
-      state_dimensions: DEFAULT_DIMS.map((d) => ({ ...d, created_at: nowIso() })),
+      state_dimensions: freshDims,
       settings: {
         checkin_interval_hours: "3",
         notifications_enabled: "1",
@@ -147,6 +170,10 @@
         quiet_hours_end: "8",
         nudge_mode: "observed",
         followup_enabled: "1",
+        mood_groups: JSON.stringify(makeDefaultMoodGroups(freshDims)),
+        active_mood_group: "alltag",
+        mood_groups_updated_at: tsFresh,
+        mood_groups_seeded: "1",
       },
     };
     saveDB(fresh);

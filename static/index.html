@@ -612,14 +612,16 @@
         <h3 id="mood-modal-title" data-i18n="mood_title">Momentaufnahme — Wie geht’s dir gerade?</h3>
         <button class="btn ghost sm" id="btn-close-mood">✕</button>
       </div>
-      <p class="muted sm-text" style="margin:0 0 12px;" data-i18n="mood_desc">
+      <p class="muted sm-text" style="margin:0 0 10px;" data-i18n="mood_desc">
         Alles optional — tippe nur an, was gerade relevant ist (oder 1 Zahl und fertig).
       </p>
 
+      <div id="mood-group-pills" class="row-inline mood-group-bar"></div>
+
       <div id="mood-axes-list" class="stack"></div>
 
-      <details class="nudge-box" style="margin-top:10px;">
-        <summary data-i18n="mood_add_summary">Achsen &amp; Farben anpassen / eigene Achse hinzufügen</summary>
+      <details id="mood-manage-details" class="nudge-box" style="margin-top:10px;">
+        <summary data-i18n="mood_add_summary">Achsen, Farben &amp; Gruppen anpassen</summary>
         <div id="mood-color-list" class="dim-color-grid" style="margin-top:8px;"></div>
         <form id="mood-add-axis-form" class="stack" style="margin-top:10px;">
           <div class="row-inline">
@@ -635,6 +637,21 @@
           </div>
         </form>
         <div id="mood-archived-axes" class="row-inline" style="margin-top:8px;"></div>
+
+        <hr class="sep" style="margin:10px 0;" />
+        <div id="mood-group-manager" class="stack">
+          <div class="muted sm-text" style="font-weight:600;" data-i18n="mg_head">Gruppen / Fragebögen</div>
+          <div id="mood-group-list" class="compact-list"></div>
+          <form id="mood-group-form" class="stack">
+            <input type="hidden" id="mg-edit-id" />
+            <div class="row-inline">
+              <input type="text" id="mg-name" data-i18n-placeholder="mg_name_ph" placeholder="Neue Gruppe (z. B. Zyklus, Erkältung, Fokus)" style="flex:1;" />
+              <button type="button" class="btn ghost sm hidden" id="btn-cancel-mg" data-i18n="btn_cancel">Abbrechen</button>
+              <button type="submit" class="btn sm" id="btn-save-mg" data-i18n="mg_save">Gruppe speichern</button>
+            </div>
+            <div id="mg-dim-picks" class="row-inline" style="gap:5px;"></div>
+          </form>
+        </div>
       </details>
 
       <div id="mood-causes-wrap" class="stack" style="margin-top:12px;">

@@ -247,6 +247,20 @@
       }
     }
 
+    // 6. Synced settings (mood_groups LWW)
+    const rSet = remote.settings || {};
+    if (rSet.mood_groups !== undefined) {
+      const rMgUpd = String(rSet.mood_groups_updated_at || "");
+      const lMgUpd = String(out.settings.mood_groups_updated_at || "");
+      if (rMgUpd > lMgUpd || (!lMgUpd && rSet.mood_groups)) {
+        out.settings.mood_groups = String(rSet.mood_groups);
+        out.settings.mood_groups_updated_at = rMgUpd || new Date().toISOString();
+        if (rSet.active_mood_group !== undefined) {
+          out.settings.active_mood_group = String(rSet.active_mood_group);
+        }
+      }
+    }
+
     out.next_id = maxId + 1;
     return out;
   }

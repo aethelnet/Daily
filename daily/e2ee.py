@@ -178,7 +178,17 @@ def export_local_state_for_vault(db_path: Path = DEFAULT_DB_PATH) -> dict[str, A
     settings = get_settings(db_path)
     sync_settings = {
         k: settings[k]
-        for k in ("checkin_interval_hours", "notifications_enabled", "quiet_hours_start", "quiet_hours_end", "nudge_mode", "followup_enabled")
+        for k in (
+            "checkin_interval_hours",
+            "notifications_enabled",
+            "quiet_hours_start",
+            "quiet_hours_end",
+            "nudge_mode",
+            "followup_enabled",
+            "mood_groups",
+            "mood_groups_updated_at",
+            "active_mood_group",
+        )
         if k in settings
     }
     return {
@@ -437,6 +447,18 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                         ),
                     )
                     stats["snapshots"] += 1
+
+        # 6. Synced settings (mood_groups via LWW on mood_groups_updated_at)
+        rem_settings = remote.get("settings") or {}
+        if "mood_groups" in rem_settings:
+            r_mg_upd = str(rem_settings.get("mood_groups_updated_at") or "")
+            l_row = conn.execute("SELECT value FROM settings WHERE key = 'mood_groups_updated_at'").fetchone()
+            l_mg_upd = str(l_row["value"]) if l_row else ""
+            if r_mg_upd > l_mg_upd or (not l_mg_upd and rem_settings.get("mood_groups")):
+                conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups', ?)", (str(rem_settings["mood_groups"]),))
+                conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups_updated_at', ?)", (r_mg_upd or ts_now,))
+                if "active_mood_group" in rem_settings:
+                    conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('active_mood_group', ?)", (str(rem_settings["active_mood_group"]),))
 
     return stats
 

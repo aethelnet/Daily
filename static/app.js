@@ -13,8 +13,32 @@ const DEFAULT_DIM_COLORS = {
   stress: "#c85a44",
   anspannung: "#b4783c",
   antrieb: "#6e68a8",
+  kraempfe: "#a85d73",
 };
+const CORE_EVERYDAY_DIMS = new Set(["stimmung", "mental-fit", "stress", "anspannung", "antrieb"]);
 const dimColor = (d) => (d && d.color && /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : DEFAULT_DIM_COLORS[d && d.id] || "#3d6b7d");
+
+function parseMoodGroups(settingsObj) {
+  const raw = settingsObj && settingsObj.mood_groups;
+  if (raw) {
+    try {
+      const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (Array.isArray(arr)) {
+        return arr
+          .filter((g) => g && g.id && g.name && Array.isArray(g.dim_ids))
+          .map((g) => ({ id: String(g.id), name: String(g.name), dim_ids: g.dim_ids.map(String) }));
+      }
+    } catch {}
+  }
+  return [];
+}
+
+function moodGroupLabel(g) {
+  if (!g) return "";
+  if (g.id === "alltag" && g.name === "Alltag") return t("mg_default_alltag");
+  if (g.id === "zyklus" && g.name === "Zyklus") return t("mg_default_zyklus");
+  return g.name;
+}
 
 // Anti-muddy composite mood color: pick the 1-2 most salient rated axes (ignoring low 1/5 "none" values)
 // and build a crisp two-tone orb + whisper-soft row wash instead of averaging 5 colors into brown!
@@ -94,6 +118,9 @@ const state = {
   retroAmounts: {},
   moodRatings: {},
   moodCauses: new Set(),
+  moodGroups: [],
+  activeMoodGroup: "alltag",
+  mgDraftDims: new Set(),
   editingSnapId: null,
   editingEvent: null,
   logEventsById: {},
@@ -834,7 +861,7 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
       <strong>${esc(t("btn_mood"))}</strong>
       <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
       <span class="muted sm-text" data-snap-edit="${sn.id}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" title="${esc(t("edit_entry_title"))}">${renderNoteWithTags(sn.note || "")}</span>
-      <button class="btn ghost sm" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">✎</button>
+      <button class="btn ghost sm" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">Edit</button>
       <button class="btn ghost sm" data-snap-del="${sn.id}" title="${esc(t("del_title"))}">✕</button>
     </div>`;
   }
@@ -856,7 +883,7 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
     <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
     <span class="chip">${esc(srcTag)}</span>
     <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
-    <button class="btn ghost sm" data-ev-edit="${ev.id}" title="${esc(t("edit_entry_title"))}">✎</button>
+    <button class="btn ghost sm" data-ev-edit="${ev.id}" title="${esc(t("edit_entry_title"))}">Edit</button>
     <button class="btn ghost sm" data-ev-del="${ev.id}" title="${esc(t("del_title"))}">✕</button>
   </div>`;
 }
@@ -1097,21 +1124,35 @@ async function openMoodModal(editSnap = null) {
     state.archivedDims = allDims.filter((d) => !!d.archived);
     if (!state.habits.length && habResp.habits) state.habits = habResp.habits;
     if (habResp.tags) state.tags = habResp.tags;
+    if (habResp.settings) state.settings = habResp.settings;
   } catch {
     // Keep cached dimensions if offline
     if (!state.stateDims.length) {
       state.stateDims = [
-        { id: "stimmung", name: "Stimmung", low_label: "melancholisch", high_label: "leicht / gut" },
-        { id: "mental-fit", name: "Mental fit", low_label: "leer / neblig", high_label: "wach / klar" },
-        { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck" },
-        { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt" },
-        { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit" },
+        { id: "stimmung", name: "Stimmung", low_label: "melancholisch", high_label: "leicht / gut", color: "#368470" },
+        { id: "mental-fit", name: "Mental fit", low_label: "leer / neblig", high_label: "wach / klar", color: "#3d6b7d" },
+        { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck", color: "#c85a44" },
+        { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt", color: "#b4783c" },
+        { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit", color: "#6e68a8" },
       ];
+    }
+  }
+  state.moodGroups = parseMoodGroups(state.settings);
+  const savedActive = (state.settings && state.settings.active_mood_group) || (state.moodGroups[0] ? state.moodGroups[0].id : "all");
+  state.activeMoodGroup = savedActive === "all" || state.moodGroups.some((g) => g.id === savedActive) ? savedActive : "all";
+  // When editing an existing snapshot, make sure all of its rated axes are immediately visible
+  if (snap && snap.ratings) {
+    const ratedIds = Object.keys(snap.ratings);
+    const activeGrp = state.moodGroups.find((g) => g.id === state.activeMoodGroup);
+    if (activeGrp && ratedIds.some((id) => !activeGrp.dim_ids.includes(id))) {
+      const matchingGrp = state.moodGroups.find((g) => ratedIds.every((id) => g.dim_ids.includes(id)));
+      state.activeMoodGroup = matchingGrp ? matchingGrp.id : "all";
     }
   }
   state.editingSnapId = snap ? snap.id : null;
   state.moodRatings = snap ? { ...(snap.ratings || {}) } : {};
   state.moodCauses = new Set(snap ? snap.causes || [] : []);
+  resetMoodGroupForm();
   const titleEl = $("#mood-modal-title");
   if (titleEl) titleEl.textContent = t(snap ? "mood_title_edit" : "mood_title");
   const dateEl = $("#mood-date");
@@ -1253,25 +1294,125 @@ function closeDeleteHabitModal() {
   $("#delete-habit-modal").classList.add("hidden");
 }
 
+function resetMoodGroupForm() {
+  const idEl = $("#mg-edit-id");
+  if (idEl) idEl.value = "";
+  const nameEl = $("#mg-name");
+  if (nameEl) nameEl.value = "";
+  const cancelEl = $("#btn-cancel-mg");
+  if (cancelEl) cancelEl.classList.add("hidden");
+  const saveEl = $("#btn-save-mg");
+  if (saveEl) saveEl.textContent = t("mg_save");
+  state.mgDraftDims = new Set(["stimmung", "stress"].filter((id) => state.stateDims.some((d) => d.id === id)));
+  renderMoodGroupManager();
+}
+
+function populateMoodGroupForm(grp) {
+  if (!grp) return;
+  $("#mg-edit-id").value = grp.id;
+  $("#mg-name").value = grp.name;
+  $("#btn-cancel-mg").classList.remove("hidden");
+  $("#btn-save-mg").textContent = t("btn_save");
+  state.mgDraftDims = new Set(grp.dim_ids || []);
+  renderMoodGroupManager();
+  $("#mg-name").focus();
+}
+
+async function saveMoodGroups(nextGroups, nextActive = state.activeMoodGroup) {
+  const ts = new Date().toISOString();
+  const payload = {
+    mood_groups: JSON.stringify(nextGroups),
+    mood_groups_updated_at: ts,
+    active_mood_group: nextActive,
+  };
+  const updated = await api("/api/settings", { method: "PATCH", body: JSON.stringify(payload) });
+  state.settings = { ...state.settings, ...updated, ...payload };
+  state.moodGroups = nextGroups;
+  state.activeMoodGroup = nextActive;
+  renderMoodModal();
+}
+
+function renderMoodGroupManager() {
+  const gl = $("#mood-group-list");
+  if (gl) {
+    gl.innerHTML = state.moodGroups.length
+      ? state.moodGroups
+          .map(
+            (g) => `
+        <div class="list-row">
+          <div class="row-inline" style="gap:6px;">
+            <strong>${esc(moodGroupLabel(g))}</strong>
+            <span class="muted mono sm-text">(${(g.dim_ids || []).filter((id) => state.stateDims.some((d) => d.id === id)).length})</span>
+          </div>
+          <div class="row-inline">
+            <button type="button" class="btn ghost sm" data-mg-edit="${esc(g.id)}" title="${esc(t("btn_edit"))}">Edit</button>
+            <button type="button" class="btn ghost sm" data-mg-del="${esc(g.id)}" title="${esc(t("del_title"))}">✕</button>
+          </div>
+        </div>`
+          )
+          .join("")
+      : "";
+  }
+  const picks = $("#mg-dim-picks");
+  if (picks) {
+    picks.innerHTML = state.stateDims
+      .map((d) => {
+        const col = dimColor(d);
+        const sel = state.mgDraftDims.has(d.id);
+        return `<button type="button" class="mg-dim-chip ${sel ? "selected" : ""}" style="--axis-c:${esc(col)}" data-mg-dim="${esc(d.id)}"><span class="chip-dot" style="background:${esc(col)};margin-right:2px;"></span>${esc(dimName(d))}</button>`;
+      })
+      .join("");
+  }
+}
+
 function renderMoodModal() {
+  // Calm questionnaire group switcher pills (Alltag / Zyklus / Alle / +)
+  const gPills = $("#mood-group-pills");
+  if (gPills) {
+    if (state.moodGroups.length) {
+      gPills.classList.remove("hidden");
+      gPills.innerHTML =
+        state.moodGroups
+          .map(
+            (g) =>
+              `<button type="button" class="pill ${state.activeMoodGroup === g.id ? "active" : ""}" data-mgroup="${esc(g.id)}">${esc(moodGroupLabel(g))}</button>`
+          )
+          .join("") +
+        `<button type="button" class="pill ${state.activeMoodGroup === "all" ? "active" : ""}" data-mgroup="all">${esc(t("mg_all"))}</button>` +
+        `<button type="button" class="pill mood-group-add-pill" data-mgroup-new="1" title="${esc(t("mg_add_title"))}">+</button>`;
+    } else {
+      gPills.classList.add("hidden");
+      gPills.innerHTML = "";
+    }
+  }
+
+  const activeGrp = state.activeMoodGroup !== "all" ? state.moodGroups.find((g) => g.id === state.activeMoodGroup) : null;
+  let visibleDims = state.stateDims;
+  if (activeGrp) {
+    const dimMap = Object.fromEntries(state.stateDims.map((d) => [d.id, d]));
+    const ordered = activeGrp.dim_ids.map((id) => dimMap[id]).filter(Boolean);
+    visibleDims = ordered;
+  }
+
   const list = $("#mood-axes-list");
-  list.innerHTML = state.stateDims
-    .map((d) => {
-      const col = dimColor(d);
-      const cur = state.moodRatings[d.id];
-      const btns = [1, 2, 3, 4, 5]
-        .map(
-          (v) =>
-            `<button type="button" class="mood-btn ${cur === v ? "selected" : ""}" data-mdim="${esc(d.id)}" data-mval="${v}">${v}</button>`
-        )
-        .join("");
-      const lo = dimLow(d);
-      const hi = dimHigh(d);
-      const anchors =
-        lo || hi
-          ? `<div class="mood-anchors"><span>${esc(lo)}</span><span>${esc(hi)}</span></div>`
-          : "";
-      return `
+  list.innerHTML = visibleDims.length
+    ? visibleDims
+        .map((d) => {
+          const col = dimColor(d);
+          const cur = state.moodRatings[d.id];
+          const btns = [1, 2, 3, 4, 5]
+            .map(
+              (v) =>
+                `<button type="button" class="mood-btn ${cur === v ? "selected" : ""}" data-mdim="${esc(d.id)}" data-mval="${v}">${v}</button>`
+            )
+            .join("");
+          const lo = dimLow(d);
+          const hi = dimHigh(d);
+          const anchors =
+            lo || hi
+              ? `<div class="mood-anchors"><span>${esc(lo)}</span><span>${esc(hi)}</span></div>`
+              : "";
+          return `
       <div class="mood-axis" style="--axis-c:${esc(col)}">
         <div class="mood-axis-head">
           <span class="row-inline" style="gap:6px;"><span class="ev-dot" style="background:${esc(col)}"></span><strong>${esc(dimName(d))}</strong></span>
@@ -1280,10 +1421,11 @@ function renderMoodModal() {
         <div class="mood-scale">${btns}</div>
         ${anchors}
       </div>`;
-    })
-    .join("");
+        })
+        .join("")
+    : `<div class="muted sm-text">${esc(t("mg_empty_group"))}</div>`;
 
-  // Color controls stay neatly tucked inside the collapsed <details> drawer (zero everyday clutter!)
+  // Color & group controls stay neatly tucked inside the collapsed <details> drawer (zero everyday clutter!)
   const colorBox = $("#mood-color-list");
   if (colorBox) {
     colorBox.innerHTML = state.stateDims
@@ -1296,6 +1438,7 @@ function renderMoodModal() {
       )
       .join("");
   }
+  renderMoodGroupManager();
 
   const archBox = $("#mood-archived-axes");
   archBox.innerHTML = state.archivedDims.length
@@ -1506,7 +1649,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
               <button type="button" class="btn ghost sm" data-move-idx="${idx}" data-move-dir="1" title="${esc(t("move_down"))}" ${idx === state.habits.length - 1 ? "disabled" : ""}>↓</button>
             </span>
             <button type="button" class="btn ghost sm" data-archive-id="${esc(h.id)}" title="${esc(t("archive_title"))}">✓</button>
-            <button type="button" class="btn ghost sm" data-setup-edit="${esc(h.id)}" title="${esc(t("btn_edit"))}">✎</button>
+            <button type="button" class="btn ghost sm" data-setup-edit="${esc(h.id)}" title="${esc(t("btn_edit"))}">Edit</button>
           </div>
         </div>`;
       })
@@ -1591,7 +1734,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           <strong>${esc(e.target_name)}</strong>
         </div>
         <div class="row-inline">
-          <button class="btn ghost sm" data-edit-rollup="${e.id}" title="${esc(t("edit_edge_title"))}">✎</button>
+          <button class="btn ghost sm" data-edit-rollup="${e.id}" title="${esc(t("edit_edge_title"))}">Edit</button>
           <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
         </div>
       </div>`
@@ -1617,7 +1760,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           ${e.note ? `<div class="muted sm-text">${esc(e.note)}</div>` : ""}
         </div>
         <div class="row-inline">
-          <button class="btn ghost sm" data-edit-hyp="${e.id}" title="${esc(t("edit_edge_title"))}">✎</button>
+          <button class="btn ghost sm" data-edit-hyp="${e.id}" title="${esc(t("edit_edge_title"))}">Edit</button>
           <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
         </div>
       </div>`
@@ -1833,12 +1976,21 @@ function renderStateCurveSection(curves, timelineMeta) {
     return;
   }
 
-  if (!state.selectedStateCurveId || !curves.some((c) => c.id === state.selectedStateCurveId)) {
-    const firstRated = curves.find((c) => c.rated_count > 0);
-    state.selectedStateCurveId = (firstRated || curves[0]).id;
+  // Keep unrated example phase axes (e.g. Krämpfe when never logged) out of Analysis chart pills until used!
+  const groupsNow = parseMoodGroups(state.settings);
+  const everydayGrp = groupsNow.find((g) => g.id === "alltag");
+  const everydaySet = new Set(everydayGrp ? everydayGrp.dim_ids : []);
+  const visibleCurves = curves.filter(
+    (c) => c.rated_count > 0 || CORE_EVERYDAY_DIMS.has(c.id) || everydaySet.has(c.id)
+  );
+  const shownCurves = visibleCurves.length ? visibleCurves : curves;
+
+  if (!state.selectedStateCurveId || !shownCurves.some((c) => c.id === state.selectedStateCurveId)) {
+    const firstRated = shownCurves.find((c) => c.rated_count > 0);
+    state.selectedStateCurveId = (firstRated || shownCurves[0]).id;
   }
 
-  pillsEl.innerHTML = curves
+  pillsEl.innerHTML = shownCurves
     .map((c) => {
       const col = dimColor(c);
       const isAct = c.id === state.selectedStateCurveId;
@@ -2910,6 +3062,48 @@ function bindEvents() {
       closeMoodModal();
       return;
     }
+    const mGroupBtn = e.target.closest("[data-mgroup]");
+    if (mGroupBtn) {
+      const gid = mGroupBtn.dataset.mgroup;
+      state.activeMoodGroup = gid;
+      renderMoodModal();
+      api("/api/settings", { method: "PATCH", body: JSON.stringify({ active_mood_group: gid }) })
+        .then((upd) => { state.settings = { ...state.settings, ...upd }; })
+        .catch(() => {});
+      return;
+    }
+    if (e.target.closest("[data-mgroup-new]")) {
+      const det = $("#mood-manage-details");
+      if (det) det.open = true;
+      resetMoodGroupForm();
+      const inp = $("#mg-name");
+      if (inp) setTimeout(() => { inp.scrollIntoView({ behavior: "smooth", block: "nearest" }); inp.focus(); }, 30);
+      return;
+    }
+    const mgDimBtn = e.target.closest("[data-mg-dim]");
+    if (mgDimBtn) {
+      const did = mgDimBtn.dataset.mgDim;
+      if (state.mgDraftDims.has(did)) state.mgDraftDims.delete(did);
+      else state.mgDraftDims.add(did);
+      renderMoodGroupManager();
+      return;
+    }
+    const mgEditBtn = e.target.closest("[data-mg-edit]");
+    if (mgEditBtn) {
+      const grp = state.moodGroups.find((g) => g.id === mgEditBtn.dataset.mgEdit);
+      if (grp) populateMoodGroupForm(grp);
+      return;
+    }
+    const mgDelBtn = e.target.closest("[data-mg-del]");
+    if (mgDelBtn) {
+      const gid = mgDelBtn.dataset.mgDel;
+      const next = state.moodGroups.filter((g) => g.id !== gid);
+      const nextAct = state.activeMoodGroup === gid ? (next[0] ? next[0].id : "all") : state.activeMoodGroup;
+      await saveMoodGroups(next, nextAct);
+      resetMoodGroupForm();
+      toast(t("mg_deleted"));
+      return;
+    }
     const mBtn = e.target.closest("[data-mdim]");
     if (mBtn) {
       const dimId = mBtn.dataset.mdim;
@@ -2965,12 +3159,42 @@ function bindEvents() {
       toast(t("err_prefix", { msg: err.message }));
     }
   });
+  $("#btn-cancel-mg").addEventListener("click", resetMoodGroupForm);
+  $("#mood-group-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("#mg-name").value.trim();
+    const dimIds = Array.from(state.mgDraftDims);
+    if (!name || !dimIds.length) {
+      toast(t("mg_need_dims"));
+      return;
+    }
+    const editId = $("#mg-edit-id").value;
+    let next;
+    let targetId;
+    if (editId && state.moodGroups.some((g) => g.id === editId)) {
+      targetId = editId;
+      next = state.moodGroups.map((g) => (g.id === editId ? { ...g, name, dim_ids: dimIds } : g));
+    } else {
+      const baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `grp-${Date.now()}`;
+      targetId = baseSlug;
+      let idx = 2;
+      while (state.moodGroups.some((g) => g.id === targetId)) targetId = `${baseSlug}-${idx++}`;
+      next = [...state.moodGroups, { id: targetId, name, dim_ids: dimIds }];
+    }
+    try {
+      await saveMoodGroups(next, targetId);
+      resetMoodGroupForm();
+      toast(t("mg_saved", { name }));
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+    }
+  });
   $("#mood-add-axis-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("#ma-name").value.trim();
     if (!name) return;
     try {
-      await api("/api/state/dimensions", {
+      const created = await api("/api/state/dimensions", {
         method: "POST",
         body: JSON.stringify({
           name,
@@ -2979,6 +3203,16 @@ function bindEvents() {
           color: ($("#ma-color") && $("#ma-color").value) || "",
         }),
       });
+      // Automatically include the newly created axis in the currently active group so it shows up immediately
+      if (created && created.id && state.activeMoodGroup && state.activeMoodGroup !== "all") {
+        const curGrp = state.moodGroups.find((g) => g.id === state.activeMoodGroup);
+        if (curGrp && !curGrp.dim_ids.includes(created.id)) {
+          const next = state.moodGroups.map((g) =>
+            g.id === curGrp.id ? { ...g, dim_ids: [...g.dim_ids, created.id] } : g
+          );
+          await saveMoodGroups(next, state.activeMoodGroup).catch(() => {});
+        }
+      }
       $("#ma-name").value = "";
       $("#ma-low").value = "";
       $("#ma-high").value = "";

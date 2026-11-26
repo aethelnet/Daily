@@ -34,6 +34,7 @@ DEFAULT_DIM_COLORS: dict[str, str] = {
     "stress": "#c85a44",
     "anspannung": "#b4783c",
     "antrieb": "#6e68a8",
+    "kraempfe": "#a85d73",
 }
 
 
@@ -221,6 +222,37 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
                     (DEFAULT_DIM_COLORS.get(dim_id, "#3d6b7d"), dim_id),
                 )
 
+        # Seed quiet default Befinden groups (Alltag + Zyklus example) once — fully editable/deletable!
+        if not conn.execute("SELECT 1 FROM settings WHERE key = 'mood_groups_seeded'").fetchone():
+            ts_mg = now_iso()
+            # Ensure the gentle example cycle axis exists once (hidden from Everyday & unrated Analysis!)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO state_dimensions(id, name, low_label, high_label, color, sort_order, archived, created_at, updated_at)
+                VALUES('kraempfe', 'Krämpfe', 'keine', 'stark', ?, 5, 0, ?, ?)
+                """,
+                (DEFAULT_DIM_COLORS["kraempfe"], ts_mg, ts_mg),
+            )
+            everyday_ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM state_dimensions WHERE archived = 0 AND id != 'kraempfe' ORDER BY sort_order ASC, created_at ASC"
+                ).fetchall()
+            ]
+            if not everyday_ids:
+                everyday_ids = ["stimmung", "mental-fit", "stress", "anspannung", "antrieb"]
+            default_groups = [
+                {"id": "alltag", "name": "Alltag", "dim_ids": everyday_ids},
+                {"id": "zyklus", "name": "Zyklus", "dim_ids": ["stimmung", "stress", "antrieb", "kraempfe"]},
+            ]
+            conn.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES('mood_groups', ?)",
+                (json.dumps(default_groups, ensure_ascii=False),),
+            )
+            conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('active_mood_group', 'alltag')")
+            conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('mood_groups_updated_at', ?)", (ts_mg,))
+            conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups_seeded', '1')")
+
         # Auto-generate a persistent local device sync token (only used for non-localhost devices)
         if not conn.execute("SELECT 1 FROM settings WHERE key = 'sync_token'").fetchone():
             conn.execute(
@@ -262,6 +294,9 @@ def update_settings(updates: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) ->
         "nudge_mode",
         "tabpfn_threshold",
         "followup_enabled",
+        "mood_groups",
+        "mood_groups_updated_at",
+        "active_mood_group",
         "sync_token",
         "e2ee_enabled",
         "e2ee_provider",

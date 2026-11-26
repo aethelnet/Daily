@@ -215,6 +215,9 @@ class SettingsUpdate(BaseModel):
     nudge_mode: str | None = None
     tabpfn_threshold: float | None = None
     followup_enabled: int | None = None
+    mood_groups: str | None = None
+    mood_groups_updated_at: str | None = None
+    active_mood_group: str | None = None
 
 
 class HabitReorder(BaseModel):

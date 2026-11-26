@@ -1022,6 +1022,46 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(other_dims["stimmung"]["color"], "#4f7a65")
         self.assertEqual(other_dims[cust.json()["id"]]["color"], "#8b6f4e")
 
+    def test_mood_groups_seeding_customization_and_e2ee_sync(self) -> None:
+        import json
+
+        from daily.db import get_settings, init_db
+        from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
+
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        # Fresh DB seeds Alltag + Zyklus example groups (and kraempfe axis) while habits remain 0 presets
+        self.assertEqual(client.get("/api/habits").json()["habits"], [])
+        s0 = client.get("/api/settings").json()
+        groups0 = json.loads(s0["mood_groups"])
+        self.assertEqual([g["id"] for g in groups0], ["alltag", "zyklus"])
+        self.assertEqual(s0["active_mood_group"], "alltag")
+        self.assertNotIn("kraempfe", groups0[0]["dim_ids"])
+        self.assertIn("kraempfe", groups0[1]["dim_ids"])
+
+        # User adds a custom group & switches active group via PATCH /api/settings
+        custom_groups = groups0 + [{"id": "kreativ", "name": "Kreativ-Phase", "dim_ids": ["stimmung", "antrieb"]}]
+        upd = client.patch(
+            "/api/settings",
+            json={
+                "mood_groups": json.dumps(custom_groups, ensure_ascii=False),
+                "mood_groups_updated_at": "2099-01-01T00:00:00Z",
+                "active_mood_group": "kreativ",
+            },
+        )
+        self.assertEqual(upd.status_code, 200)
+        self.assertEqual(upd.json()["active_mood_group"], "kreativ")
+
+        # E2EE vault merge propagates custom mood_groups via LWW to second device
+        other_db = Path(self.tmp.name) / "mood_groups_target.db"
+        init_db(other_db)
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        other_s = get_settings(db_path=other_db)
+        other_groups = json.loads(other_s["mood_groups"])
+        self.assertIn("kreativ", [g["id"] for g in other_groups])
+        self.assertEqual(other_s["active_mood_group"], "kreativ")
+
 
 if __name__ == "__main__":
     unittest.main()
