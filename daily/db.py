@@ -309,7 +309,19 @@ def update_settings(updates: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) ->
         "e2ee_last_sync_at",
     }
     with get_conn(db_path) as conn:
-        for k, v in updates.items():
+        eff_updates = dict(updates)
+        if "mood_groups" in eff_updates:
+            mg_ts = str(eff_updates.get("mood_groups_updated_at") or "").strip()
+            if not mg_ts:
+                eff_updates["mood_groups_updated_at"] = now_iso()
+            elif mg_ts.endswith("Z"):
+                try:
+                    eff_updates["mood_groups_updated_at"] = (
+                        datetime.fromisoformat(mg_ts[:-1] + "+00:00").astimezone().replace(tzinfo=None, microsecond=0).isoformat()
+                    )
+                except Exception:
+                    eff_updates["mood_groups_updated_at"] = now_iso()
+        for k, v in eff_updates.items():
             if k not in allowed:
                 continue
             if k in {"nudge_mode", "routing_mode"} and str(v) not in {"observed", "tabpfn"}:

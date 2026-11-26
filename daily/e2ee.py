@@ -450,13 +450,24 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                     )
                     stats["snapshots"] += 1
 
-        # 6. Synced settings (mood_groups via LWW on mood_groups_updated_at)
+        # 6. Synced settings (mood_groups via timezone-safe LWW on mood_groups_updated_at)
         rem_settings = remote.get("settings") or {}
         if "mood_groups" in rem_settings:
+            def _ts_epoch(ts_val: str) -> float:
+                s = str(ts_val or "").strip()
+                if not s:
+                    return 0.0
+                try:
+                    if s.endswith("Z"):
+                        return datetime.fromisoformat(s[:-1] + "+00:00").timestamp()
+                    return datetime.fromisoformat(s).timestamp()
+                except Exception:
+                    return 0.0
+
             r_mg_upd = str(rem_settings.get("mood_groups_updated_at") or "")
             l_row = conn.execute("SELECT value FROM settings WHERE key = 'mood_groups_updated_at'").fetchone()
             l_mg_upd = str(l_row["value"]) if l_row else ""
-            if r_mg_upd > l_mg_upd or (not l_mg_upd and rem_settings.get("mood_groups")):
+            if _ts_epoch(r_mg_upd) > _ts_epoch(l_mg_upd) or (not l_mg_upd and rem_settings.get("mood_groups")):
                 conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups', ?)", (str(rem_settings["mood_groups"]),))
                 conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups_updated_at', ?)", (r_mg_upd or ts_now,))
                 if "active_mood_group" in rem_settings:

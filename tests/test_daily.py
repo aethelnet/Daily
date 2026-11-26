@@ -1115,6 +1115,19 @@ class TestDailyCore(unittest.TestCase):
         self.assertIn("kreativ", [g["id"] for g in other_groups])
         self.assertEqual(other_s["active_mood_group"], "kreativ")
 
+        # Timezone-safe LWW: a newer UTC Z timestamp must still beat an older local naive timestamp (even in CET/UTC+1!)
+        from datetime import datetime, timezone
+        other_db2 = Path(self.tmp.name) / "mood_groups_tz.db"
+        init_db(other_db2)
+        remote_tz = export_local_state_for_vault(other_db2)
+        remote_tz["settings"]["mood_groups"] = json.dumps([{"id": "alltag", "name": "Alltag", "dim_ids": ["stress", "stimmung"]}])
+        remote_tz["settings"]["mood_groups_updated_at"] = datetime.fromtimestamp(
+            datetime.now().timestamp() + 120, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        merge_remote_state_into_db(remote_tz, db_path=other_db2)
+        tz_groups = json.loads(get_settings(db_path=other_db2)["mood_groups"])
+        self.assertEqual(tz_groups[0]["dim_ids"], ["stress", "stimmung"])
+
     def test_today_cadence_signals_for_smart_now_mode(self) -> None:
         app = create_app(db_path=self.db, enable_nudge_loop=False)
         client = TestClient(app)

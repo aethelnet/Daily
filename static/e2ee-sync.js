@@ -248,12 +248,18 @@
       }
     }
 
-    // 6. Synced settings (mood_groups LWW)
+    // 6. Synced settings (mood_groups timezone-safe LWW)
+    const tsEpoch = (s) => {
+      const t = String(s || "").trim();
+      if (!t) return 0;
+      const ms = new Date(t).getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    };
     const rSet = remote.settings || {};
     if (rSet.mood_groups !== undefined) {
       const rMgUpd = String(rSet.mood_groups_updated_at || "");
       const lMgUpd = String(out.settings.mood_groups_updated_at || "");
-      if (rMgUpd > lMgUpd || (!lMgUpd && rSet.mood_groups)) {
+      if (tsEpoch(rMgUpd) > tsEpoch(lMgUpd) || (!lMgUpd && rSet.mood_groups)) {
         out.settings.mood_groups = String(rSet.mood_groups);
         out.settings.mood_groups_updated_at = rMgUpd || new Date().toISOString();
         if (rSet.active_mood_group !== undefined) {

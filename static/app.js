@@ -1562,15 +1562,21 @@ function populateMoodGroupForm(grp) {
   $("#mg-name").focus();
 }
 
+function localIsoNow() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 async function saveMoodGroups(nextGroups, nextActive = state.activeMoodGroup) {
-  const ts = new Date().toISOString();
+  const ts = localIsoNow();
   const payload = {
     mood_groups: JSON.stringify(nextGroups),
     mood_groups_updated_at: ts,
     active_mood_group: nextActive,
   };
   const updated = await api("/api/settings", { method: "PATCH", body: JSON.stringify(payload) });
-  state.settings = { ...state.settings, ...updated, ...payload };
+  state.settings = { ...state.settings, ...payload, ...updated };
   state.moodGroups = nextGroups;
   state.activeMoodGroup = nextActive;
   renderMoodModal();
@@ -3930,25 +3936,34 @@ function bindEvents() {
       for (const id of newVisOrder) {
         if (!nextGlobalIds.includes(id)) nextGlobalIds.push(id);
       }
+      const rankOf = Object.fromEntries(nextGlobalIds.map((id, idx) => [id, idx]));
 
+      // Update local stateDims immediately so re-renders inside saveMoodGroups use the new order
+      const dimById = Object.fromEntries(state.stateDims.map((d) => [d.id, d]));
+      state.stateDims = nextGlobalIds.map((id, idx) => ({ ...dimById[id], sort_order: idx })).filter((x) => x && x.id);
+
+      // Keep ALL mood groups cleanly aligned with the new axis order (whether dragged in Alle or in a specific group!)
       const activeGrp = state.activeMoodGroup !== "all" ? state.moodGroups.find((g) => g.id === state.activeMoodGroup) : null;
+      const nextGroups = state.moodGroups.map((g) => {
+        if (activeGrp && g.id === activeGrp.id) {
+          const hiddenInGrp = (g.dim_ids || []).filter((id) => !visSet.has(id));
+          return { ...g, dim_ids: [...newVisOrder, ...hiddenInGrp] };
+        }
+        const sortedIds = [...(g.dim_ids || [])].sort((a, b) => (rankOf[a] ?? 9999) - (rankOf[b] ?? 9999));
+        return { ...g, dim_ids: sortedIds };
+      });
+
       const tasks = [
         api("/api/state/dimensions/reorder", {
           method: "POST",
           body: JSON.stringify({ dim_ids: nextGlobalIds }),
         }),
       ];
-      if (activeGrp) {
-        const hiddenInGrp = (activeGrp.dim_ids || []).filter((id) => !visSet.has(id));
-        const nextGroups = state.moodGroups.map((g) =>
-          g.id === activeGrp.id ? { ...g, dim_ids: [...newVisOrder, ...hiddenInGrp] } : g
-        );
+      if (nextGroups.length) {
         tasks.push(saveMoodGroups(nextGroups, state.activeMoodGroup));
       }
       await Promise.all(tasks);
 
-      const dimById = Object.fromEntries(state.stateDims.map((d) => [d.id, d]));
-      state.stateDims = nextGlobalIds.map((id, idx) => ({ ...dimById[id], sort_order: idx })).filter((x) => x && x.id);
       toast(t("reordered_toast"));
       if (state.tab === "analysis") await loadAnalysis();
     } catch (err) {
@@ -4067,7 +4082,8 @@ function bindEvents() {
   $("#mood-group-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("#mg-name").value.trim();
-    const dimIds = Array.from(state.mgDraftDims);
+    const orderIdx = Object.fromEntries(state.stateDims.map((d, idx) => [d.id, idx]));
+    const dimIds = Array.from(state.mgDraftDims).sort((a, b) => (orderIdx[a] ?? 9999) - (orderIdx[b] ?? 9999));
     if (!name || !dimIds.length) {
       toast(t("mg_need_dims"));
       return;
