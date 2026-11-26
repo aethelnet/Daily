@@ -13,6 +13,8 @@ Design principles:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import warnings
@@ -166,26 +168,77 @@ def _build_daily_tables(
     return observed_days, by_day_direct, by_day_effective, by_day_windows
 
 
+def invalidate_ml_caches() -> None:
+    """Clear in-memory TabPFN / Liquid ODE / nudge caches immediately."""
+    _ANALYSIS_CACHE.clear()
+    _NUDGE_CACHE.clear()
+
+
 def _data_signature(
     habits: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     events: list[dict[str, Any]],
     snapshots: list[dict[str, Any]] | None = None,
-) -> tuple[Any, ...]:
-    max_ev = max((ev["id"] for ev in events), default=0)
-    ev_sum = round(sum(float(ev["amount"]) for ev in events), 3)
-    edge_sig = tuple((e["id"], e["source_id"], e["target_id"], e["relation_type"], e["weight"], e["context_window"]) for e in edges)
-    hab_sig = tuple((h["id"], h["nudge_enabled"], h["nudge_lead_min"], h.get("sort_order", 0)) for h in habits)
-    snaps = snapshots or []
-    snap_sig = (len(snaps), max((s.get("id") or 0 for s in snaps), default=0))
-    tag_sig = tuple(
-        sorted(
-            t
-            for obj in (*events, *snaps)
-            for t in extract_note_tags(obj.get("note"))
-        )
-    )
-    return (len(events), max_ev, ev_sum, hab_sig, edge_sig, snap_sig, tag_sig)
+    state_dims: list[dict[str, Any]] | None = None,
+) -> str:
+    """Exact content digest over all live inputs so ANY retroactive edit, time shift,
+    note/#tag change, habit/edge edit, or deletion immediately invalidates TabPFN & Liquid ODE caches."""
+    live_events = [ev for ev in events if not ev.get("deleted_at")]
+    live_snaps = [s for s in (snapshots or []) if not s.get("deleted_at")]
+    payload = {
+        "h": [
+            (
+                h.get("id"),
+                h.get("name"),
+                h.get("kind"),
+                bool(h.get("archived")),
+                bool(h.get("nudge_enabled")),
+                h.get("nudge_lead_min"),
+                h.get("sort_order", 0),
+            )
+            for h in habits
+        ],
+        "e": [
+            (
+                e.get("id"),
+                e.get("source_id"),
+                e.get("target_id"),
+                e.get("relation_type"),
+                round(float(e.get("weight", 0.0)), 4),
+                e.get("context_window"),
+            )
+            for e in edges
+        ],
+        "ev": [
+            (
+                ev.get("id"),
+                ev.get("habit_id"),
+                round(float(ev.get("amount", 0.0)), 4),
+                ev.get("occurred_at"),
+                int(ev.get("window_minutes") or 0),
+                ev.get("note") or "",
+                ev.get("updated_at") or "",
+            )
+            for ev in live_events
+        ],
+        "sn": [
+            (
+                s.get("id"),
+                s.get("occurred_at"),
+                sorted((str(k), round(float(v), 2)) for k, v in (s.get("ratings") or {}).items() if v is not None),
+                list(s.get("causes") or []),
+                s.get("note") or "",
+                s.get("updated_at") or "",
+            )
+            for s in live_snaps
+        ],
+        "sd": [
+            (d.get("id"), d.get("name"), bool(d.get("archived")))
+            for d in (state_dims or [])
+        ],
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.blake2b(raw, digest_size=16).hexdigest()
 
 
 def _nonconst_mask(X: np.ndarray) -> np.ndarray:
@@ -325,6 +378,8 @@ def compute_ai_insights(
 ) -> dict[str, Any]:
     """Run TabPFN v2 immediately from Day 1: tomorrow 24h forecast, prediction vs. actual error, & AI assumptions.
     Sparse Momentaufnahme ratings are injected as true NaNs (TabPFN handles missing values natively)."""
+    events = [ev for ev in events if not ev.get("deleted_at")]
+    snapshots = [s for s in (snapshots or []) if not s.get("deleted_at")]
     info = get_ml_engine_info()
     engine = info["engine"]
     observed_days, by_day_direct, by_day_effective, by_day_windows = _build_daily_tables(habits, edges, events)
@@ -359,7 +414,7 @@ def compute_ai_insights(
         }
 
     today_d = date.today()
-    cache_key = ("insights", engine, today_d.isoformat(), _data_signature(habits, edges, events, snapshots))
+    cache_key = ("insights", engine, today_d.isoformat(), _data_signature(habits, edges, events, snapshots, state_dims))
     if cache_key in _ANALYSIS_CACHE:
         return _ANALYSIS_CACHE[cache_key]
 
@@ -1071,6 +1126,8 @@ def compute_ai_routing_edges(
 ) -> list[dict[str, Any]]:
     """Compute effective routing edges in KI mode: starts from user's manual routing as priming prior,
     then adapts weights & adds learned TabPFN impacts based on real logged days and today's time windows."""
+    all_events = [ev for ev in all_events if not ev.get("deleted_at")]
+    day_events = [ev for ev in day_events if not ev.get("deleted_at")]
     manual_rollups = [dict(e, is_ai=False, prior_weight=float(e["weight"])) for e in edges if e["relation_type"] == "rollup"]
     info = get_ml_engine_info()
     engine = info["engine"]
@@ -1289,6 +1346,8 @@ def predict_contextual_nudges(
     state_dims: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Predict contextual 2-hour probabilities right now via TabPFN from Day 1 (supports sparse Momentaufnahme NaNs)."""
+    events = [ev for ev in events if not ev.get("deleted_at")]
+    snapshots = [s for s in (snapshots or []) if not s.get("deleted_at")]
     now = now or datetime.now()
     info = get_ml_engine_info()
     engine = info["engine"]
@@ -1328,7 +1387,7 @@ def predict_contextual_nudges(
         today_iso,
         now.hour,
         round(threshold, 2),
-        _data_signature(habits, [], events, snapshots),
+        _data_signature(habits, [], events, snapshots, state_dims),
     )
     if cache_key in _NUDGE_CACHE:
         return _NUDGE_CACHE[cache_key]

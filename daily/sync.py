@@ -192,7 +192,7 @@ def apply_sync_batch(
 
         if ev.get("habit_id"):
             try:
-                log_event(
+                created = log_event(
                     habit_id=ev["habit_id"],
                     amount=float(ev.get("amount", 1.0)),
                     occurred_at=ev.get("occurred_at"),
@@ -202,6 +202,20 @@ def apply_sync_batch(
                     client_uuid=c_uuid or None,
                     db_path=db_path,
                 )
+                # If client sent a newer edit for an already-synced event, apply LWW update cleanly
+                if c_uuid and ev.get("updated_at") and str(ev["updated_at"]) > str(created.get("updated_at") or ""):
+                    with get_conn(db_path) as conn:
+                        conn.execute(
+                            "UPDATE events SET amount=?, occurred_at=?, window_minutes=?, note=?, updated_at=? WHERE id=?",
+                            (
+                                float(ev.get("amount", created["amount"])),
+                                ev.get("occurred_at") or created["occurred_at"],
+                                int(ev.get("window_minutes", created.get("window_minutes") or 0)),
+                                ev.get("note", created.get("note") or ""),
+                                str(ev["updated_at"]),
+                                created["id"],
+                            ),
+                        )
                 applied["events"] += 1
             except Exception:
                 pass

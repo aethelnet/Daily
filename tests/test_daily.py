@@ -769,6 +769,68 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(len(r_log["snapshots"]), 1)
         self.assertEqual(r_log["snapshots"][0]["note"], "rough day")
 
+    def test_retroactive_edits_and_deletions_clean_tabpfn_liquid_ode_and_e2ee(self) -> None:
+        from daily.db import get_conn, list_events
+        from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
+        from daily.ml import invalidate_ml_caches
+
+        invalidate_ml_caches()
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        sport = client.post(
+            "/api/habits",
+            json={"name": "Sport", "kind": "min", "target": 1, "block_minutes": 30},
+        ).json()
+        today_iso = date.today().isoformat()
+        ev = client.post(
+            "/api/events",
+            json={"habit_id": sport["id"], "amount": 1.0, "occurred_at": f"{today_iso}T09:00:00", "window_minutes": 30},
+        ).json()
+        sn = client.post(
+            "/api/snapshots",
+            json={"ratings": {"stimmung": 4}, "occurred_at": f"{today_iso}T11:00:00"},
+        ).json()
+
+        # Baseline analysis + Liquid ODE habit tick at 09:00
+        a1 = client.get("/api/analysis").json()
+        st1 = next(c for c in a1["ai"]["state_curves"] if c["id"] == "stimmung")
+        self.assertEqual([tk["time"] for tk in st1["h24"]["habit_ticks"]], ["09:00"])
+
+        # 1. Retroactively shift timestamp ONLY (amount unchanged!) -> cache MUST invalidate & ODE tick MUST move to 14:30!
+        client.patch(
+            f"/api/events/{ev['id']}",
+            json={"occurred_at": f"{today_iso}T14:30:00", "window_minutes": 45},
+        )
+        a2 = client.get("/api/analysis").json()
+        st2 = next(c for c in a2["ai"]["state_curves"] if c["id"] == "stimmung")
+        self.assertEqual([tk["time"] for tk in st2["h24"]["habit_ticks"]], ["14:30"])
+
+        # Verify E2EE merge propagates updated window_minutes & occurred_at cleanly to a second device
+        other_db = Path(self.tmp.name) / "e2ee_edit_target.db"
+        init_db(other_db)
+        # First sync old state, then edit on primary (after 1s tick) & sync updated state
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        with get_conn(other_db) as conn:
+            conn.execute("UPDATE events SET updated_at = '2020-01-01T00:00:00' WHERE client_uuid = ?", (ev["client_uuid"],))
+        client.patch(f"/api/events/{ev['id']}", json={"window_minutes": 20, "occurred_at": f"{today_iso}T15:00:00"})
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        ev_other = next(e for e in list_events(day=today_iso, db_path=other_db) if e["client_uuid"] == ev["client_uuid"])
+        self.assertEqual(ev_other["window_minutes"], 20)
+        self.assertEqual(ev_other["occurred_at"], f"{today_iso}T15:00:00")
+
+        # 2. Delete event AND snapshot -> both disappear completely from Liquid ODE, TabPFN, and synced mirror!
+        client.delete(f"/api/events/{ev['id']}")
+        client.delete(f"/api/snapshots/{sn['id']}")
+        a3 = client.get("/api/analysis").json()
+        st3 = next(c for c in a3["ai"]["state_curves"] if c["id"] == "stimmung")
+        self.assertEqual(st3["h24"]["habit_ticks"], [])
+        self.assertEqual(st3["h24"]["actual"], [])
+        self.assertEqual(st3["rated_count"], 0)
+
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        self.assertEqual(list_events(day=today_iso, db_path=other_db), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -355,13 +355,14 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                 stats["events"] += 1
             else:
                 l_upd = existing["updated_at"] or existing["created_at"] or ""
-                if r_upd > l_upd:
+                if r_upd > l_upd or (r_upd == l_upd and rev.get("deleted_at") and not existing["deleted_at"]):
                     conn.execute(
-                        "UPDATE events SET habit_id=?, amount=?, occurred_at=?, note=?, updated_at=?, deleted_at=? WHERE id=?",
+                        "UPDATE events SET habit_id=?, amount=?, occurred_at=?, window_minutes=?, note=?, updated_at=?, deleted_at=? WHERE id=?",
                         (
                             hid,
                             float(rev.get("amount", existing["amount"])),
                             rev.get("occurred_at") or existing["occurred_at"],
+                            int(rev["window_minutes"]) if rev.get("window_minutes") is not None else int(existing["window_minutes"] or 0),
                             rev.get("note", existing["note"]),
                             r_upd,
                             rev.get("deleted_at"),
@@ -399,7 +400,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                 stats["snapshots"] += 1
             else:
                 l_upd = existing["updated_at"] or existing["created_at"] or ""
-                if r_upd > l_upd:
+                if r_upd > l_upd or (r_upd == l_upd and rsn.get("deleted_at") and not existing["deleted_at"]):
                     conn.execute(
                         "UPDATE snapshots SET occurred_at=?, ratings_json=?, causes_json=?, note=?, updated_at=?, deleted_at=? WHERE id=?",
                         (
