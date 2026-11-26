@@ -284,7 +284,13 @@ function shiftDate(iso, deltaDays) {
 
 function fmtNum(v) {
   const n = Number(v || 0);
-  return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, "");
+  const r = Math.round(n * 100) / 100;
+  return Number.isInteger(r) ? String(r) : String(r);
+}
+
+function habitTapStep(h) {
+  const s = Number(h && h.tap_step);
+  return Number.isFinite(s) && s > 0 ? Math.round(s * 1000) / 1000 : 1;
 }
 
 function esc(str) {
@@ -633,7 +639,7 @@ function renderHabitCardHtml(h, opts = {}) {
     ${contribHtml || routesHtml ? `<div class="hc-routes">${contribHtml}${routesHtml}</div>` : ""}
     <div class="hc-actions">
       ${sessionBtnHtml}
-      <button class="btn sm btn-tap" data-act="tap" data-id="${esc(h.id)}">+1</button>
+      <button class="btn sm btn-tap" data-act="tap" data-id="${esc(h.id)}">+${fmtNum(habitTapStep(h))}</button>
       <button class="btn sm btn-subtle" data-act="custom" data-id="${esc(h.id)}" title="${esc(t("card_custom_title"))}">${esc(t("card_custom_btn"))}</button>
       <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">⇄</button>
     </div>
@@ -1256,22 +1262,23 @@ async function quickTap(habitId) {
     : `${state.day}T${localTimeHHMM(new Date())}:00`;
   const client_uuid = makeUuid();
   const h = state.habits.find((x) => x.id === habitId);
+  const step = habitTapStep(h);
   try {
     const created = await api("/api/events", {
       method: "POST",
-      body: JSON.stringify({ habit_id: habitId, amount: 1, occurred_at, source: "tap", client_uuid }),
+      body: JSON.stringify({ habit_id: habitId, amount: step, occurred_at, source: "tap", client_uuid }),
     });
-    toast(`+1 ${h ? h.name : ""}`, { undoEventId: created.id });
+    toast(`+${fmtNum(step)} ${h ? h.name : ""}`, { undoEventId: created.id });
     await loadToday();
   } catch (e) {
     // Offline fallback: queue event idempotently via client_uuid and update cached UI immediately
     const q = loadOfflineQueue();
-    q.push({ habit_id: habitId, amount: 1, occurred_at, source: "tap", client_uuid, note: "" });
+    q.push({ habit_id: habitId, amount: step, occurred_at, source: "tap", client_uuid, note: "" });
     saveOfflineQueue(q);
     if (state.todayData && h) {
-      h.direct = Math.round((Number(h.direct || 0) + 1) * 100) / 100;
-      h.effective = Math.round((Number(h.effective || 0) + 1) * 100) / 100;
-      h.period_effective = Math.round((Number(h.period_effective ?? h.effective ?? 0) + 1) * 100) / 100;
+      h.direct = Math.round((Number(h.direct || 0) + step) * 100) / 100;
+      h.effective = Math.round((Number(h.effective || 0) + step) * 100) / 100;
+      h.period_effective = Math.round((Number(h.period_effective ?? h.effective ?? 0) + step) * 100) / 100;
       h.event_count = (h.event_count || 0) + 1;
       localStorage.setItem(`daily_today_cache_${state.day}`, JSON.stringify(state.todayData));
       renderToday(state.todayData);
@@ -1309,7 +1316,7 @@ function openCustomLog(habitId) {
   const hasBlock = !!(h.block_minutes && Number(h.block_minutes) > 0);
   $("#cl-habit-id").value = habitId;
   $("#cl-title").textContent = t("cl_title_habit", { name: h.name });
-  $("#cl-amount").value = "1";
+  $("#cl-amount").value = hasBlock ? "1" : String(habitTapStep(h));
   $("#cl-time").value = localTimeHHMM(nowDt);
   const startWrap = $("#cl-start-wrap");
   const rangeRow = $("#cl-range-row");
@@ -1911,6 +1918,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
             <span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span>
             ${outs}
             ${h.block_minutes ? `<span class="chip">⏱ ${h.block_minutes}m=1</span>` : ""}
+            ${habitTapStep(h) !== 1 ? `<span class="chip">+${fmtNum(habitTapStep(h))} ${esc(h.unit || "x")}</span>` : ""}
             ${h.nudge_enabled ? `<span class="chip">Ping −${h.nudge_lead_min}m</span>` : ""}
             ${formatAnchorBadge(h)}
           </div>
@@ -2307,6 +2315,7 @@ function resetHabitForm() {
   $("#hf-target").value = "";
   $("#hf-period").value = "day";
   $("#hf-unit").value = "x";
+  if ($("#hf-step")) $("#hf-step").value = "1";
   const firstSw = $("#hf-colors .swatch");
   $("#hf-color").value = (firstSw && firstSw.dataset.color) || getStoredRecentColors()[0] || "#2563eb";
   syncActiveColorSwatch();
@@ -2357,6 +2366,7 @@ function populateHabitForm(habitId) {
   $("#hf-target").value = h.target != null ? h.target : "";
   $("#hf-period").value = h.target_period || "day";
   $("#hf-unit").value = h.unit || "x";
+  if ($("#hf-step")) $("#hf-step").value = String(habitTapStep(h));
   $("#hf-color").value = h.color || "#2563eb";
   syncActiveColorSwatch();
   $("#hf-block-min").value = h.block_minutes != null ? h.block_minutes : "";
@@ -3731,7 +3741,9 @@ function bindEvents() {
     if (stepBtn) {
       const id = stepBtn.dataset.rstep;
       const d = Number(stepBtn.dataset.d);
-      state.retroAmounts[id] = Math.max(0, (state.retroAmounts[id] || 0) + d);
+      const h = state.habits.find((x) => x.id === id);
+      const step = habitTapStep(h);
+      state.retroAmounts[id] = Math.max(0, Math.round(((state.retroAmounts[id] || 0) + d * step) * 1000) / 1000);
       renderRetroRows();
     }
   });
@@ -4682,6 +4694,8 @@ function bindEvents() {
     const id = $("#hf-id").value;
     const rawT = $("#hf-target").value.trim();
     const rawB = $("#hf-block-min").value.trim();
+    const rawS = ($("#hf-step") ? $("#hf-step").value : "1").trim().replace(",", ".");
+    const parsedStep = Number(rawS);
     const payload = {
       name: $("#hf-name").value.trim(),
       kind: $("#hf-kind").value,
@@ -4689,6 +4703,7 @@ function bindEvents() {
       target_period: $("#hf-period").value || "day",
       clear_target: rawT === "",
       unit: $("#hf-unit").value.trim() || "x",
+      tap_step: Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 1,
       color: $("#hf-color").value,
       block_minutes: rawB !== "" ? Number(rawB) : null,
       clear_block_minutes: rawB === "",

@@ -184,10 +184,16 @@
                   <option value="month" data-i18n="opt_per_month">pro Monat</option>
                 </select>
               </label>
-              <label class="field">
-                <span data-i18n="lbl_unit">Einheit</span>
-                <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, h, Blocks" />
-              </label>
+              <div class="unit-step-pair">
+                <label class="field" style="flex:1;min-width:0;">
+                  <span data-i18n="lbl_unit">Einheit</span>
+                  <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, g, h" />
+                </label>
+                <label class="field" style="width:82px;flex-shrink:0;">
+                  <span data-i18n="lbl_tap_step">Schritt</span>
+                  <input type="number" id="hf-step" value="1" min="0.05" step="0.05" class="mono" data-i18n-title="hf_step_title" title="Schnell-Tap Schrittweite (Standard: 1 · z. B. 0.2 bei Gramm)" />
+                </label>
+              </div>
             </div>
 
             <div class="row-2">

@@ -1284,6 +1284,7 @@
         reminder_time: (body.reminder_time || "").trim(),
         reminder_days: body.reminder_days || "0,1,2,3,4,5,6",
         block_minutes: body.block_minutes != null && Number(body.block_minutes) > 0 ? Math.max(1, Math.min(720, Math.round(Number(body.block_minutes)))) : null,
+        tap_step: body.tap_step != null && Number(body.tap_step) > 0 ? Math.round(Math.max(0.01, Math.min(1000, Number(body.tap_step))) * 1000) / 1000 : 1,
         active_since: null,
         sort_order: db.habits.length,
         archived: 0,
@@ -1509,6 +1510,9 @@
       });
       if (body.block_minutes !== undefined) {
         h.block_minutes = body.block_minutes != null && Number(body.block_minutes) > 0 ? Math.max(1, Math.min(720, Math.round(Number(body.block_minutes)))) : null;
+      }
+      if (body.tap_step !== undefined) {
+        h.tap_step = body.tap_step != null && Number(body.tap_step) > 0 ? Math.round(Math.max(0.01, Math.min(1000, Number(body.tap_step))) * 1000) / 1000 : 1;
       }
       if (body.nudge_enabled !== undefined) h.nudge_enabled = body.nudge_enabled ? 1 : 0;
       if (body.archived !== undefined) h.archived = body.archived ? 1 : 0;
