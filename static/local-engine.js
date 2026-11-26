@@ -977,20 +977,36 @@
         saveDB(db);
         return { active: false, logged: false, habit: h };
       }
-      let elapsedMin = body.override_minutes != null ? Math.max(1, Number(body.override_minutes)) : 0;
-      if (!elapsedMin) {
+      let elapsedMin = 0;
+      if (body.override_minutes != null) {
+        elapsedMin = Number(body.override_minutes);
+        if (!Number.isFinite(elapsedMin) || elapsedMin < 1) {
+          saveDB(db);
+          return { active: false, logged: false, too_short: true, elapsed_minutes: 0, habit: h };
+        }
+      } else {
         const ms = new Date(nowStr).getTime() - new Date(prevSince).getTime();
-        elapsedMin = Number.isFinite(ms) && ms > 0 ? Math.max(1, ms / 60000) : Number(h.block_minutes || 30);
+        if (Number.isFinite(ms)) {
+          const rawMin = ms / 60000;
+          if (rawMin < 1) {
+            saveDB(db);
+            return { active: false, logged: false, too_short: true, elapsed_minutes: 0, habit: h };
+          }
+          elapsedMin = rawMin;
+        } else {
+          elapsedMin = Number(h.block_minutes || 30);
+        }
       }
       const blockM = Math.max(1, Number(h.block_minutes || 30));
-      const amount = Math.max(0.5, Math.round((elapsedMin / blockM) * 2) / 2);
+      const amount = Math.max(0.1, Math.round((elapsedMin / blockM) * 10) / 10);
+      const winMin = Math.max(1, Math.round(elapsedMin));
       const ts = nowIso();
       const ev = {
         id: db.next_id++,
         habit_id: hid,
         amount,
         occurred_at: nowStr,
-        window_minutes: Math.round(elapsedMin),
+        window_minutes: winMin,
         source: "tap",
         note: "",
         client_uuid: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1000,7 +1016,7 @@
       };
       db.events.push(ev);
       saveDB(db);
-      return { active: false, logged: true, elapsed_minutes: Math.round(elapsedMin), amount, event: ev, habit: h };
+      return { active: false, logged: true, elapsed_minutes: winMin, amount, event: ev, habit: h };
     }
     const mHab = path.match(/^\/api\/habits\/([^/]+)$/);
     if (mHab && method === "PATCH") {
@@ -1119,7 +1135,7 @@
       const id = Number(mEv[1]);
       const ev = db.events.find((x) => x.id === id);
       if (!ev) throw new Error("Eintrag nicht gefunden");
-      ["amount", "occurred_at", "note"].forEach((k) => { if (body[k] !== undefined) ev[k] = body[k]; });
+      ["amount", "occurred_at", "window_minutes", "note"].forEach((k) => { if (body[k] !== undefined) ev[k] = body[k]; });
       ev.updated_at = nowIso();
       saveDB(db);
       return ev;
