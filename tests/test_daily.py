@@ -716,10 +716,11 @@ class TestDailyCore(unittest.TestCase):
 
         coding = client.post(
             "/api/habits",
-            json={"name": "Coding", "kind": "min", "target": 4, "unit": "blocks", "block_minutes": 30, "tap_step": 0.25},
+            json={"name": "Coding", "kind": "min", "target": 4, "unit": "blocks", "block_minutes": 30, "tap_step": 0.25, "group_name": "Fokus"},
         ).json()
         self.assertEqual(coding["block_minutes"], 30)
         self.assertEqual(coding["tap_step"], 0.25)
+        self.assertEqual(coding["group_name"], "Fokus")
         self.assertIsNone(coding["active_since"])
 
         # Accidental quick start->stop (< 1 min) must discard without logging any event!
@@ -748,7 +749,15 @@ class TestDailyCore(unittest.TestCase):
         mirrored = next(h for h in list_habits(db_path=other_db) if h["id"] == coding["id"])
         self.assertEqual(mirrored["block_minutes"], 30)
         self.assertEqual(mirrored["tap_step"], 0.25)
+        self.assertEqual(mirrored["group_name"], "Fokus")
         self.assertEqual(mirrored["active_since"], "2026-11-26T09:00:00")
+
+        # Atomic reorder + cross-group reassignment via POST /api/habits/reorder
+        ro = client.post(
+            "/api/habits/reorder",
+            json={"habit_ids": [coding["id"]], "group_updates": {coding["id"]: "Arbeit"}},
+        ).json()
+        self.assertEqual(ro["habits"][0]["group_name"], "Arbeit")
 
         # Stop after 45 min -> 45/30 = 1.5 blocks logged with window_minutes=45
         r_stop = client.post(

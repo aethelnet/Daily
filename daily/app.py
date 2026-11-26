@@ -84,6 +84,7 @@ class HabitCreate(BaseModel):
     reminder_days: str = "0,1,2,3,4,5,6"
     block_minutes: int | None = None
     tap_step: float = 1.0
+    group_name: str = ""
 
 
 class HabitUpdate(BaseModel):
@@ -102,6 +103,7 @@ class HabitUpdate(BaseModel):
     block_minutes: int | None = None
     clear_block_minutes: bool = False
     tap_step: float | None = None
+    group_name: str | None = None
     active_since: str | None = None
     sort_order: int | None = None
     archived: bool | None = None
@@ -226,6 +228,7 @@ class SettingsUpdate(BaseModel):
 
 class HabitReorder(BaseModel):
     habit_ids: list[str]
+    group_updates: dict[str, str] | None = None
 
 
 class StateDimensionReorder(BaseModel):
@@ -361,6 +364,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 reminder_days=payload.reminder_days,
                 block_minutes=payload.block_minutes,
                 tap_step=payload.tap_step,
+                group_name=payload.group_name,
                 db_path=resolved_db,
             )
         except Exception as exc:
@@ -536,7 +540,13 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
 
     @app.post("/api/habits/reorder")
     def api_reorder_habits(payload: HabitReorder) -> dict[str, Any]:
-        return {"habits": reorder_habits(payload.habit_ids, db_path=resolved_db)}
+        return {
+            "habits": reorder_habits(
+                payload.habit_ids,
+                group_updates=payload.group_updates,
+                db_path=resolved_db,
+            )
+        }
 
     @app.post("/api/habits/{habit_id}/merge")
     def api_merge_habit(habit_id: str, payload: HabitMerge) -> dict[str, Any]:

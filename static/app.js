@@ -136,6 +136,7 @@ const state = {
   routeFilterQuery: "",
   openRouteClusters: new Set(),
   routeClustersAllOpen: null, // null = auto (open if <= 8 edges, else collapsed), true/false = explicit toggle
+  closedHabitGroups: new Set(),
 };
 
 // ---- Cross-Device Auth, Server Base URL & Offline-First Queue ----
@@ -1893,28 +1894,55 @@ function renderE2EEPanel(cfg) {
   }
 }
 
-function renderSetup(pairInfo = null, e2eeInfo = null) {
+function renderHabitGroupChips() {
+  const box = $("#hf-group-chips");
+  const inp = $("#hf-group");
+  if (!box || !inp) return;
+  const seen = new Set();
+  const names = [];
+  for (const h of [...(state.habits || []), ...(state.archivedHabits || [])]) {
+    const g = String(h.group_name || "").trim();
+    if (!g || seen.has(g.toLowerCase())) continue;
+    seen.add(g.toLowerCase());
+    names.push(g);
+  }
+  if (!names.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  const cur = inp.value.trim().toLowerCase();
+  box.innerHTML = names
+    .map(
+      (g) =>
+        `<button type="button" class="tag-suggest-chip${g.toLowerCase() === cur ? " selected" : ""}" data-hf-group-pick="${esc(g)}">${esc(g)}</button>`
+    )
+    .join("");
+  box.classList.remove("hidden");
+}
+
+function renderSetupHabitList() {
+  const list = $("#setup-habit-list");
+  if (!list) return;
   $("#setup-habit-count").textContent = `(${state.habits.length})`;
-  const rollups = state.edges.filter((e) => e.relation_type === "rollup");
+  const rollups = (state.edges || []).filter((e) => e.relation_type === "rollup");
   const outMap = {};
   for (const e of rollups) {
     (outMap[e.source_id] ||= []).push(e);
   }
-
-  const list = $("#setup-habit-list");
   if (!state.habits.length) {
     list.innerHTML = `<div class="muted sm-text">${esc(t("no_habits_yet"))}</div>`;
-  } else {
-    list.innerHTML = state.habits
-      .map((h, idx) => {
-        const outs = (outMap[h.id] || [])
-          .map(
-            (r) =>
-              `<span class="chip ${r.weight >= 0 ? "pos-chip" : "neg-chip"}">→ ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`
-          )
-          .join("");
-        return `
-        <div class="list-row setup-drag-row" data-habit-id="${esc(h.id)}" title="${esc(t("drag_reorder_title"))}">
+    return;
+  }
+  const rowHtml = (h) => {
+    const outs = (outMap[h.id] || [])
+      .map(
+        (r) =>
+          `<span class="chip ${r.weight >= 0 ? "pos-chip" : "neg-chip"}">→ ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`
+      )
+      .join("");
+    return `
+        <div class="list-row setup-drag-row" data-habit-id="${esc(h.id)}" data-orig-group="${esc(h.group_name || "")}" title="${esc(t("drag_reorder_title"))}">
           <div class="row-inline" style="flex:1;min-width:0;">
             <span class="ev-dot" style="background:${esc(h.color)}"></span>
             <strong>${esc(h.name)}</strong>
@@ -1929,9 +1957,50 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
             <button type="button" class="btn ghost sm" data-setup-edit="${esc(h.id)}" title="${esc(t("btn_edit"))}">Edit</button>
           </div>
         </div>`;
-      })
-      .join("");
+  };
+
+  const hasAnyGroup = state.habits.some((h) => String(h.group_name || "").trim() !== "");
+  if (!hasAnyGroup) {
+    list.innerHTML = state.habits.map(rowHtml).join("");
+    return;
   }
+
+  // Group habits in order of first appearance (each group is a collapsible, draggable block!)
+  const bucketMap = new Map();
+  const buckets = [];
+  for (const h of state.habits) {
+    const g = String(h.group_name || "").trim();
+    if (!bucketMap.has(g)) {
+      const b = { key: g, habits: [] };
+      bucketMap.set(g, b);
+      buckets.push(b);
+    }
+    bucketMap.get(g).habits.push(h);
+  }
+  list.innerHTML = buckets
+    .map((b) => {
+      const isOpen = !state.closedHabitGroups.has(b.key);
+      const label = b.key ? b.key : t("habit_group_ungrouped");
+      return `
+      <details class="habit-group" data-habit-group="${esc(b.key)}"${isOpen ? " open" : ""}>
+        <summary class="habit-group-head" title="${esc(t("drag_reorder_title"))}">
+          <span class="row-inline" style="min-width:0;">
+            <span class="route-caret"></span>
+            <strong>${esc(label)}</strong>
+          </span>
+          <span class="muted mono sm-text">${b.habits.length}</span>
+        </summary>
+        <div class="habit-group-items" data-group-container="${esc(b.key)}">
+          ${b.habits.map(rowHtml).join("")}
+        </div>
+      </details>`;
+    })
+    .join("");
+}
+
+function renderSetup(pairInfo = null, e2eeInfo = null) {
+  renderSetupHabitList();
+  renderHabitGroupChips();
 
   // Archived / finished temporary cards (books, completed projects)
   const archDetails = $("#archive-details");
@@ -2375,6 +2444,8 @@ function resetHabitForm() {
   $("#hf-color").value = (firstSw && firstSw.dataset.color) || getStoredRecentColors()[0] || "#2563eb";
   syncActiveColorSwatch();
   $("#hf-block-min").value = "";
+  if ($("#hf-group")) $("#hf-group").value = "";
+  renderHabitGroupChips();
   $("#hf-nudge-enabled").checked = false;
   $("#hf-nudge-lead").value = "20";
   $("#hf-nudge-alts").value = "";
@@ -2425,6 +2496,8 @@ function populateHabitForm(habitId) {
   $("#hf-color").value = h.color || "#2563eb";
   syncActiveColorSwatch();
   $("#hf-block-min").value = h.block_minutes != null ? h.block_minutes : "";
+  if ($("#hf-group")) $("#hf-group").value = h.group_name || "";
+  renderHabitGroupChips();
   $("#hf-nudge-enabled").checked = !!h.nudge_enabled;
   $("#hf-nudge-lead").value = h.nudge_lead_min || 20;
   $("#hf-nudge-alts").value = h.nudge_alternatives || "";
@@ -4288,17 +4361,42 @@ function bindEvents() {
       populateHabitForm(hid);
     }
   });
+  $("#hf-group").addEventListener("input", renderHabitGroupChips);
+  $("#hf-group-chips").addEventListener("click", (e) => {
+    const ch = e.target.closest("[data-hf-group-pick]");
+    if (!ch) return;
+    const val = ch.dataset.hfGroupPick;
+    $("#hf-group").value = $("#hf-group").value.trim().toLowerCase() === val.toLowerCase() ? "" : val;
+    renderHabitGroupChips();
+  });
   $("#btn-cancel-edit").addEventListener("click", resetHabitForm);
   const setupList = $("#setup-habit-list");
   setupList.addEventListener("click", (e) => {
+    if (state._justDraggedHabitGroup && e.target.closest(".habit-group-head")) {
+      e.preventDefault();
+      return;
+    }
     const btn = e.target.closest("[data-setup-edit]");
     if (btn) populateHabitForm(btn.dataset.setupEdit);
   });
+  setupList.addEventListener(
+    "toggle",
+    (e) => {
+      const det = e.target;
+      if (!det || !det.matches || !det.matches("details.habit-group")) return;
+      const gKey = det.dataset.habitGroup ?? "";
+      if (det.open) state.closedHabitGroups.delete(gKey);
+      else state.closedHabitGroups.add(gKey);
+    },
+    true
+  );
 
-  // Clean whole-row drag-and-drop reordering in Setup (zero icons! Mouse: drag row; Touch: brief hold ~210ms)
-  let dragRow = null;
-  let pendingRow = null;
-  let dragStartOrder = [];
+  // Clean zero-icon drag-and-drop for BOTH individual habits (within & across groups!) AND whole group blocks!
+  let dragEl = null;
+  let dragMode = null; // "row" | "group"
+  let pendingEl = null;
+  let pendingMode = null;
+  let dragStartSnapshot = [];
   let dragPointerId = null;
   let dragStartX = 0;
   let dragStartY = 0;
@@ -4309,15 +4407,26 @@ function bindEvents() {
       clearTimeout(holdTimer);
       holdTimer = null;
     }
-    pendingRow = null;
+    pendingEl = null;
+    pendingMode = null;
   };
 
-  const activateHabitDrag = (row, pointerId) => {
+  const readSetupOrderSnapshot = () =>
+    Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => {
+      const grpBox = el.closest("[data-group-container]");
+      return {
+        id: el.dataset.habitId,
+        group: grpBox ? grpBox.dataset.groupContainer || "" : el.dataset.origGroup || "",
+      };
+    });
+
+  const activateHabitDrag = (el, mode, pointerId) => {
     clearPendingDrag();
-    dragRow = row;
-    dragStartOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
-    row.classList.add("is-dragging");
-    try { row.setPointerCapture(pointerId); } catch {}
+    dragEl = el;
+    dragMode = mode;
+    dragStartSnapshot = readSetupOrderSnapshot();
+    el.classList.add("is-dragging");
+    try { el.setPointerCapture(pointerId); } catch {}
     if (navigator.vibrate) {
       try { navigator.vibrate(10); } catch {}
     }
@@ -4325,80 +4434,163 @@ function bindEvents() {
 
   const finishHabitDrag = async () => {
     clearPendingDrag();
-    if (!dragRow) return;
-    dragRow.classList.remove("is-dragging");
+    if (!dragEl) return;
+    const wasGroup = dragMode === "group";
+    dragEl.classList.remove("is-dragging");
     if (dragPointerId != null) {
-      try { dragRow.releasePointerCapture(dragPointerId); } catch {}
+      try { dragEl.releasePointerCapture(dragPointerId); } catch {}
     }
-    dragRow = null;
+    dragEl = null;
+    dragMode = null;
     dragPointerId = null;
-    const newOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
-    const changed = newOrder.length === dragStartOrder.length && newOrder.some((id, i) => id !== dragStartOrder[i]);
-    if (changed) {
-      try {
-        await api("/api/habits/reorder", {
-          method: "POST",
-          body: JSON.stringify({ habit_ids: newOrder }),
-        });
-        const byIdMap = Object.fromEntries(state.habits.map((h) => [h.id, h]));
-        state.habits = newOrder.map((id, i) => ({ ...byIdMap[id], sort_order: i })).filter((x) => x && x.id);
-        renderRollupList();
-        toast(t("reordered_toast"));
-      } catch (err) {
-        toast(t("err_prefix", { msg: err.message }));
-        await loadSetup();
-      }
+    if (wasGroup) {
+      state._justDraggedHabitGroup = true;
+      setTimeout(() => { state._justDraggedHabitGroup = false; }, 160);
+    }
+
+    const nowSnap = readSetupOrderSnapshot();
+    const orderChanged =
+      nowSnap.length === dragStartSnapshot.length &&
+      nowSnap.some((x, i) => x.id !== dragStartSnapshot[i].id || x.group !== dragStartSnapshot[i].group);
+    if (!orderChanged) return;
+
+    const newOrder = nowSnap.map((x) => x.id);
+    const byIdMap = Object.fromEntries(state.habits.map((h) => [h.id, h]));
+    const groupUpdates = {};
+    for (const item of nowSnap) {
+      const prevG = (byIdMap[item.id] && byIdMap[item.id].group_name) || "";
+      if (item.group !== prevG) groupUpdates[item.id] = item.group;
+    }
+
+    try {
+      await api("/api/habits/reorder", {
+        method: "POST",
+        body: JSON.stringify({
+          habit_ids: newOrder,
+          group_updates: Object.keys(groupUpdates).length ? groupUpdates : undefined,
+        }),
+      });
+      state.habits = newOrder
+        .map((id, i) => {
+          const base = byIdMap[id];
+          if (!base) return null;
+          const nextG = Object.prototype.hasOwnProperty.call(groupUpdates, id) ? groupUpdates[id] : base.group_name || "";
+          return { ...base, sort_order: i, group_name: nextG };
+        })
+        .filter(Boolean);
+      renderSetupHabitList();
+      renderHabitGroupChips();
+      renderRollupList();
+      toast(t("reordered_toast"));
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+      await loadSetup();
     }
   };
 
   setupList.addEventListener("contextmenu", (e) => {
-    if (e.target.closest(".setup-drag-row")) e.preventDefault();
+    if (e.target.closest(".setup-drag-row, .habit-group-head")) e.preventDefault();
   });
   setupList.addEventListener("touchmove", (e) => {
-    if (dragRow) e.preventDefault();
+    if (dragEl) e.preventDefault();
   }, { passive: false });
   setupList.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     if (e.target.closest("button, a, input, select")) return;
-    const row = e.target.closest(".setup-drag-row");
-    if (!row) return;
-    pendingRow = row;
+    const grpHead = e.target.closest(".habit-group-head");
+    const row = !grpHead ? e.target.closest(".setup-drag-row") : null;
+    const targetEl = grpHead ? grpHead.closest("details.habit-group") : row;
+    const mode = grpHead ? "group" : row ? "row" : null;
+    if (!targetEl || !mode) return;
+    pendingEl = targetEl;
+    pendingMode = mode;
     dragPointerId = e.pointerId;
     dragStartX = e.clientX;
     dragStartY = e.clientY;
     if (e.pointerType === "touch") {
       holdTimer = setTimeout(() => {
-        if (pendingRow === row) activateHabitDrag(row, e.pointerId);
+        if (pendingEl === targetEl) activateHabitDrag(targetEl, mode, e.pointerId);
       }, 210);
     }
   });
   setupList.addEventListener("pointermove", (e) => {
-    if (pendingRow && !dragRow) {
+    if (pendingEl && !dragEl) {
       const dx = Math.abs(e.clientX - dragStartX);
       const dy = Math.abs(e.clientY - dragStartY);
       if (e.pointerType === "touch") {
         if (dx > 8 || dy > 8) clearPendingDrag();
         return;
       }
-      if (dy >= 4) {
+      if (dy >= 5) {
         e.preventDefault();
-        activateHabitDrag(pendingRow, e.pointerId);
+        activateHabitDrag(pendingEl, pendingMode, e.pointerId);
       } else {
         return;
       }
     }
-    if (!dragRow) return;
+    if (!dragEl) return;
     e.preventDefault();
+    if (dragMode === "group") {
+      const grps = Array.from(setupList.querySelectorAll(":scope > details.habit-group"));
+      for (const g of grps) {
+        if (g === dragEl) continue;
+        const rect = g.getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        if (e.clientY < mid && g.compareDocumentPosition(dragEl) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          setupList.insertBefore(dragEl, g);
+          break;
+        } else if (e.clientY > mid && dragEl.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          setupList.insertBefore(dragEl, g.nextSibling);
+          break;
+        }
+      }
+      return;
+    }
+
+    // Row drag: supports both flat list AND dragging cleanly across collapsible habit groups!
+    const groups = Array.from(setupList.querySelectorAll(":scope > details.habit-group"));
+    if (groups.length) {
+      let targetContainer = null;
+      for (const g of groups) {
+        const rect = g.getBoundingClientRect();
+        if (e.clientY >= rect.top - 6 && e.clientY <= rect.bottom + 6) {
+          if (!g.open) g.open = true;
+          targetContainer = g.querySelector(".habit-group-items");
+          break;
+        }
+      }
+      if (!targetContainer) {
+        const firstRect = groups[0].getBoundingClientRect();
+        const chosen = e.clientY < firstRect.top ? groups[0] : groups[groups.length - 1];
+        if (!chosen.open) chosen.open = true;
+        targetContainer = chosen.querySelector(".habit-group-items");
+      }
+      if (targetContainer) {
+        const sibs = Array.from(targetContainer.querySelectorAll(":scope > .setup-drag-row")).filter((r) => r !== dragEl);
+        let placed = false;
+        for (const r of sibs) {
+          const rect = r.getBoundingClientRect();
+          if (e.clientY < rect.top + rect.height / 2) {
+            targetContainer.insertBefore(dragEl, r);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) targetContainer.appendChild(dragEl);
+      }
+      return;
+    }
+
     const rows = Array.from(setupList.querySelectorAll(".setup-drag-row"));
     for (const r of rows) {
-      if (r === dragRow) continue;
+      if (r === dragEl) continue;
       const rect = r.getBoundingClientRect();
       const mid = rect.top + rect.height / 2;
-      if (e.clientY < mid && r.compareDocumentPosition(dragRow) & Node.DOCUMENT_POSITION_FOLLOWING) {
-        setupList.insertBefore(dragRow, r);
+      if (e.clientY < mid && r.compareDocumentPosition(dragEl) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        setupList.insertBefore(dragEl, r);
         break;
-      } else if (e.clientY > mid && dragRow.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) {
-        setupList.insertBefore(dragRow, r.nextSibling);
+      } else if (e.clientY > mid && dragEl.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        setupList.insertBefore(dragEl, r.nextSibling);
         break;
       }
     }
@@ -4762,6 +4954,7 @@ function bindEvents() {
       color: $("#hf-color").value,
       block_minutes: rawB !== "" ? Number(rawB) : null,
       clear_block_minutes: rawB === "",
+      group_name: ($("#hf-group") ? $("#hf-group").value : "").trim(),
       nudge_enabled: $("#hf-nudge-enabled").checked,
       nudge_lead_min: Number($("#hf-nudge-lead").value || 20),
       nudge_alternatives: $("#hf-nudge-alts").value.trim(),

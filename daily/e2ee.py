@@ -224,8 +224,8 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                     continue
                 conn.execute(
                     """
-                    INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, block_minutes, tap_step, active_since, sort_order, archived, created_at, updated_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, block_minutes, tap_step, group_name, active_since, sort_order, archived, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         hid,
@@ -242,6 +242,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                         rh.get("reminder_days", "0,1,2,3,4,5,6"),
                         int(rh["block_minutes"]) if rh.get("block_minutes") else None,
                         round(max(0.01, min(1000.0, float(rh.get("tap_step") or 1.0))), 3),
+                        str(rh.get("group_name") or "").strip()[:48],
                         rh.get("active_since") or None,
                         int(rh.get("sort_order") or 0),
                         1 if rh.get("archived") else 0,
@@ -258,7 +259,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                         """
                         UPDATE habits SET name=?, kind=?, target=?, target_period=?, unit=?, color=?, nudge_enabled=?,
                             nudge_lead_min=?, nudge_alternatives=?, reminder_time=?, reminder_days=?,
-                            block_minutes=?, tap_step=?, active_since=?, sort_order=?, archived=?, updated_at=?
+                            block_minutes=?, tap_step=?, group_name=?, active_since=?, sort_order=?, archived=?, updated_at=?
                         WHERE id = ?
                         """,
                         (
@@ -275,6 +276,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                             rh.get("reminder_days", "0,1,2,3,4,5,6"),
                             int(rh["block_minutes"]) if rh.get("block_minutes") else None,
                             round(max(0.01, min(1000.0, float(rh.get("tap_step") or lh.get("tap_step") or 1.0))), 3),
+                            str(rh.get("group_name", lh.get("group_name", "")) or "").strip()[:48],
                             rh.get("active_since") or None,
                             int(rh.get("sort_order") or 0),
                             1 if rh.get("archived") else 0,

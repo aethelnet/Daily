@@ -601,6 +601,48 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 }
 .route-caret::before { content: "▸"; }
 .route-cluster[open] .route-caret::before { content: "▾"; }
+
+.habit-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+  transition: box-shadow 0.12s var(--ease), border-color 0.12s var(--ease), transform 0.12s var(--ease);
+}
+.habit-group.is-dragging {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: scale(1.01);
+  opacity: 0.95;
+  position: relative;
+  z-index: 6;
+}
+.habit-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 11px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  cursor: grab;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+  transition: background 0.12s var(--ease);
+}
+.habit-group-head::-webkit-details-marker { display: none; }
+.habit-group-head:hover { background: var(--surface-hover); }
+.habit-group[open] > .habit-group-head { border-bottom: 1px solid var(--border); }
+.habit-group.is-dragging > .habit-group-head { cursor: grabbing; touch-action: none; }
+.habit-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px;
+  min-height: 36px;
+}
 .route-cluster-items {
   display: flex;
   flex-direction: column;

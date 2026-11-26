@@ -152,6 +152,8 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
             conn.execute("ALTER TABLE habits ADD COLUMN active_since TEXT")
         if "tap_step" not in hab_cols:
             conn.execute("ALTER TABLE habits ADD COLUMN tap_step REAL NOT NULL DEFAULT 1.0")
+        if "group_name" not in hab_cols:
+            conn.execute("ALTER TABLE habits ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
         conn.execute("UPDATE habits SET updated_at = created_at WHERE updated_at IS NULL")
 
         edge_cols = {r[1] for r in conn.execute("PRAGMA table_info(habit_edges)").fetchall()}
@@ -389,6 +391,7 @@ def create_habit(
     reminder_days: str = "0,1,2,3,4,5,6",
     block_minutes: int | None = None,
     tap_step: float = 1.0,
+    group_name: str = "",
     db_path: Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
     clean_name = name.strip()
@@ -403,6 +406,7 @@ def create_habit(
     clean_rdays = _normalize_reminder_days(reminder_days)
     clean_block = max(1, min(720, int(block_minutes))) if block_minutes is not None and int(block_minutes) > 0 else None
     clean_step = round(max(0.01, min(1000.0, float(tap_step or 1.0))), 3)
+    clean_group = str(group_name or "").strip()[:48]
     base_id = slugify(clean_name)
     with get_conn(db_path) as conn:
         hid = base_id
@@ -414,8 +418,8 @@ def create_habit(
         ts_now = now_iso()
         conn.execute(
             """
-            INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, block_minutes, tap_step, active_since, sort_order, archived, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)
+            INSERT INTO habits(id, name, kind, target, target_period, unit, color, nudge_enabled, nudge_lead_min, nudge_alternatives, reminder_time, reminder_days, block_minutes, tap_step, group_name, active_since, sort_order, archived, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)
             """,
             (
                 hid,
@@ -432,6 +436,7 @@ def create_habit(
                 clean_rdays,
                 clean_block,
                 clean_step,
+                clean_group,
                 int(max_order) + 1,
                 ts_now,
                 ts_now,
@@ -456,6 +461,7 @@ def update_habit(habit_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_
         "reminder_days",
         "block_minutes",
         "tap_step",
+        "group_name",
         "active_since",
         "sort_order",
         "archived",
@@ -483,6 +489,8 @@ def update_habit(habit_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_
             v = max(1, min(720, int(v))) if v is not None and int(v) > 0 else None
         if k == "tap_step":
             v = round(max(0.01, min(1000.0, float(v or 1.0))), 3)
+        if k == "group_name":
+            v = str(v or "").strip()[:48]
         if k == "active_since":
             v = str(v).strip() or None if v is not None else None
         if k == "reminder_time":
@@ -615,12 +623,24 @@ def merge_habit(
     }
 
 
-def reorder_habits(habit_ids: list[str], db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
-    """Persist explicit display order for habits."""
+def reorder_habits(
+    habit_ids: list[str],
+    group_updates: dict[str, str] | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """Persist explicit display order (and optional group reassignments) for habits."""
     ts = now_iso()
+    g_map = group_updates or {}
     with get_conn(db_path) as conn:
         for idx, hid in enumerate(habit_ids):
-            conn.execute("UPDATE habits SET sort_order = ?, updated_at = ? WHERE id = ?", (idx, ts, hid))
+            if hid in g_map:
+                clean_g = str(g_map[hid] or "").strip()[:48]
+                conn.execute(
+                    "UPDATE habits SET sort_order = ?, group_name = ?, updated_at = ? WHERE id = ?",
+                    (idx, clean_g, ts, hid),
+                )
+            else:
+                conn.execute("UPDATE habits SET sort_order = ?, updated_at = ? WHERE id = ?", (idx, ts, hid))
     return list_habits(include_archived=False, db_path=db_path)
 
 
