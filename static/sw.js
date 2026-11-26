@@ -1,5 +1,5 @@
 /* Daily Offline-First Service Worker (caches app shell; API calls use in-app offline queue) */
-const CACHE_NAME = "daily-shell-v47";
+const CACHE_NAME = "daily-shell-v48";
 const SHELL_ASSETS = [
   "/",
   "/static/style.css",
