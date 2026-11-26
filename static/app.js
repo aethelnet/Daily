@@ -43,6 +43,10 @@ const state = {
   retroAmounts: {},
   moodRatings: {},
   moodCauses: new Set(),
+  editingSnapId: null,
+  editingEvent: null,
+  logEventsById: {},
+  logSnapsById: {},
   logRange: null, // null = single day (state.day); or { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
   logRangeData: null,
 };
@@ -772,10 +776,11 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
     return `
     <div class="ev-row snap-row">
       <span class="ev-dot" style="background:var(--ai)"></span>
-      <span class="mono muted sm-text">${hhmm}</span>
+      <span class="mono muted sm-text" data-snap-edit="${sn.id}" style="cursor:pointer;" title="${esc(t("edit_entry_title"))}">${hhmm}</span>
       <strong>${esc(t("btn_mood"))}</strong>
       <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
-      <span class="muted sm-text" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${renderNoteWithTags(sn.note || "")}</span>
+      <span class="muted sm-text" data-snap-edit="${sn.id}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" title="${esc(t("edit_entry_title"))}">${renderNoteWithTags(sn.note || "")}</span>
+      <button class="btn ghost sm" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">✎</button>
       <button class="btn ghost sm" data-snap-del="${sn.id}" title="${esc(t("del_title"))}">✕</button>
     </div>`;
   }
@@ -792,11 +797,12 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
   return `
   <div class="ev-row">
     <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
-    <span class="ev-time" data-ev-time="${ev.id}" data-cur="${esc(ev.occurred_at)}" data-cur-label="${esc(timeLabel)}" data-win="${winMin}" data-hid="${esc(ev.habit_id || "")}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
+    <span class="ev-time" data-ev-time="${ev.id}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
     <strong>${esc(ev.habit_name)}</strong>
-    <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" data-cur-amt="${ev.amount}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
+    <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
     <span class="chip">${esc(srcTag)}</span>
-    <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" data-cur-note="${esc(ev.note || "")}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
+    <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
+    <button class="btn ghost sm" data-ev-edit="${ev.id}" title="${esc(t("edit_entry_title"))}">✎</button>
     <button class="btn ghost sm" data-ev-del="${ev.id}" title="${esc(t("del_title"))}">✕</button>
   </div>`;
 }
@@ -806,6 +812,10 @@ function renderLogTimeline({ events, snapshots, state_dimensions, habits, single
   (state_dimensions || state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
   const habitsById = {};
   (habits || state.habits || []).forEach((h) => { habitsById[h.id] = h; });
+  state.logEventsById = {};
+  (events || []).forEach((ev) => { state.logEventsById[ev.id] = ev; });
+  state.logSnapsById = {};
+  (snapshots || []).forEach((sn) => { state.logSnapsById[sn.id] = sn; });
 
   const timeline = [
     ...(events || []).map((ev) => ({ kind: "event", at: ev.occurred_at, day: String(ev.occurred_at || "").slice(0, 10), item: ev })),
@@ -1021,7 +1031,8 @@ function closeRetroModal() {
 }
 
 // ---- MOMENTAUFNAHME (BEFINDEN) MODAL ----
-async function openMoodModal() {
+async function openMoodModal(editSnap = null) {
+  const snap = editSnap && typeof editSnap === "object" && editSnap.id != null ? editSnap : null;
   try {
     const [dimResp, habResp] = await Promise.all([
       api("/api/state/dimensions?include_archived=true"),
@@ -1044,17 +1055,124 @@ async function openMoodModal() {
       ];
     }
   }
-  state.moodRatings = {};
-  state.moodCauses = new Set();
-  $("#mood-time").value = localTimeHHMM(new Date());
-  $("#mood-note").value = "";
+  state.editingSnapId = snap ? snap.id : null;
+  state.moodRatings = snap ? { ...(snap.ratings || {}) } : {};
+  state.moodCauses = new Set(snap ? snap.causes || [] : []);
+  const titleEl = $("#mood-modal-title");
+  if (titleEl) titleEl.textContent = t(snap ? "mood_title_edit" : "mood_title");
+  const dateEl = $("#mood-date");
+  if (dateEl) dateEl.value = snap && snap.occurred_at ? snap.occurred_at.slice(0, 10) : state.day;
+  $("#mood-time").value = snap && snap.occurred_at ? snap.occurred_at.slice(11, 16) : localTimeHHMM(new Date());
+  $("#mood-note").value = snap ? snap.note || "" : "";
   renderMoodModal();
   renderTagSuggestChips("#mood-tag-chips", "#mood-note");
   $("#mood-modal").classList.remove("hidden");
 }
 
 function closeMoodModal() {
+  state.editingSnapId = null;
   $("#mood-modal").classList.add("hidden");
+}
+
+// ---- DAY LOG EVENT EDITOR MODAL ----
+function computeTimeDiffMin(startHHMM, endHHMM) {
+  if (!startHHMM || !endHHMM) return 0;
+  const sm = startHHMM.match(/^(\d{2}):(\d{2})$/);
+  const em = endHHMM.match(/^(\d{2}):(\d{2})$/);
+  if (!sm || !em) return 0;
+  let diff = Number(em[1]) * 60 + Number(em[2]) - (Number(sm[1]) * 60 + Number(sm[2]));
+  if (diff <= 0) diff += 1440;
+  return diff;
+}
+
+function updateEditEventDurationHint(recalcAmount = false) {
+  const hint = $("#ee-duration-hint");
+  if (!hint) return;
+  const startVal = $("#ee-start").value;
+  const endVal = $("#ee-time").value;
+  const diffMin = computeTimeDiffMin(startVal, endVal);
+  if (diffMin <= 0) {
+    hint.classList.add("hidden");
+    hint.textContent = "";
+    return;
+  }
+  const hid = $("#ee-habit").value;
+  const allH = [
+    ...(state.habits || []),
+    ...(state.archivedHabits || []),
+    ...((state.logRangeData && state.logRangeData.habits) || []),
+  ];
+  const hab = allH.find((x) => x.id === hid);
+  const dur = formatDurationMin(diffMin);
+  if (hab && hab.block_minutes) {
+    const calcAmt = Math.max(0.1, Math.round((diffMin / Number(hab.block_minutes)) * 10) / 10);
+    if (recalcAmount) $("#ee-amount").value = calcAmt;
+    hint.textContent = t("ee_duration_block_hint", { dur, blk: hab.block_minutes, amt: fmtNum(calcAmt) });
+  } else {
+    hint.textContent = t("ee_duration_hint", { dur });
+  }
+  hint.classList.remove("hidden");
+}
+
+function openEditEventModal(ev, focusSelector = null) {
+  if (!ev) return;
+  state.editingEvent = ev;
+  const allHabits = [];
+  const seen = new Set();
+  for (const h of [
+    ...(state.habits || []),
+    ...((state.logRangeData && state.logRangeData.habits) || []),
+    ...(state.archivedHabits || []),
+  ]) {
+    if (h && h.id && !seen.has(h.id)) {
+      seen.add(h.id);
+      allHabits.push(h);
+    }
+  }
+  if (ev.habit_id && !seen.has(ev.habit_id)) {
+    allHabits.push({ id: ev.habit_id, name: ev.habit_name || ev.habit_id });
+  }
+  $("#ee-id").value = ev.id;
+  $("#ee-habit").innerHTML = allHabits.map((h) => `<option value="${esc(h.id)}">${esc(h.name)}</option>`).join("");
+  $("#ee-habit").value = ev.habit_id || "";
+  $("#ee-date").value = String(ev.occurred_at || state.day).slice(0, 10);
+  $("#ee-amount").value = ev.amount;
+
+  const endHHMM = String(ev.occurred_at || "").slice(11, 16) || localTimeHHMM(new Date());
+  $("#ee-time").value = endHHMM;
+  const winMin = Number(ev.window_minutes || 0);
+  if (winMin > 0 && ev.source !== "retro") {
+    const endDt = new Date(ev.occurred_at);
+    if (!Number.isNaN(endDt.getTime())) {
+      const startDt = new Date(endDt.getTime() - winMin * 60000);
+      $("#ee-start").value = localTimeHHMM(startDt);
+    } else {
+      $("#ee-start").value = "";
+    }
+  } else {
+    $("#ee-start").value = "";
+  }
+  $("#ee-note").value = ev.note || "";
+  updateEditEventDurationHint(false);
+  renderTagSuggestChips("#ee-tag-chips", "#ee-note");
+  $("#edit-event-modal").classList.remove("hidden");
+  if (focusSelector) {
+    const target = $(focusSelector);
+    if (target) setTimeout(() => { target.focus(); if (target.select) target.select(); }, 20);
+  }
+}
+
+function closeEditEventModal() {
+  state.editingEvent = null;
+  $("#edit-event-modal").classList.add("hidden");
+}
+
+async function refreshAfterLogMutation() {
+  await loadToday();
+  if (state.logRange) {
+    await loadLogRange(state.logRange.start, state.logRange.end);
+  }
+  if (state.tab === "analysis") await loadAnalysis();
 }
 
 // ---- HABIT DELETE / MERGE MODAL ----
@@ -1404,8 +1522,8 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           <strong>${esc(e.target_name)}</strong>
         </div>
         <div class="row-inline">
-          <button class="btn ghost sm" data-flip-edge="${e.id}" data-src="${esc(e.source_id)}" data-dst="${esc(e.target_id)}" data-w="${-e.weight}" data-rt="rollup" data-win="any" title="${esc(t("flip_sign_title"))}">±</button>
-          <button class="btn ghost sm" data-del-edge="${e.id}">✕</button>
+          <button class="btn ghost sm" data-edit-rollup="${e.id}" title="${esc(t("edit_edge_title"))}">✎</button>
+          <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
         </div>
       </div>`
         )
@@ -1429,11 +1547,60 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           </div>
           ${e.note ? `<div class="muted sm-text">${esc(e.note)}</div>` : ""}
         </div>
-        <button class="btn ghost sm" data-del-edge="${e.id}">✕</button>
+        <div class="row-inline">
+          <button class="btn ghost sm" data-edit-hyp="${e.id}" title="${esc(t("edit_edge_title"))}">✎</button>
+          <button class="btn ghost sm" data-del-edge="${e.id}" title="${esc(t("del_title"))}">✕</button>
+        </div>
       </div>`
         )
         .join("")
     : `<div class="muted sm-text">${esc(t("no_hyps"))}</div>`;
+  resetRollupForm();
+  resetHypForm();
+}
+
+function resetRollupForm() {
+  const idEl = $("#rf-edit-id");
+  if (idEl) idEl.value = "";
+  const saveBtn = $("#btn-save-rollup");
+  if (saveBtn) saveBtn.textContent = t("btn_connect");
+  const cancelBtn = $("#btn-cancel-rollup");
+  if (cancelBtn) cancelBtn.classList.add("hidden");
+}
+
+function populateRollupForm(edge) {
+  if (!edge) return;
+  $("#rf-edit-id").value = edge.id;
+  $("#rf-source").value = edge.source_id;
+  $("#rf-sign").value = edge.weight >= 0 ? "1" : "-1";
+  $("#rf-weight").value = Math.abs(Number(edge.weight || 1));
+  $("#rf-target").value = edge.target_id;
+  $("#btn-save-rollup").textContent = t("btn_save");
+  $("#btn-cancel-rollup").classList.remove("hidden");
+  $("#rf-weight").focus();
+  $("#rf-weight").select();
+}
+
+function resetHypForm() {
+  const idEl = $("#hyp-edit-id");
+  if (idEl) idEl.value = "";
+  const saveBtn = $("#btn-save-hyp");
+  if (saveBtn) saveBtn.textContent = t("btn_save_hyp");
+  const cancelBtn = $("#btn-cancel-hyp");
+  if (cancelBtn) cancelBtn.classList.add("hidden");
+}
+
+function populateHypForm(edge) {
+  if (!edge) return;
+  $("#hyp-edit-id").value = edge.id;
+  $("#hyp-source").value = edge.source_id;
+  $("#hyp-window").value = edge.context_window || "any";
+  $("#hyp-sign").value = edge.weight >= 0 ? "1" : "-1";
+  $("#hyp-target").value = edge.target_id;
+  $("#hyp-note").value = edge.note || "";
+  $("#btn-save-hyp").textContent = t("btn_save");
+  $("#btn-cancel-hyp").classList.remove("hidden");
+  $("#hyp-note").focus();
 }
 
 function resetHabitForm() {
@@ -2434,104 +2601,111 @@ function bindEvents() {
   });
   $("#habit-grid").addEventListener("mouseleave", clearRouteHighlight);
 
-  // Day log interactions (delete / edit time / edit amount / edit note inline / delete snapshot)
+  // Day log interactions (full editor modal for events & snapshots + quick delete)
   $("#event-list").addEventListener("click", async (e) => {
     const snapDel = e.target.closest("[data-snap-del]");
     if (snapDel) {
       await api(`/api/snapshots/${snapDel.dataset.snapDel}`, { method: "DELETE" });
       toast(t("deleted_snap"));
-      await loadToday();
+      await refreshAfterLogMutation();
+      return;
+    }
+    const snapEdit = e.target.closest("[data-snap-edit]");
+    if (snapEdit) {
+      const sn = state.logSnapsById[Number(snapEdit.dataset.snapEdit)];
+      if (sn) openMoodModal(sn);
       return;
     }
     const delBtn = e.target.closest("[data-ev-del]");
     if (delBtn) {
       await api(`/api/events/${delBtn.dataset.evDel}`, { method: "DELETE" });
       toast(t("deleted_entry"));
-      await loadToday();
+      await refreshAfterLogMutation();
+      return;
+    }
+    const editBtn = e.target.closest("[data-ev-edit]");
+    if (editBtn) {
+      const ev = state.logEventsById[Number(editBtn.dataset.evEdit)];
+      if (ev) openEditEventModal(ev);
       return;
     }
     const timeEl = e.target.closest("[data-ev-time]");
     if (timeEl) {
-      const cur = timeEl.dataset.cur;
-      const curLabel = timeEl.dataset.curLabel || cur.slice(11, 16);
-      const raw = prompt(t("prompt_time"), curLabel);
-      if (raw !== null) {
-        const trimmed = raw.trim();
-        const rangeMatch = trimmed.match(/^(\d{2}):(\d{2})\s*[-–]\s*(\d{2}):(\d{2})$/);
-        const singleMatch = trimmed.match(/^(\d{2}):(\d{2})$/);
-        if (rangeMatch) {
-          const sh = Number(rangeMatch[1]), sm = Number(rangeMatch[2]);
-          const eh = Number(rangeMatch[3]), em = Number(rangeMatch[4]);
-          if (sh <= 23 && sm <= 59 && eh <= 23 && em <= 59) {
-            let diffMin = (eh * 60 + em) - (sh * 60 + sm);
-            if (diffMin <= 0) diffMin += 1440;
-            const endHHMM = `${rangeMatch[3]}:${rangeMatch[4]}`;
-            const startHHMM = `${rangeMatch[1]}:${rangeMatch[2]}`;
-            const patch = {
-              occurred_at: `${cur.slice(0, 10)}T${endHHMM}:00`,
-              window_minutes: diffMin,
-            };
-            const allH = (state.logRangeData && state.logRangeData.habits) || state.habits;
-            const hab = allH.find((x) => x.id === timeEl.dataset.hid) || state.habits.find((x) => x.id === timeEl.dataset.hid);
-            if (hab && hab.block_minutes) {
-              patch.amount = Math.max(0.1, Math.round((diffMin / Number(hab.block_minutes)) * 10) / 10);
-            }
-            await api(`/api/events/${timeEl.dataset.evTime}`, {
-              method: "PATCH",
-              body: JSON.stringify(patch),
-            });
-            const label = patch.amount != null ? `${startHHMM}–${endHHMM} (+${fmtNum(patch.amount)})` : `${startHHMM}–${endHHMM}`;
-            toast(t("time_updated", { v: label }));
-            await loadToday();
-          }
-        } else if (singleMatch) {
-          const hh = Number(singleMatch[1]), mm = Number(singleMatch[2]);
-          if (hh <= 23 && mm <= 59) {
-            await api(`/api/events/${timeEl.dataset.evTime}`, {
-              method: "PATCH",
-              body: JSON.stringify({ occurred_at: `${cur.slice(0, 10)}T${trimmed}:00` }),
-            });
-            toast(t("time_updated", { v: trimmed }));
-            await loadToday();
-          }
-        }
-      }
+      const ev = state.logEventsById[Number(timeEl.dataset.evTime)];
+      if (ev) openEditEventModal(ev, "#ee-time");
       return;
     }
     const amtEl = e.target.closest("[data-ev-amt]");
     if (amtEl) {
-      const raw = prompt(t("prompt_amt"), amtEl.dataset.curAmt);
-      if (raw !== null && raw.trim() !== "") {
-        const nextVal = Number(raw.trim().replace(",", "."));
-        if (!Number.isNaN(nextVal) && nextVal !== 0) {
-          await api(`/api/events/${amtEl.dataset.evAmt}`, {
-            method: "PATCH",
-            body: JSON.stringify({ amount: nextVal }),
-          });
-          toast(t("amt_updated", { v: fmtNum(nextVal) }));
-          await loadToday();
-        } else {
-          toast(t("prompt_amt_err"));
-        }
-      }
+      const ev = state.logEventsById[Number(amtEl.dataset.evAmt)];
+      if (ev) openEditEventModal(ev, "#ee-amount");
       return;
     }
     const noteEl = e.target.closest("[data-ev-note]");
     if (noteEl) {
-      const curNote = noteEl.dataset.curNote || "";
-      const nextNote = prompt(t("prompt_note"), curNote);
-      if (nextNote !== null) {
-        await api(`/api/events/${noteEl.dataset.evNote}`, {
-          method: "PATCH",
-          body: JSON.stringify({ note: nextNote.trim() }),
-        });
-        toast(nextNote.trim() ? t("note_saved") : t("note_removed"));
-        await loadToday();
-      }
+      const ev = state.logEventsById[Number(noteEl.dataset.evNote)];
+      if (ev) openEditEventModal(ev, "#ee-note");
     }
   });
 
-  // Quick-pick existing #tag chips in Mood / Custom Log / Retro note fields
+  // Day log event editor modal handlers
+  $("#btn-close-ee").addEventListener("click", closeEditEventModal);
+  $("#btn-cancel-ee").addEventListener("click", closeEditEventModal);
+  $("#edit-event-modal").addEventListener("click", (e) => {
+    if (e.target.id === "edit-event-modal") closeEditEventModal();
+  });
+  ["#ee-start", "#ee-time", "#ee-habit"].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener("change", () => updateEditEventDurationHint(true));
+  });
+  $("#btn-ee-delete").addEventListener("click", async () => {
+    const evId = $("#ee-id").value;
+    if (!evId) return;
+    try {
+      await api(`/api/events/${evId}`, { method: "DELETE" });
+      closeEditEventModal();
+      toast(t("deleted_entry"));
+      await refreshAfterLogMutation();
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+    }
+  });
+  $("#ee-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const evId = $("#ee-id").value;
+    const habit_id = $("#ee-habit").value;
+    const dayIso = $("#ee-date").value || state.day;
+    const endHHMM = $("#ee-time").value || "12:00";
+    const startHHMM = $("#ee-start").value;
+    const amount = Number(String($("#ee-amount").value).replace(",", "."));
+    const note = $("#ee-note").value.trim();
+    if (Number.isNaN(amount) || amount === 0) {
+      toast(t("prompt_amt_err"));
+      return;
+    }
+    const orig = state.editingEvent || {};
+    const patch = {
+      habit_id,
+      amount,
+      occurred_at: `${dayIso}T${endHHMM}:00`,
+      note,
+    };
+    if (startHHMM) {
+      patch.window_minutes = computeTimeDiffMin(startHHMM, endHHMM);
+    } else if (orig.source !== "retro") {
+      patch.window_minutes = 0;
+    }
+    try {
+      await api(`/api/events/${evId}`, { method: "PATCH", body: JSON.stringify(patch) });
+      closeEditEventModal();
+      toast(t("entry_updated"));
+      await refreshAfterLogMutation();
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+    }
+  });
+
+  // Quick-pick existing #tag chips in Mood / Custom Log / Edit Entry / Retro note fields
   document.body.addEventListener("click", (e) => {
     const chip = e.target.closest("[data-tag-pick]");
     if (!chip) return;
@@ -2542,6 +2716,7 @@ function bindEvents() {
   [
     ["#mood-tag-chips", "#mood-note"],
     ["#cl-tag-chips", "#cl-note"],
+    ["#ee-tag-chips", "#ee-note"],
     ["#retro-tag-chips", "#retro-note"],
   ].forEach(([boxSel, inpSel]) => {
     const inp = $(inpSel);
@@ -2723,16 +2898,30 @@ function bindEvents() {
       toast(t("snap_need_one"));
       return;
     }
+    const dayIso = ($("#mood-date") && $("#mood-date").value) || state.day;
     const hhmm = $("#mood-time").value || localTimeHHMM(new Date());
-    const occurred_at = `${state.day}T${hhmm}:00`;
+    const occurred_at = `${dayIso}T${hhmm}:00`;
+    if (state.editingSnapId) {
+      try {
+        await api(`/api/snapshots/${state.editingSnapId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ ratings, causes, note, occurred_at }),
+        });
+        closeMoodModal();
+        toast(t("snap_updated"));
+        await refreshAfterLogMutation();
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+      return;
+    }
     const client_uuid = makeUuid();
     const payload = { ratings, causes, note, occurred_at, client_uuid };
     try {
       await api("/api/snapshots", { method: "POST", body: JSON.stringify(payload) });
       closeMoodModal();
       toast(t("snap_saved"));
-      if (state.tab === "today") await loadToday();
-      if (state.tab === "analysis") await loadAnalysis();
+      await refreshAfterLogMutation();
     } catch {
       const q = loadOfflineSnapshots();
       q.push(payload);
@@ -3206,19 +3395,29 @@ function bindEvents() {
     await loadSetup();
   });
 
-  // Routing & Hypotheses forms
+  // Routing & Hypotheses forms (create or edit in place!)
+  $("#btn-cancel-rollup").addEventListener("click", resetRollupForm);
+  $("#btn-cancel-hyp").addEventListener("click", () => {
+    resetHypForm();
+    $("#hyp-note").value = "";
+  });
   $("#rollup-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const editId = $("#rf-edit-id").value;
     const source_id = $("#rf-source").value;
     const target_id = $("#rf-target").value;
     const sign = Number($("#rf-sign").value);
     const weight = Math.abs(Number($("#rf-weight").value || 1)) * sign;
+    const payload = { source_id, target_id, relation_type: "rollup", weight, context_window: "any" };
     try {
-      await api("/api/edges", {
-        method: "POST",
-        body: JSON.stringify({ source_id, target_id, relation_type: "rollup", weight, context_window: "any" }),
-      });
-      toast(t("edge_saved"));
+      if (editId) {
+        await api(`/api/edges/${editId}`, { method: "PATCH", body: JSON.stringify(payload) });
+        toast(t("edge_updated"));
+      } else {
+        await api("/api/edges", { method: "POST", body: JSON.stringify(payload) });
+        toast(t("edge_saved"));
+      }
+      resetRollupForm();
       await loadSetup();
     } catch (err) {
       toast(t("err_prefix", { msg: err.message }));
@@ -3227,18 +3426,23 @@ function bindEvents() {
 
   $("#hyp-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const editId = $("#hyp-edit-id").value;
     const source_id = $("#hyp-source").value;
     const target_id = $("#hyp-target").value;
     const weight = Number($("#hyp-sign").value);
     const context_window = $("#hyp-window").value;
     const note = $("#hyp-note").value.trim();
+    const payload = { source_id, target_id, relation_type: "hypothesis", weight, context_window, note };
     try {
-      await api("/api/edges", {
-        method: "POST",
-        body: JSON.stringify({ source_id, target_id, relation_type: "hypothesis", weight, context_window, note }),
-      });
+      if (editId) {
+        await api(`/api/edges/${editId}`, { method: "PATCH", body: JSON.stringify(payload) });
+        toast(t("hyp_updated"));
+      } else {
+        await api("/api/edges", { method: "POST", body: JSON.stringify(payload) });
+        toast(t("hyp_saved"));
+      }
       $("#hyp-note").value = "";
-      toast(t("hyp_saved"));
+      resetHypForm();
       await loadSetup();
     } catch (err) {
       toast(t("err_prefix", { msg: err.message }));
@@ -3253,20 +3457,17 @@ function bindEvents() {
       await loadSetup();
       return;
     }
-    const flip = e.target.closest("[data-flip-edge]");
-    if (flip) {
-      await api("/api/edges", {
-        method: "POST",
-        body: JSON.stringify({
-          source_id: flip.dataset.src,
-          target_id: flip.dataset.dst,
-          relation_type: flip.dataset.rt,
-          weight: Number(flip.dataset.w),
-          context_window: flip.dataset.win,
-        }),
-      });
-      toast(t("sign_flipped"));
-      await loadSetup();
+    const editRollup = e.target.closest("[data-edit-rollup]");
+    if (editRollup) {
+      const edge = state.edges.find((x) => String(x.id) === String(editRollup.dataset.editRollup));
+      if (edge) populateRollupForm(edge);
+      return;
+    }
+    const editHyp = e.target.closest("[data-edit-hyp]");
+    if (editHyp) {
+      const edge = state.edges.find((x) => String(x.id) === String(editHyp.dataset.editHyp));
+      if (edge) populateHypForm(edge);
+      return;
     }
   };
   $("#rollup-list").addEventListener("click", handleEdgeClick);
@@ -3792,6 +3993,7 @@ function bindEvents() {
     if (e.key === "Escape") {
       closeRetroModal();
       closeCustomLog();
+      closeEditEventModal();
       closeMoodModal();
       closeDeleteHabitModal();
       $("#legal-modal").classList.add("hidden");

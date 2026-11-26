@@ -275,6 +275,7 @@
               Alles kann frei auf alles andere routen: z. B. <code>Bild gemalt +1 → Kreativ</code> oder <code>Kaffee −1 → Schlaf</code>.
             </p>
             <form id="rollup-form" class="edge-form">
+              <input type="hidden" id="rf-edit-id" />
               <select id="rf-source" required></select>
               <select id="rf-sign">
                 <option value="1" data-i18n="rf_pos">+ zählt mit</option>
@@ -283,7 +284,8 @@
               <input type="number" id="rf-weight" value="1" step="any" min="0.01" class="num-sm" data-i18n-title="rf_weight_title" title="Gewicht (z. B. 1, 0.5, 2)" />
               <span class="arrow">→</span>
               <select id="rf-target" required></select>
-              <button type="submit" class="btn primary sm" data-i18n="btn_connect">Verbinden</button>
+              <button type="submit" class="btn primary sm" id="btn-save-rollup" data-i18n="btn_connect">Verbinden</button>
+              <button type="button" class="btn ghost sm hidden" id="btn-cancel-rollup" data-i18n="btn_cancel">Abbrechen</button>
             </form>
             <div id="rollup-list" class="edge-list"></div>
           </div>
@@ -296,6 +298,7 @@
               Vermutungen festhalten (z. B. <em>„Spaziergang nachmittags fördert Fokus“</em>) — im Analyse-Tab siehst du sie direkt gegen deine echten Tage.
             </p>
             <form id="hyp-form" class="stack">
+              <input type="hidden" id="hyp-edit-id" />
               <div class="edge-form">
                 <select id="hyp-source" required></select>
                 <select id="hyp-window">
@@ -314,7 +317,8 @@
               </div>
               <div class="row-inline">
                 <input type="text" id="hyp-note" data-i18n-placeholder="hyp_note_ph" placeholder="Optionale Notiz (z. B. 'danach bin ich 1h klarer')" style="flex:1;" />
-                <button type="submit" class="btn sm" data-i18n="btn_save_hyp">Annahme speichern</button>
+                <button type="button" class="btn ghost sm hidden" id="btn-cancel-hyp" data-i18n="btn_cancel">Abbrechen</button>
+                <button type="submit" class="btn sm" id="btn-save-hyp" data-i18n="btn_save_hyp">Annahme speichern</button>
               </div>
             </form>
             <div id="hyp-list" class="edge-list"></div>
@@ -605,7 +609,7 @@
   <div id="mood-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="panel-head">
-        <h3 data-i18n="mood_title">Momentaufnahme — Wie geht’s dir gerade?</h3>
+        <h3 id="mood-modal-title" data-i18n="mood_title">Momentaufnahme — Wie geht’s dir gerade?</h3>
         <button class="btn ghost sm" id="btn-close-mood">✕</button>
       </div>
       <p class="muted sm-text" style="margin:0 0 12px;" data-i18n="mood_desc">
@@ -635,6 +639,7 @@
       </div>
 
       <div class="row-inline" style="margin-top:12px;">
+        <input type="date" id="mood-date" class="mono" style="width:136px;" />
         <input type="time" id="mood-time" class="time-input mono" />
         <input type="text" id="mood-note" data-i18n-placeholder="mood_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." style="flex:1;min-width:160px;" />
       </div>
@@ -680,6 +685,54 @@
         <div class="row-end">
           <button type="button" class="btn ghost" id="btn-cancel-cl" data-i18n="btn_cancel">Abbrechen</button>
           <button type="submit" class="btn primary" data-i18n="btn_log">Eintragen</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL: EDIT DAY LOG ENTRY ==================== -->
+  <div id="edit-event-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card sm-card">
+      <div class="panel-head">
+        <h3 id="ee-title" data-i18n="ee_title">Eintrag bearbeiten</h3>
+        <button class="btn ghost sm" id="btn-close-ee">✕</button>
+      </div>
+      <form id="ee-form" class="stack">
+        <input type="hidden" id="ee-id" />
+        <label class="field">
+          <span data-i18n="ee_habit">Gewohnheit</span>
+          <select id="ee-habit" required></select>
+        </label>
+        <div class="row-2">
+          <label class="field">
+            <span data-i18n="ee_date">Datum</span>
+            <input type="date" id="ee-date" class="mono" required />
+          </label>
+          <label class="field">
+            <span data-i18n="cl_amount">Betrag</span>
+            <input type="number" id="ee-amount" step="any" required />
+          </label>
+        </div>
+        <div class="row-2">
+          <label class="field">
+            <span data-i18n="ee_start_opt">Start (optional)</span>
+            <input type="time" id="ee-start" class="mono" />
+          </label>
+          <label class="field">
+            <span data-i18n="ee_time">Uhrzeit / Ende</span>
+            <input type="time" id="ee-time" class="mono" required />
+          </label>
+        </div>
+        <div id="ee-duration-hint" class="muted sm-text mono hidden"></div>
+        <label class="field">
+          <span data-i18n="cl_note">Notiz (optional)</span>
+          <input type="text" id="ee-note" data-i18n-placeholder="cl_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." />
+        </label>
+        <div id="ee-tag-chips" class="tag-suggest-row hidden"></div>
+        <div class="row-end">
+          <button type="button" class="btn danger sm" id="btn-ee-delete" style="margin-right:auto;" data-i18n="del_title">Löschen</button>
+          <button type="button" class="btn ghost" id="btn-cancel-ee" data-i18n="btn_cancel">Abbrechen</button>
+          <button type="submit" class="btn primary" data-i18n="btn_save">Speichern</button>
         </div>
       </form>
     </div>
