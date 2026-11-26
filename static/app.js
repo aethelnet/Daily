@@ -166,6 +166,18 @@ function localTimeHHMM(d) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function formatEventTimeRange(ev) {
+  const iso = String(ev && ev.occurred_at ? ev.occurred_at : "");
+  const endHHMM = iso.slice(11, 16) || "—";
+  const win = Number(ev && ev.window_minutes ? ev.window_minutes : 0);
+  if (!win || win <= 0 || (ev && ev.source === "retro")) return endHHMM;
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return endHHMM;
+  const endDt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  const startDt = new Date(endDt.getTime() - win * 60000);
+  return `${localTimeHHMM(startDt)}–${endHHMM}`;
+}
+
 function shiftDate(iso, deltaDays) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(y, m - 1, d + deltaDays);
@@ -710,13 +722,19 @@ function renderToday(data) {
           </div>`;
         }
         const ev = entry.item;
-        const hhmm = ev.occurred_at.slice(11, 16);
-        const srcTag = ev.source === "retro" ? `retro ${Math.round((ev.window_minutes / 60) * 10) / 10}h` : ev.source;
+        const timeLabel = formatEventTimeRange(ev);
+        const winMin = Number(ev.window_minutes || 0);
+        const srcTag =
+          ev.source === "retro"
+            ? `retro ${Math.round((winMin / 60) * 10) / 10}h`
+            : winMin > 0
+            ? formatDurationMin(winMin)
+            : ev.source;
         const hasNote = !!(ev.note && ev.note.trim());
         return `
         <div class="ev-row">
           <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
-          <span class="ev-time" data-ev-time="${ev.id}" data-cur="${esc(ev.occurred_at)}" title="${esc(t("edit_time_title"))}">${hhmm}</span>
+          <span class="ev-time" data-ev-time="${ev.id}" data-cur="${esc(ev.occurred_at)}" data-cur-label="${esc(timeLabel)}" data-win="${winMin}" data-hid="${esc(ev.habit_id || "")}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
           <strong>${esc(ev.habit_name)}</strong>
           <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" data-cur-amt="${ev.amount}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
           <span class="chip">${esc(srcTag)}</span>
@@ -763,6 +781,8 @@ async function toggleHabitActive(habitId) {
         }),
         { undoEventId: res.event.id }
       );
+    } else if (res.too_short) {
+      toast(t("session_too_short", { name: h.name }));
     } else {
       toast(t("session_cancelled", { name: h.name }));
     }
@@ -1974,14 +1994,47 @@ function bindEvents() {
     const timeEl = e.target.closest("[data-ev-time]");
     if (timeEl) {
       const cur = timeEl.dataset.cur;
-      const nextHHMM = prompt(t("prompt_time"), cur.slice(11, 16));
-      if (nextHHMM && /^\d{2}:\d{2}$/.test(nextHHMM.trim())) {
-        await api(`/api/events/${timeEl.dataset.evTime}`, {
-          method: "PATCH",
-          body: JSON.stringify({ occurred_at: `${cur.slice(0, 10)}T${nextHHMM.trim()}:00` }),
-        });
-        toast(t("time_updated", { v: nextHHMM.trim() }));
-        await loadToday();
+      const curLabel = timeEl.dataset.curLabel || cur.slice(11, 16);
+      const raw = prompt(t("prompt_time"), curLabel);
+      if (raw !== null) {
+        const trimmed = raw.trim();
+        const rangeMatch = trimmed.match(/^(\d{2}):(\d{2})\s*[-–]\s*(\d{2}):(\d{2})$/);
+        const singleMatch = trimmed.match(/^(\d{2}):(\d{2})$/);
+        if (rangeMatch) {
+          const sh = Number(rangeMatch[1]), sm = Number(rangeMatch[2]);
+          const eh = Number(rangeMatch[3]), em = Number(rangeMatch[4]);
+          if (sh <= 23 && sm <= 59 && eh <= 23 && em <= 59) {
+            let diffMin = (eh * 60 + em) - (sh * 60 + sm);
+            if (diffMin <= 0) diffMin += 1440;
+            const endHHMM = `${rangeMatch[3]}:${rangeMatch[4]}`;
+            const startHHMM = `${rangeMatch[1]}:${rangeMatch[2]}`;
+            const patch = {
+              occurred_at: `${cur.slice(0, 10)}T${endHHMM}:00`,
+              window_minutes: diffMin,
+            };
+            const hab = state.habits.find((x) => x.id === timeEl.dataset.hid);
+            if (hab && hab.block_minutes) {
+              patch.amount = Math.max(0.1, Math.round((diffMin / Number(hab.block_minutes)) * 10) / 10);
+            }
+            await api(`/api/events/${timeEl.dataset.evTime}`, {
+              method: "PATCH",
+              body: JSON.stringify(patch),
+            });
+            const label = patch.amount != null ? `${startHHMM}–${endHHMM} (+${fmtNum(patch.amount)})` : `${startHHMM}–${endHHMM}`;
+            toast(t("time_updated", { v: label }));
+            await loadToday();
+          }
+        } else if (singleMatch) {
+          const hh = Number(singleMatch[1]), mm = Number(singleMatch[2]);
+          if (hh <= 23 && mm <= 59) {
+            await api(`/api/events/${timeEl.dataset.evTime}`, {
+              method: "PATCH",
+              body: JSON.stringify({ occurred_at: `${cur.slice(0, 10)}T${trimmed}:00` }),
+            });
+            toast(t("time_updated", { v: trimmed }));
+            await loadToday();
+          }
+        }
       }
       return;
     }

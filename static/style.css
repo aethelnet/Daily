@@ -704,6 +704,8 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   color: var(--muted);
   cursor: pointer;
   min-width: 42px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .ev-time:hover { color: var(--text); text-decoration: underline dotted; }
 .ev-amt {

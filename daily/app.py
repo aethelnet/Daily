@@ -164,6 +164,7 @@ class E2EECreateGistRequest(BaseModel):
 class EventUpdate(BaseModel):
     amount: float | None = None
     occurred_at: str | None = None
+    window_minutes: int | None = None
     note: str | None = None
 
 
@@ -355,22 +356,28 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
             return {"active": False, "logged": False, "habit": updated}
 
         if p.override_minutes is not None:
-            elapsed_min = max(1.0, float(p.override_minutes))
+            elapsed_min = float(p.override_minutes)
+            if elapsed_min < 1.0:
+                return {"active": False, "logged": False, "too_short": True, "elapsed_minutes": 0, "habit": updated}
         else:
             try:
                 dt_start = datetime.fromisoformat(cur_since)
                 dt_end = datetime.fromisoformat(now_str)
-                elapsed_min = max(1.0, (dt_end - dt_start).total_seconds() / 60.0)
+                raw_min = (dt_end - dt_start).total_seconds() / 60.0
+                if raw_min < 1.0:
+                    return {"active": False, "logged": False, "too_short": True, "elapsed_minutes": 0, "habit": updated}
+                elapsed_min = raw_min
             except Exception:
                 elapsed_min = float(h.get("block_minutes") or 30)
 
         block_m = max(1, int(h.get("block_minutes") or 30))
-        amount = max(0.5, round((elapsed_min / block_m) * 2.0) / 2.0)
+        amount = max(0.1, round((elapsed_min / block_m) * 10.0) / 10.0)
+        win_min = max(1, int(round(elapsed_min)))
         ev = log_event(
             habit_id=habit_id,
             amount=amount,
             occurred_at=now_str,
-            window_minutes=int(round(elapsed_min)),
+            window_minutes=win_min,
             source="tap",
             note="",
             db_path=resolved_db,
@@ -378,7 +385,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         return {
             "active": False,
             "logged": True,
-            "elapsed_minutes": int(round(elapsed_min)),
+            "elapsed_minutes": win_min,
             "amount": amount,
             "event": ev,
             "habit": updated,

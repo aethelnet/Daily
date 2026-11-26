@@ -696,6 +696,16 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(coding["block_minutes"], 30)
         self.assertIsNone(coding["active_since"])
 
+        # Accidental quick start->stop (< 1 min) must discard without logging any event!
+        client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T08:55:00"})
+        r_short = client.post(
+            f"/api/habits/{coding['id']}/toggle-active",
+            json={"now_at": "2026-11-26T08:55:25"},
+        ).json()
+        self.assertFalse(r_short["active"])
+        self.assertFalse(r_short["logged"])
+        self.assertTrue(r_short["too_short"])
+
         # Start session at 09:00 -> active_since set
         r_start = client.post(
             f"/api/habits/{coding['id']}/toggle-active",
@@ -724,13 +734,21 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(r_stop["elapsed_minutes"], 45)
         self.assertEqual(r_stop["event"]["window_minutes"], 45)
 
-        # Start again & stop with override_minutes=70 -> 70/30 = 2.33 -> rounds to 2.5
+        # Retroactive time-range adjustment via PATCH /api/events/{id} updates window_minutes + amount
+        r_patch = client.patch(
+            f"/api/events/{r_stop['event']['id']}",
+            json={"occurred_at": "2026-11-26T09:30:00", "window_minutes": 30, "amount": 1.0},
+        ).json()
+        self.assertEqual(r_patch["window_minutes"], 30)
+        self.assertEqual(r_patch["amount"], 1.0)
+
+        # Start again & stop with override_minutes=70 -> 70/30 = 2.333 -> rounds to 2.3 (0.1 precision!)
         client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T10:00:00"})
         r_ov = client.post(
             f"/api/habits/{coding['id']}/toggle-active",
             json={"now_at": "2026-11-26T23:55:00", "override_minutes": 70},
         ).json()
-        self.assertEqual(r_ov["amount"], 2.5)
+        self.assertEqual(r_ov["amount"], 2.3)
 
         # Start again & cancel -> stops cleanly with zero event logged!
         client.post(f"/api/habits/{coding['id']}/toggle-active", json={"now_at": "2026-11-26T12:00:00"})
