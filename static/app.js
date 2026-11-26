@@ -1067,15 +1067,22 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
       .map((cid) => (habitsById[cid] ? habitsById[cid].name : cid))
       .join(", ");
     const causeChip = causeTxt ? `<span class="chip">← ${esc(causeTxt)}</span>` : "";
+    const hasNote = !!(sn.note && sn.note.trim());
+    const fallbackTitle = !ratingChips && !causeChip ? `<strong>${esc(t("btn_mood"))}</strong>` : "";
+    const noteHtml = hasNote
+      ? `<span class="muted sm-text ev-note" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">${renderNoteWithTags(sn.note)}</span>`
+      : "";
     return `
     <div class="ev-row snap-row" style="--snap-c1:${esc(comp.c1)};--snap-c2:${esc(comp.c2)};">
       <span class="ev-dot snap-orb" style="background:${comp.orbBg};opacity:${comp.orbOpacity}"></span>
-      <span class="mono muted sm-text" data-snap-edit="${sn.id}" style="cursor:pointer;" title="${esc(t("edit_entry_title"))}">${hhmm}</span>
-      <strong>${esc(t("btn_mood"))}</strong>
-      <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
-      <span class="muted sm-text" data-snap-edit="${sn.id}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" title="${esc(t("edit_entry_title"))}">${renderNoteWithTags(sn.note || "")}</span>
-      <button class="btn ghost sm" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">Edit</button>
-      <button class="btn ghost sm" data-snap-del="${sn.id}" title="${esc(t("del_title"))}">✕</button>
+      <span class="ev-time" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">${hhmm}</span>
+      ${fallbackTitle}
+      ${ratingChips || causeChip ? `<div class="row-inline snap-chips">${ratingChips}${causeChip}</div>` : ""}
+      ${noteHtml}
+      <span class="row-inline snap-actions">
+        <button class="btn ghost sm" data-snap-edit="${sn.id}" title="${esc(t("edit_entry_title"))}">Edit</button>
+        <button class="btn ghost sm" data-snap-del="${sn.id}" title="${esc(t("del_title"))}">✕</button>
+      </span>
     </div>`;
   }
   const ev = entry.item;
