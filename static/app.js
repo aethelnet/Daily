@@ -2172,6 +2172,8 @@ function renderHabitColorSwatches() {
 function resetRollupForm() {
   const idEl = $("#rf-edit-id");
   if (idEl) idEl.value = "";
+  const wEl = $("#rf-weight");
+  if (wEl) wEl.value = "1";
   const saveBtn = $("#btn-save-rollup");
   if (saveBtn) saveBtn.textContent = t("btn_connect");
   const cancelBtn = $("#btn-cancel-rollup");
@@ -2183,7 +2185,7 @@ function populateRollupForm(edge) {
   $("#rf-edit-id").value = edge.id;
   $("#rf-source").value = edge.source_id;
   $("#rf-sign").value = edge.weight >= 0 ? "1" : "-1";
-  $("#rf-weight").value = Math.abs(Number(edge.weight || 1));
+  $("#rf-weight").value = String(Math.max(0.1, Math.round(Math.abs(Number(edge.weight || 1)) * 10) / 10));
   $("#rf-target").value = edge.target_id;
   $("#btn-save-rollup").textContent = t("btn_save");
   $("#btn-cancel-rollup").classList.remove("hidden");
