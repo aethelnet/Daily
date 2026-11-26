@@ -197,6 +197,7 @@ html, body {
 .split-2 > *, .row-2 > *, .row-3 > *, .cl-range-grid > *, .panel, .stack, .field, .nudge-box { min-width: 0; max-width: 100%; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.unit-step-pair { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
 .row-3 { display: grid; grid-template-columns: 1.35fr 1fr 0.8fr; gap: 10px; }
 .cl-range-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .cl-range-grid:not(.has-range) #cl-amount-wrap { order: -1; }

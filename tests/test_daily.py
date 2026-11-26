@@ -716,9 +716,10 @@ class TestDailyCore(unittest.TestCase):
 
         coding = client.post(
             "/api/habits",
-            json={"name": "Coding", "kind": "min", "target": 4, "unit": "blocks", "block_minutes": 30},
+            json={"name": "Coding", "kind": "min", "target": 4, "unit": "blocks", "block_minutes": 30, "tap_step": 0.25},
         ).json()
         self.assertEqual(coding["block_minutes"], 30)
+        self.assertEqual(coding["tap_step"], 0.25)
         self.assertIsNone(coding["active_since"])
 
         # Accidental quick start->stop (< 1 min) must discard without logging any event!
@@ -746,6 +747,7 @@ class TestDailyCore(unittest.TestCase):
         merge_remote_state_into_db(vault_state, db_path=other_db)
         mirrored = next(h for h in list_habits(db_path=other_db) if h["id"] == coding["id"])
         self.assertEqual(mirrored["block_minutes"], 30)
+        self.assertEqual(mirrored["tap_step"], 0.25)
         self.assertEqual(mirrored["active_since"], "2026-11-26T09:00:00")
 
         # Stop after 45 min -> 45/30 = 1.5 blocks logged with window_minutes=45

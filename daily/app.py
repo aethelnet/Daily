@@ -83,6 +83,7 @@ class HabitCreate(BaseModel):
     reminder_time: str = ""
     reminder_days: str = "0,1,2,3,4,5,6"
     block_minutes: int | None = None
+    tap_step: float = 1.0
 
 
 class HabitUpdate(BaseModel):
@@ -100,6 +101,7 @@ class HabitUpdate(BaseModel):
     reminder_days: str | None = None
     block_minutes: int | None = None
     clear_block_minutes: bool = False
+    tap_step: float | None = None
     active_since: str | None = None
     sort_order: int | None = None
     archived: bool | None = None
@@ -358,6 +360,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 reminder_time=payload.reminder_time,
                 reminder_days=payload.reminder_days,
                 block_minutes=payload.block_minutes,
+                tap_step=payload.tap_step,
                 db_path=resolved_db,
             )
         except Exception as exc:
