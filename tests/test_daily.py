@@ -911,6 +911,76 @@ class TestDailyCore(unittest.TestCase):
         morn_res = out["h_morn"]
         self.assertTrue(any(p["scope"] == "tomorrow" and 6 <= p["hour"] <= 10 for p in morn_res["ai_peaks"]))
 
+    def test_day_log_full_event_snapshot_and_edge_patch_editing(self) -> None:
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        h1 = client.post("/api/habits", json={"name": "Lesen", "kind": "min", "target": 1}).json()
+        h2 = client.post("/api/habits", json={"name": "Sport", "kind": "min", "target": 1}).json()
+        h3 = client.post("/api/habits", json={"name": "Fokus", "kind": "min", "target": 2}).json()
+
+        # 1. Event PATCH: switch habit_id, date, time range, amount, and note cleanly
+        ev = client.post(
+            "/api/events",
+            json={"habit_id": h1["id"], "amount": 1.0, "occurred_at": "2026-11-25T10:00:00", "note": "alt"},
+        ).json()
+        upd_ev = client.patch(
+            f"/api/events/{ev['id']}",
+            json={
+                "habit_id": h2["id"],
+                "amount": 1.5,
+                "occurred_at": "2026-11-26T11:30:00",
+                "window_minutes": 45,
+                "note": "neu #fokus",
+            },
+        )
+        self.assertEqual(upd_ev.status_code, 200)
+        body = upd_ev.json()
+        self.assertEqual(body["habit_id"], h2["id"])
+        self.assertEqual(body["habit_name"], "Sport")
+        self.assertEqual(body["amount"], 1.5)
+        self.assertEqual(body["window_minutes"], 45)
+        self.assertEqual(body["occurred_at"], "2026-11-26T11:30:00")
+        self.assertEqual(body["note"], "neu #fokus")
+
+        # 2. Snapshot PATCH: edit ratings, causes, note, and occurred_at
+        sn = client.post(
+            "/api/snapshots",
+            json={"ratings": {"stimmung": 3}, "causes": [h1["id"]], "note": "ok", "occurred_at": "2026-11-25T15:00:00"},
+        ).json()
+        upd_sn = client.patch(
+            f"/api/snapshots/{sn['id']}",
+            json={
+                "ratings": {"stimmung": 5, "stress": 2},
+                "causes": [h2["id"]],
+                "note": "super #klar",
+                "occurred_at": "2026-11-26T12:15:00",
+            },
+        )
+        self.assertEqual(upd_sn.status_code, 200)
+        sbody = upd_sn.json()
+        self.assertEqual(sbody["ratings"], {"stimmung": 5.0, "stress": 2.0})
+        self.assertEqual(sbody["causes"], [h2["id"]])
+        self.assertEqual(sbody["note"], "super #klar")
+        self.assertEqual(sbody["occurred_at"], "2026-11-26T12:15:00")
+
+        # 3. Edge PATCH: edit weight + target in place (and cleanly merge if colliding with an existing edge)
+        e1 = client.post(
+            "/api/edges",
+            json={"source_id": h1["id"], "target_id": h3["id"], "relation_type": "rollup", "weight": 1.0},
+        ).json()
+        upd_e = client.patch(
+            f"/api/edges/{e1['id']}",
+            json={"source_id": h2["id"], "target_id": h3["id"], "relation_type": "rollup", "weight": -0.5, "context_window": "any"},
+        )
+        self.assertEqual(upd_e.status_code, 200)
+        ebody = upd_e.json()
+        self.assertEqual(ebody["source_id"], h2["id"])
+        self.assertEqual(ebody["weight"], -0.5)
+        edges_now = client.get("/api/edges").json()
+        self.assertEqual(len(edges_now), 1)
+        self.assertEqual(edges_now[0]["source_id"], h2["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

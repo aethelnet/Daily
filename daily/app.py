@@ -46,9 +46,11 @@ from .db import (
     log_retro_batch,
     merge_habit,
     reorder_habits,
+    update_edge,
     update_event,
     update_habit,
     update_settings,
+    update_snapshot,
     update_state_dimension,
     upsert_edge,
 )
@@ -169,10 +171,18 @@ class E2EECreateGistRequest(BaseModel):
 
 
 class EventUpdate(BaseModel):
+    habit_id: str | None = None
     amount: float | None = None
     occurred_at: str | None = None
     window_minutes: int | None = None
     note: str | None = None
+
+
+class SnapshotUpdate(BaseModel):
+    ratings: dict[str, float | int] | None = None
+    causes: list[str] | None = None
+    note: str | None = None
+    occurred_at: str | None = None
 
 
 class RetroItem(BaseModel):
@@ -455,6 +465,24 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    @app.patch("/api/edges/{edge_id}")
+    def api_update_edge(edge_id: int, payload: EdgeCreate) -> dict[str, Any]:
+        try:
+            return update_edge(
+                edge_id=edge_id,
+                source_id=payload.source_id,
+                target_id=payload.target_id,
+                relation_type=payload.relation_type,
+                weight=payload.weight,
+                context_window=payload.context_window,
+                note=payload.note,
+                db_path=resolved_db,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @app.delete("/api/edges/{edge_id}")
     def api_delete_edge(edge_id: int) -> dict[str, Any]:
         if not delete_edge(edge_id, db_path=resolved_db):
@@ -574,6 +602,15 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 client_uuid=payload.client_uuid,
                 db_path=resolved_db,
             )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.patch("/api/snapshots/{snapshot_id}")
+    def api_update_snapshot(snapshot_id: int, payload: SnapshotUpdate) -> dict[str, Any]:
+        try:
+            return update_snapshot(snapshot_id, payload.model_dump(exclude_none=True), db_path=resolved_db)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

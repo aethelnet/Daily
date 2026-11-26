@@ -1350,6 +1350,32 @@
       return edge;
     }
     const mEdge = path.match(/^\/api\/edges\/(\d+)$/);
+    if (mEdge && method === "PATCH") {
+      const eid = Number(mEdge[1]);
+      if (body.source_id === body.target_id) throw new Error("Ein Habit kann nicht auf sich selbst routen");
+      const cur = db.edges.find((e) => e.id === eid);
+      if (!cur) throw new Error("Verbindung nicht gefunden");
+      const rt = body.relation_type || cur.relation_type || "rollup";
+      const win = body.context_window || cur.context_window || "any";
+      const conflict = db.edges.find((e) => e.id !== eid && e.source_id === body.source_id && e.target_id === body.target_id && e.relation_type === rt && e.context_window === win);
+      if (conflict) {
+        db.edges = db.edges.filter((e) => e.id !== eid);
+        conflict.weight = Number(body.weight);
+        conflict.note = (body.note || "").trim();
+        conflict.updated_at = nowIso();
+        saveDB(db);
+        return conflict;
+      }
+      cur.source_id = body.source_id;
+      cur.target_id = body.target_id;
+      cur.relation_type = rt;
+      cur.weight = Number(body.weight);
+      cur.context_window = win;
+      cur.note = (body.note || "").trim();
+      cur.updated_at = nowIso();
+      saveDB(db);
+      return cur;
+    }
     if (mEdge && method === "DELETE") {
       const eid = Number(mEdge[1]);
       db.edges = db.edges.filter((e) => e.id !== eid);
@@ -1410,7 +1436,11 @@
       const id = Number(mEv[1]);
       const ev = db.events.find((x) => x.id === id);
       if (!ev) throw new Error("Eintrag nicht gefunden");
-      ["amount", "occurred_at", "window_minutes", "note"].forEach((k) => { if (body[k] !== undefined) ev[k] = body[k]; });
+      if (body.habit_id !== undefined) ev.habit_id = body.habit_id;
+      if (body.amount !== undefined) ev.amount = Number(body.amount);
+      if (body.occurred_at !== undefined) ev.occurred_at = body.occurred_at;
+      if (body.window_minutes !== undefined) ev.window_minutes = Math.max(0, Number(body.window_minutes || 0));
+      if (body.note !== undefined) ev.note = String(body.note).trim();
       ev.updated_at = nowIso();
       saveDB(db);
       return ev;
@@ -1475,6 +1505,18 @@
       return sn;
     }
     const mSn = path.match(/^\/api\/snapshots\/(\d+)$/);
+    if (mSn && method === "PATCH") {
+      const sid = Number(mSn[1]);
+      const sn = db.snapshots.find((x) => x.id === sid && !x.deleted_at);
+      if (!sn) throw new Error("Momentaufnahme nicht gefunden");
+      if (body.ratings !== undefined) sn.ratings = body.ratings || {};
+      if (body.causes !== undefined) sn.causes = body.causes || [];
+      if (body.note !== undefined) sn.note = String(body.note).trim();
+      if (body.occurred_at !== undefined) sn.occurred_at = body.occurred_at;
+      sn.updated_at = nowIso();
+      saveDB(db);
+      return sn;
+    }
     if (mSn && method === "DELETE") {
       const sid = Number(mSn[1]);
       const sn = db.snapshots.find((x) => x.id === sid);

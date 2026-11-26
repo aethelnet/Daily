@@ -591,6 +591,65 @@ def upsert_edge(
     return dict(row)
 
 
+def update_edge(
+    edge_id: int,
+    source_id: str,
+    target_id: str,
+    relation_type: str = "rollup",
+    weight: float = 1.0,
+    context_window: str = "any",
+    note: str = "",
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    if source_id == target_id:
+        raise ValueError("A habit cannot route to itself")
+    if relation_type not in VALID_RELATIONS:
+        raise ValueError(f"Invalid relation_type: {relation_type}")
+    if context_window not in VALID_WINDOWS:
+        raise ValueError(f"Invalid context_window: {context_window}")
+    if abs(weight) < 1e-6:
+        raise ValueError("Edge weight cannot be 0")
+    with get_conn(db_path) as conn:
+        cur_row = conn.execute("SELECT * FROM habit_edges WHERE id = ?", (edge_id,)).fetchone()
+        if not cur_row:
+            raise KeyError(f"Edge not found: {edge_id}")
+        conflict = conn.execute(
+            """
+            SELECT id FROM habit_edges
+            WHERE source_id = ? AND target_id = ? AND relation_type = ? AND context_window = ? AND id != ?
+            """,
+            (source_id, target_id, relation_type, context_window, edge_id),
+        ).fetchone()
+        if conflict:
+            conn.execute("DELETE FROM habit_edges WHERE id = ?", (edge_id,))
+            target_edge_id = int(conflict["id"])
+            conn.execute(
+                "UPDATE habit_edges SET weight = ?, note = ? WHERE id = ?",
+                (float(weight), (note or "").strip(), target_edge_id),
+            )
+        else:
+            target_edge_id = edge_id
+            conn.execute(
+                """
+                UPDATE habit_edges
+                SET source_id = ?, target_id = ?, relation_type = ?, weight = ?, context_window = ?, note = ?
+                WHERE id = ?
+                """,
+                (source_id, target_id, relation_type, float(weight), context_window, (note or "").strip(), edge_id),
+            )
+        row = conn.execute(
+            """
+            SELECT e.*, s.name AS source_name, t.name AS target_name
+            FROM habit_edges e
+            JOIN habits s ON s.id = e.source_id
+            JOIN habits t ON t.id = e.target_id
+            WHERE e.id = ?
+            """,
+            (target_edge_id,),
+        ).fetchone()
+    return dict(row)
+
+
 def delete_edge(edge_id: int, db_path: Path = DEFAULT_DB_PATH) -> bool:
     with get_conn(db_path) as conn:
         cur = conn.execute("DELETE FROM habit_edges WHERE id = ?", (edge_id,))
@@ -683,7 +742,7 @@ def log_retro_batch(
 
 
 def update_event(event_id: int, fields: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
-    allowed = {"amount", "occurred_at", "note", "window_minutes"}
+    allowed = {"habit_id", "amount", "occurred_at", "note", "window_minutes"}
     sets: list[str] = []
     vals: list[Any] = []
     for k, v in fields.items():
@@ -691,6 +750,14 @@ def update_event(event_id: int, fields: dict[str, Any], db_path: Path = DEFAULT_
             continue
         if k == "occurred_at":
             datetime.fromisoformat(str(v))
+        elif k == "amount":
+            v = float(v)
+            if v == 0:
+                raise ValueError("amount must be non-zero")
+        elif k == "window_minutes":
+            v = max(0, int(v))
+        elif k == "note":
+            v = str(v).strip()
         sets.append(f"{k} = ?")
         vals.append(v)
     if not sets:
@@ -699,6 +766,10 @@ def update_event(event_id: int, fields: dict[str, Any], db_path: Path = DEFAULT_
     vals.append(now_iso())
     vals.append(event_id)
     with get_conn(db_path) as conn:
+        if "habit_id" in fields and fields["habit_id"] is not None:
+            h_exists = conn.execute("SELECT 1 FROM habits WHERE id = ?", (fields["habit_id"],)).fetchone()
+            if not h_exists:
+                raise ValueError(f"Unknown habit_id: {fields['habit_id']}")
         cur = conn.execute(f"UPDATE events SET {', '.join(sets)} WHERE id = ? AND deleted_at IS NULL", vals)
         if cur.rowcount == 0:
             raise KeyError(f"Event not found: {event_id}")
@@ -916,6 +987,59 @@ def create_snapshot(
             (c_uuid, ts, json.dumps(clean_ratings, ensure_ascii=False), json.dumps(clean_causes, ensure_ascii=False), clean_note, ts_now, ts_now),
         )
         row = conn.execute("SELECT * FROM snapshots WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _decode_snapshot(row)
+
+
+def update_snapshot(snapshot_id: int, fields: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    with get_conn(db_path) as conn:
+        cur_row = conn.execute("SELECT * FROM snapshots WHERE id = ? AND deleted_at IS NULL", (snapshot_id,)).fetchone()
+        if not cur_row:
+            raise KeyError(f"Snapshot not found: {snapshot_id}")
+        cur_dec = _decode_snapshot(cur_row)
+
+        ratings = cur_dec["ratings"]
+        if "ratings" in fields and fields["ratings"] is not None:
+            clean_ratings: dict[str, float] = {}
+            for k, v in (fields["ratings"] or {}).items():
+                if v is None or v == "":
+                    continue
+                val = float(v)
+                if 1.0 <= val <= 5.0:
+                    clean_ratings[str(k)] = round(val, 1)
+            ratings = clean_ratings
+
+        causes = cur_dec["causes"]
+        if "causes" in fields and fields["causes"] is not None:
+            causes = [str(c).strip() for c in (fields["causes"] or []) if str(c).strip()]
+
+        note = cur_dec["note"]
+        if "note" in fields and fields["note"] is not None:
+            note = str(fields["note"]).strip()
+
+        occurred_at = cur_dec["occurred_at"]
+        if "occurred_at" in fields and fields["occurred_at"] is not None:
+            occurred_at = str(fields["occurred_at"])
+            datetime.fromisoformat(occurred_at)
+
+        if not ratings and not note and not causes:
+            raise ValueError("Bitte mindestens einen Wert, eine Ursache oder eine Notiz eintragen")
+
+        conn.execute(
+            """
+            UPDATE snapshots
+            SET occurred_at = ?, ratings_json = ?, causes_json = ?, note = ?, updated_at = ?
+            WHERE id = ? AND deleted_at IS NULL
+            """,
+            (
+                occurred_at,
+                json.dumps(ratings, ensure_ascii=False),
+                json.dumps(causes, ensure_ascii=False),
+                note,
+                now_iso(),
+                snapshot_id,
+            ),
+        )
+        row = conn.execute("SELECT * FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone()
     return _decode_snapshot(row)
 
 
