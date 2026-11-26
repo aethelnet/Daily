@@ -213,6 +213,7 @@ class SettingsUpdate(BaseModel):
     quiet_hours_start: int | None = None
     quiet_hours_end: int | None = None
     nudge_mode: str | None = None
+    routing_mode: str | None = None
     tabpfn_threshold: float | None = None
     followup_enabled: int | None = None
     mood_groups: str | None = None
@@ -294,7 +295,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         mode: str | None = Query(default=None),
     ) -> dict[str, Any]:
         settings = get_settings(db_path=resolved_db)
-        active_mode = mode if mode in {"observed", "tabpfn"} else settings.get("nudge_mode", "observed")
+        active_mode = mode if mode in {"observed", "tabpfn"} else settings.get("routing_mode", "observed")
         if active_mode == "tabpfn":
             target_day = day or datetime.now().date().isoformat()
             habits = list_habits(include_archived=False, db_path=resolved_db)

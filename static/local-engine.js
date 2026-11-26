@@ -169,6 +169,7 @@
         quiet_hours_start: "23",
         quiet_hours_end: "8",
         nudge_mode: "observed",
+        routing_mode: "observed",
         followup_enabled: "1",
         mood_groups: JSON.stringify(makeDefaultMoodGroups(freshDims)),
         active_mood_group: "alltag",

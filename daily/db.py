@@ -253,6 +253,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('mood_groups_updated_at', ?)", (ts_mg,))
             conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups_seeded', '1')")
 
+        conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('routing_mode', 'observed')")
         # Auto-generate a persistent local device sync token (only used for non-localhost devices)
         if not conn.execute("SELECT 1 FROM settings WHERE key = 'sync_token'").fetchone():
             conn.execute(
@@ -292,6 +293,7 @@ def update_settings(updates: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) ->
         "quiet_hours_start",
         "quiet_hours_end",
         "nudge_mode",
+        "routing_mode",
         "tabpfn_threshold",
         "followup_enabled",
         "mood_groups",
@@ -310,8 +312,8 @@ def update_settings(updates: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) ->
         for k, v in updates.items():
             if k not in allowed:
                 continue
-            if k == "nudge_mode" and str(v) not in {"observed", "tabpfn"}:
-                raise ValueError(f"Invalid nudge_mode: {v}")
+            if k in {"nudge_mode", "routing_mode"} and str(v) not in {"observed", "tabpfn"}:
+                raise ValueError(f"Invalid {k}: {v}")
             if k == "tabpfn_threshold":
                 v = round(max(0.25, min(0.95, float(v))), 2)
             conn.execute(

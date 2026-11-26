@@ -184,6 +184,7 @@ def export_local_state_for_vault(db_path: Path = DEFAULT_DB_PATH) -> dict[str, A
             "quiet_hours_start",
             "quiet_hours_end",
             "nudge_mode",
+            "routing_mode",
             "followup_enabled",
             "mood_groups",
             "mood_groups_updated_at",

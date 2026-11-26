@@ -238,7 +238,16 @@ class TestDailyCore(unittest.TestCase):
         self.assertIsNotNone(ai["overall_mae"])
 
         # Switch to KI mode on /api/today: log afternoon Kaffee today -> TabPFN should dynamically route + to Malen!
+        # Verify routing_mode is cleanly decoupled from nudge_mode (nudge_mode stays 'tabpfn' while routing_mode defaults to 'observed')
         log_event(kaffee["id"], 1.0, f"{today_iso}T15:00:00", db_path=self.db)
+        default_today = client.get(f"/api/today?day={today_iso}").json()
+        self.assertEqual(default_today["routing_mode"], "observed")
+        client.patch("/api/settings", json={"routing_mode": "tabpfn"})
+        self.assertEqual(client.get(f"/api/today?day={today_iso}").json()["routing_mode"], "tabpfn")
+        self.assertEqual(client.get("/api/settings").json()["nudge_mode"], "tabpfn")
+        client.patch("/api/settings", json={"routing_mode": "observed"})
+        self.assertEqual(client.get("/api/settings").json()["nudge_mode"], "tabpfn")
+
         manual_today = client.get(f"/api/today?day={today_iso}&mode=observed").json()
         ai_today = client.get(f"/api/today?day={today_iso}&mode=tabpfn").json()
         self.assertEqual(manual_today["routing_mode"], "observed")
