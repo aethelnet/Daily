@@ -42,7 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rpm dpkg
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt pyinstaller httpx
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Build standalone Linux binary
@@ -58,7 +58,7 @@ jobs:
             if curl -fsS http://127.0.0.1:18091/api/health; then
               echo ""
               curl -fsS http://127.0.0.1:18091/ | grep -qi "Daily"
-              curl -fsS http://127.0.0.1:18091/api/analysis | grep -q '"engine":"xgboost"'
+              curl -fsS http://127.0.0.1:18091/api/analysis | grep -qE '"engine":[[:space:]]*"xgboost"'
               kill $PID
               wait $PID 2>/dev/null || true
               trap - EXIT
