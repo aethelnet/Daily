@@ -530,11 +530,12 @@ function getConnectedNeighbors(focusId) {
   const out = [];
   const seen = new Set();
   for (const e of rollups) {
-    if (e.target_id === focusId && !seen.has(e.source_id)) {
-      seen.add(e.source_id);
+    if (e.target_id === focusId && !seen.has(`in:${e.source_id}`)) {
+      seen.add(`in:${e.source_id}`);
       out.push({ id: e.source_id, weight: Number(e.weight), dir: "in", isAi: !!e.is_ai });
-    } else if (e.source_id === focusId && !seen.has(e.target_id)) {
-      seen.add(e.target_id);
+    }
+    if (e.source_id === focusId && !seen.has(`out:${e.target_id}`)) {
+      seen.add(`out:${e.target_id}`);
       out.push({ id: e.target_id, weight: Number(e.weight), dir: "out", isAi: !!e.is_ai });
     }
   }
@@ -571,7 +572,7 @@ function renderHabitCardHtml(h, opts = {}) {
         .map((c) => {
           const cls = c.is_ai ? "ai-chip" : c.delta >= 0 ? "pos-chip" : "neg-chip";
           const pfx = c.is_ai ? aiPrefix : "";
-          return `<span class="chip ${cls}">${pfx}${c.delta >= 0 ? "+" : ""}${fmtNum(c.delta)} ${esc(c.from_name)}</span>`;
+          return `<span class="chip ${cls}">← ${pfx}${c.delta >= 0 ? "+" : ""}${fmtNum(c.delta)} ${esc(c.from_name)}</span>`;
         })
         .join("")
     : "";
@@ -954,31 +955,46 @@ function renderToday(data) {
           if ((wb > 0) !== (wa > 0)) return wb > 0 ? 1 : -1;
           return computeSmartScore(byId[b.id], smartCtx) - computeSmartScore(byId[a.id], smartCtx);
         });
-        const childrenHtml = rels.length
-          ? rels
-              .map((r) => {
-                const child = byId[r.id];
-                const effW = anchor.kind === "max" ? -r.weight : r.weight;
-                const cls = r.isAi ? "ai-chip" : effW >= 0 ? "pos-chip" : "neg-chip";
-                const arrowTxt =
-                  r.dir === "in"
-                    ? `${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} → ${anchor.name}`
-                    : `${anchor.name} → ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}`;
-                const badge = `<span class="chip ${cls}">${r.isAi ? `${t("mode_ai")} ` : ""}${esc(arrowTxt)}</span>`;
-                return renderHabitCardHtml(child, cardRenderOpts(child, { relBadge: badge }));
-              })
-              .join("")
+        const renderFocusRelCard = (r) => {
+          const child = byId[r.id];
+          const effW = anchor.kind === "max" ? -r.weight : r.weight;
+          const cls = r.isAi ? "ai-chip" : effW >= 0 ? "pos-chip" : "neg-chip";
+          const arrowTxt =
+            r.dir === "in"
+              ? `${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} → ${anchor.name}`
+              : `${anchor.name} → ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}`;
+          const badge = `<span class="chip ${cls}">${r.isAi ? `${t("mode_ai")} ` : ""}${esc(arrowTxt)}</span>`;
+          return renderHabitCardHtml(child, cardRenderOpts(child, { relBadge: badge }));
+        };
+        const inRels = rels.filter((r) => r.dir === "in");
+        const outRels = rels.filter((r) => r.dir === "out");
+        const sections = [];
+        if (inRels.length) {
+          sections.push(`
+          <div class="focus-dir-group">
+            <div class="focus-children-head">
+              <span>${esc(t("connected_in_head", { name: anchor.name, n: inRels.length }))}</span>
+            </div>
+            <div class="focus-children-grid">${inRels.map(renderFocusRelCard).join("")}</div>
+          </div>`);
+        }
+        if (outRels.length) {
+          sections.push(`
+          <div class="focus-dir-group">
+            <div class="focus-children-head">
+              <span>${esc(t("connected_out_head", { name: anchor.name, n: outRels.length }))}</span>
+            </div>
+            <div class="focus-children-grid">${outRels.map(renderFocusRelCard).join("")}</div>
+          </div>`);
+        }
+        const childrenBodyHtml = sections.length
+          ? sections.join("")
           : `<div class="muted sm-text">${esc(t("no_connected"))}</div>`;
 
         clustersBox.innerHTML = `
         <div class="focus-cluster">
           <div class="focus-anchor-wrap">${renderHabitCardHtml(anchor, { asAnchor: true })}</div>
-          <div class="focus-children">
-            <div class="focus-children-head">
-              <span>${esc(t("connected_with", { name: anchor.name, n: rels.length }))}</span>
-            </div>
-            <div class="focus-children-grid">${childrenHtml}</div>
-          </div>
+          <div class="focus-children">${childrenBodyHtml}</div>
         </div>`;
       }
     } else {

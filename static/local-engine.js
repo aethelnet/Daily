@@ -214,7 +214,10 @@
       for (const edge of adj[curId] || []) {
         const nxt = edge.target_id;
         if (path.has(nxt) || !habitsById[nxt]) continue;
-        const delta = val * Number(edge.weight);
+        const w = Number(edge.weight);
+        // Prevent double-negative sign reversals (- x - = +) conjuring phantom positive progress
+        if (val < 0 && w < 0) continue;
+        const delta = val * w;
         routed[nxt] = (routed[nxt] || 0) + delta;
         contribMap[nxt][originId] = (contribMap[nxt][originId] || 0) + delta;
         const nextPath = new Set(path);
