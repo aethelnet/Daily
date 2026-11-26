@@ -100,7 +100,7 @@ const state = {
   tags: [],
   filterKind: "all",
   filterQuery: "",
-  sortMode: localStorage.getItem("daily_sort_mode") || "smart",
+  sortMode: localStorage.getItem("daily_sort_mode") === "manual" ? "manual" : "smart",
   showDormantToday: false,
   showInactiveMatrix: false,
   showEmptyRhythms: false,
@@ -848,17 +848,6 @@ function renderToday(data) {
       if (Math.abs(diff) > 0.01) return diff;
       return (a.sort_order ?? 0) - (b.sort_order ?? 0);
     });
-  } else if (state.sortMode === "recent") {
-    visible.sort((a, b) => {
-      const aCore = a.kind !== "neutral" ? 0 : 1;
-      const bCore = b.kind !== "neutral" ? 0 : 1;
-      if (aCore !== bCore) return aCore - bCore;
-      if (aCore === 0) return (a.sort_order ?? 0) - (b.sort_order ?? 0);
-      const aTs = a.last_used_at || "";
-      const bTs = b.last_used_at || "";
-      if (aTs !== bTs) return bTs.localeCompare(aTs);
-      return (a.sort_order ?? 0) - (b.sort_order ?? 0);
-    });
   }
 
   const cardRenderOpts = (h, extra = {}) => {
@@ -1287,17 +1276,51 @@ async function quickTap(habitId) {
 }
 
 // ---- CUSTOM LOG MODAL ----
+function updateCustomLogDurationHint(recalcAmount = false) {
+  const hint = $("#cl-duration-hint");
+  if (!hint) return;
+  const hid = $("#cl-habit-id").value;
+  const h = state.habits.find((x) => x.id === hid);
+  const startVal = $("#cl-start") ? $("#cl-start").value : "";
+  const endVal = $("#cl-time").value;
+  const hasBlock = !!(h && h.block_minutes && Number(h.block_minutes) > 0);
+  const diffMin = hasBlock ? computeTimeDiffMin(startVal, endVal) : 0;
+  if (!hasBlock || diffMin <= 0) {
+    hint.classList.add("hidden");
+    hint.textContent = "";
+    return;
+  }
+  const dur = formatDurationMin(diffMin);
+  const calcAmt = Math.max(0.1, Math.round((diffMin / Number(h.block_minutes)) * 10) / 10);
+  if (recalcAmount) $("#cl-amount").value = calcAmt;
+  hint.textContent = t("ee_duration_block_hint", { dur, blk: h.block_minutes, amt: fmtNum(calcAmt) });
+  hint.classList.remove("hidden");
+}
+
 function openCustomLog(habitId) {
   const h = state.habits.find((x) => x.id === habitId);
   if (!h) return;
+  const nowDt = new Date();
+  const hasBlock = !!(h.block_minutes && Number(h.block_minutes) > 0);
   $("#cl-habit-id").value = habitId;
   $("#cl-title").textContent = t("cl_title_habit", { name: h.name });
   $("#cl-amount").value = "1";
-  $("#cl-time").value = localTimeHHMM(new Date());
+  $("#cl-time").value = localTimeHHMM(nowDt);
+  const startWrap = $("#cl-start-wrap");
+  const rangeRow = $("#cl-range-row");
+  const timeLbl = $("#cl-time-label");
+  if (startWrap) startWrap.classList.toggle("hidden", !hasBlock);
+  if (rangeRow) rangeRow.classList.toggle("has-range", hasBlock);
+  if (timeLbl) timeLbl.textContent = t(hasBlock ? "cl_to" : "cl_time");
+  if ($("#cl-start")) {
+    $("#cl-start").value = hasBlock ? localTimeHHMM(new Date(nowDt.getTime() - Number(h.block_minutes) * 60000)) : "";
+  }
   $("#cl-note").value = "";
+  updateCustomLogDurationHint(false);
   renderTagSuggestChips("#cl-tag-chips", "#cl-note");
   $("#custom-log-modal").classList.remove("hidden");
-  $("#cl-amount").focus();
+  if (hasBlock && $("#cl-start")) $("#cl-start").focus();
+  else $("#cl-amount").focus();
 }
 
 function closeCustomLog() {
@@ -1391,7 +1414,8 @@ function computeTimeDiffMin(startHHMM, endHHMM) {
   const em = endHHMM.match(/^(\d{2}):(\d{2})$/);
   if (!sm || !em) return 0;
   let diff = Number(em[1]) * 60 + Number(em[2]) - (Number(sm[1]) * 60 + Number(sm[2]));
-  if (diff <= 0) diff += 1440;
+  if (diff === 0) return 0;
+  if (diff < 0) diff += 1440;
   return diff;
 }
 
@@ -3240,19 +3264,37 @@ function bindEvents() {
   // Custom log modal
   $("#btn-close-cl").addEventListener("click", closeCustomLog);
   $("#btn-cancel-cl").addEventListener("click", closeCustomLog);
+  ["#cl-start", "#cl-time"].forEach((sel) => {
+    const el = $(sel);
+    if (!el) return;
+    el.addEventListener("input", () => updateCustomLogDurationHint(true));
+    el.addEventListener("change", () => updateCustomLogDurationHint(true));
+  });
   $("#custom-log-modal").addEventListener("click", (e) => {
     if (e.target.id === "custom-log-modal") closeCustomLog();
     const ago = e.target.closest("[data-ago]");
     if (ago) {
-      const dt = new Date(Date.now() - Number(ago.dataset.ago) * 60000);
-      $("#cl-time").value = localTimeHHMM(dt);
+      const mins = Number(ago.dataset.ago);
+      const nowDt = new Date();
+      const dt = new Date(nowDt.getTime() - mins * 60000);
+      const h = state.habits.find((x) => x.id === $("#cl-habit-id").value);
+      if (h && h.block_minutes && Number(h.block_minutes) > 0 && $("#cl-start")) {
+        $("#cl-start").value = localTimeHHMM(dt);
+        $("#cl-time").value = localTimeHHMM(nowDt);
+        updateCustomLogDurationHint(true);
+      } else {
+        $("#cl-time").value = localTimeHHMM(dt);
+      }
     }
   });
   $("#cl-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const habit_id = $("#cl-habit-id").value;
-    const amount = Number($("#cl-amount").value);
+    const h = state.habits.find((x) => x.id === habit_id);
+    const amount = Number(String($("#cl-amount").value).replace(",", "."));
     const hhmm = $("#cl-time").value;
+    const startVal = h && h.block_minutes && $("#cl-start") ? $("#cl-start").value : "";
+    const window_minutes = startVal ? computeTimeDiffMin(startVal, hhmm) : 0;
     const note = $("#cl-note").value.trim();
     try {
       await api("/api/events", {
@@ -3261,6 +3303,7 @@ function bindEvents() {
           habit_id,
           amount,
           occurred_at: `${state.day}T${hhmm}:00`,
+          window_minutes,
           source: "manual",
           note,
         }),

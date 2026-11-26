@@ -91,10 +91,9 @@
           <button type="button" class="pill hidden" id="btn-clear-focus" data-i18n-title="btn_clear_focus_title" title="Alle aufgeklappten Gruppen schließen">✕ <span data-i18n="groups">Gruppen</span> (<span id="focus-count">0</span>)</button>
         </div>
         <div class="row-inline">
-          <div class="mode-switch" id="today-sort-switch" role="group" data-i18n-title="sort_title" title="Sortierung: Jetzt relevant, eigene Reihenfolge oder zuletzt aktiv">
+          <div class="mode-switch" id="today-sort-switch" role="group" data-i18n-title="sort_title" title="Sortierung: Jetzt relevant (Fälligkeit &amp; Auswahl) oder eigene Reihenfolge">
             <button type="button" class="mode-btn active" data-sort="smart" data-i18n="sort_smart">Jetzt</button>
             <button type="button" class="mode-btn" data-sort="manual" data-i18n="sort_manual">Eigene</button>
-            <button type="button" class="mode-btn" data-sort="recent" data-i18n="sort_recent">Zuletzt</button>
           </div>
           <input type="text" id="today-search" class="filter-search" data-i18n-placeholder="filter_search_ph" placeholder="Filtern…" />
         </div>
@@ -687,16 +686,21 @@
       </div>
       <form id="cl-form" class="stack">
         <input type="hidden" id="cl-habit-id" />
-        <div class="row-2">
-          <label class="field">
+        <div class="cl-range-grid" id="cl-range-row">
+          <label class="field hidden" id="cl-start-wrap">
+            <span data-i18n="cl_from">Von</span>
+            <input type="time" id="cl-start" class="mono" />
+          </label>
+          <label class="field" id="cl-time-wrap">
+            <span id="cl-time-label" data-i18n="cl_time">Uhrzeit</span>
+            <input type="time" id="cl-time" required class="mono" />
+          </label>
+          <label class="field" id="cl-amount-wrap">
             <span data-i18n="cl_amount">Betrag</span>
             <input type="number" id="cl-amount" value="1" step="any" required />
           </label>
-          <label class="field">
-            <span data-i18n="cl_time">Uhrzeit</span>
-            <input type="time" id="cl-time" required class="mono" />
-          </label>
         </div>
+        <div id="cl-duration-hint" class="muted sm-text mono hidden"></div>
         <div class="row-inline">
           <button type="button" class="pill" data-ago="15" data-i18n="ago_15m">vor 15m</button>
           <button type="button" class="pill" data-ago="30" data-i18n="ago_30m">vor 30m</button>
