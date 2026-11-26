@@ -692,6 +692,45 @@
       }
     }
 
+    // Continuous pan/zoom timeline grid (-56d .. +7d relative to today 00:00 in hours)
+    const nowRelHrJS = Math.max(0, Math.min(24, Math.round(((now.getTime() / 3600000) - todayMidnightHr) * 100) / 100));
+    const tlRelHrsJS = [];
+    for (let h = -56 * 24; h < -3 * 24; h += 6) tlRelHrsJS.push(h);
+    for (let h = -3 * 24; h <= 3 * 24; h += 1) tlRelHrsJS.push(h);
+    for (let h = 3 * 24 + 6; h <= 7 * 24; h += 6) tlRelHrsJS.push(h);
+    const tlAbsHrsJS = tlRelHrsJS.map((off) => todayMidnightHr + off);
+    const tlDayOffsetsJS = Array.from({ length: 64 }, (_, i) => i - 56);
+    const tlDatesJS = tlDayOffsetsJS.map((off) => fmtIso(new Date(now.getFullYear(), now.getMonth(), now.getDate() + off)));
+
+    const allHabitTicksJS = parsedEvs
+      .map((e) => ({
+        t: Math.round((e.tHr - todayMidnightHr) * 100) / 100,
+        ts: e.iso.slice(0, 16),
+        habit_id: e.hid,
+        habit_name: e.name,
+        color: e.color,
+        amount: Math.round(e.amt * 100) / 100,
+      }))
+      .filter((e) => e.t >= -60 * 24 && e.t <= 24);
+
+    const tagDaysJS = {};
+    for (const obj of [...liveEvents, ...db.snapshots.filter((x) => !x.deleted_at)]) {
+      if (!obj.note) continue;
+      const d = String(obj.occurred_at || "").slice(0, 10);
+      if (d.length !== 10) continue;
+      for (const tg of extractNoteTags(obj.note)) {
+        tagDaysJS[tg] ||= [];
+        if (!tagDaysJS[tg].includes(d)) tagDaysJS[tg].push(d);
+      }
+    }
+    Object.values(tagDaysJS).forEach((arr) => arr.sort());
+    const timelineMetaJS = {
+      origin_day: todayIsoLocal,
+      now_hr: nowRelHrJS,
+      habit_ticks: allHabitTicksJS,
+      tag_days: tagDaysJS,
+    };
+
     const stateCurves = db.state_dimensions
       .filter((d) => !d.archived)
       .map((dim) => {
@@ -774,6 +813,57 @@
           }
         }
 
+        // Continuous pan/zoom timeline series for browser standalone mode
+        const tlActualJS = dimSnaps
+          .map((s) => ({
+            t: Math.round((s.tHr - todayMidnightHr) * 100) / 100,
+            v: Math.round(s.val * 100) / 100,
+            ts: s.iso.slice(0, 16),
+            note: s.note,
+          }))
+          .filter((s) => s.t >= -60 * 24 && s.t <= 24);
+        let odeTimelineJS = [];
+        if (dimSnaps.length) {
+          const fitVals = evalOdeJS(dimSnaps.map((s) => s.tHr), tauH, theta);
+          const meanRes = dimSnaps.reduce((acc, s, i) => acc + Math.abs(s.val - fitVals[i]), 0) / dimSnaps.length;
+          const odeErr = Math.max(0.22, Math.min(1.2, meanRes * 1.25));
+          const odeTlVals = evalOdeJS(tlAbsHrsJS, tauH, theta);
+          const decayH = Math.max(18, tauH * 2.2);
+          odeTimelineJS = tlRelHrsJS.map((relH, idx) => {
+            if (relH <= nowRelHrJS) return [Math.round(relH * 100) / 100, odeTlVals[idx], 1, 0];
+            const dh = relH - nowRelHrJS;
+            const conf = Math.round(Math.max(0.08, Math.exp(-dh / decayH)) * 1000) / 1000;
+            const spread = Math.round(Math.min(1.5, (odeErr + 0.35) * (1 - conf)) * 100) / 100;
+            return [Math.round(relH * 100) / 100, odeTlVals[idx], conf, spread];
+          });
+        }
+        let tabpfnTimelineJS = [];
+        if (dimSnaps.length) {
+          const dayMeans = tlDatesJS.map((dStr) => {
+            const vs = snapAcc[dStr] && snapAcc[dStr][dim.id];
+            return vs && vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+          });
+          const ratedIdx = dayMeans.map((v, i) => (v != null ? [i, v] : null)).filter(Boolean);
+          const meanAll = dimSnaps.reduce((a, s) => a + s.val, 0) / dimSnaps.length;
+          const dataStrength = Math.min(1, ratedIdx.length / 14);
+          tabpfnTimelineJS = tlDayOffsetsJS.map((dOff, idx) => {
+            let num = 0.2 * meanAll;
+            let den = 0.2;
+            for (const [ri, rv] of ratedIdx) {
+              const w = Math.exp(-Math.pow((idx - ri) / 3.0, 2));
+              num += w * rv;
+              den += w;
+            }
+            const pv = Math.round(Math.max(1, Math.min(5, num / den)) * 100) / 100;
+            const relH = dOff * 24 + 18;
+            if (relH <= nowRelHrJS) return [relH, pv, 1, 0];
+            const dh = relH - nowRelHrJS;
+            const conf = Math.round(Math.max(0.08, (0.35 + 0.65 * dataStrength) * Math.exp(-dh / 72)) * 1000) / 1000;
+            const spread = Math.round(Math.min(1.6, 0.85 * (1 - conf)) * 100) / 100;
+            return [relH, pv, conf, spread];
+          });
+        }
+
         return {
           id: dim.id,
           name: dim.name,
@@ -784,6 +874,11 @@
           dates: curveDates,
           actual: actual14,
           ai_curve: tabpfn14,
+          timeline: {
+            actual: tlActualJS,
+            ode: odeTimelineJS,
+            tabpfn: tabpfnTimelineJS,
+          },
           h24: {
             hours: h24Offsets,
             actual: actual24,
@@ -826,6 +921,7 @@
         overall_mae: errs.length ? Math.round((errs.reduce((a, b) => a + b, 0) / errs.length) * 100) / 100 : null,
         assumptions: [],
         state_curves: stateCurves,
+        timeline_meta: timelineMetaJS,
         live_nudges: {},
         feature_audit: {
           habits_count: allHabits.length,

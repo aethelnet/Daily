@@ -486,13 +486,14 @@
 
       <div class="panel">
         <div class="panel-head">
-          <div class="row-inline" style="gap:10px;">
+          <div class="row-inline" style="gap:8px;">
             <h3 data-i18n="an_mood_title">Befinden</h3>
-            <div class="mode-switch" id="state-zoom-switch" role="group" data-i18n-title="an_zoom_title" title="Zeitachse wechseln (oder Mausrad im Chart)">
+            <div class="mode-switch" id="state-zoom-switch" role="group" data-i18n-title="an_zoom_title" title="Zoom-Stufen (oder stufenlos ziehen &amp; scrollen im Chart)">
               <button type="button" class="mode-btn" data-szoom="h24" data-i18n="zoom_24h">24h</button>
               <button type="button" class="mode-btn active" data-szoom="d14" data-i18n="zoom_14d">14T</button>
               <button type="button" class="mode-btn" data-szoom="w8" data-i18n="zoom_8w">8W</button>
             </div>
+            <button type="button" class="btn ghost sm hidden" id="btn-chart-now" data-i18n="btn_chart_now">Jetzt</button>
           </div>
           <span class="legend-inline sm-text" id="state-legend">
             <span class="leg-item"><span class="dot-obs" style="background:var(--text)"></span><span data-i18n="leg_actual">Aufnahme</span></span>
@@ -500,7 +501,8 @@
             <button type="button" class="leg-toggle active" data-sline="ode" data-i18n-title="leg_ode_title" title="Liquid-ODE-Kurve (Uhrwerk) ein-/ausblenden"><span class="line-ode"></span>ODE</button>
           </span>
         </div>
-        <div id="state-axis-pills" class="row-inline" style="margin-bottom:10px;"></div>
+        <div id="state-axis-pills" class="row-inline" style="margin-bottom:8px;"></div>
+        <div id="state-tag-pills" class="row-inline hidden" style="margin-bottom:8px;gap:5px;"></div>
         <div id="state-curve-chart"></div>
       </div>
 
