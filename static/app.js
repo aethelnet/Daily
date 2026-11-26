@@ -100,7 +100,11 @@ const state = {
   tags: [],
   filterKind: "all",
   filterQuery: "",
-  sortMode: localStorage.getItem("daily_sort_mode") || "manual",
+  sortMode: localStorage.getItem("daily_sort_mode") || "smart",
+  showDormantToday: false,
+  showInactiveMatrix: false,
+  showEmptyRhythms: false,
+  lastMatrixData: null,
   toggledFocus: [],
   selectedStateCurveId: null,
   lastStateCurves: [],
@@ -593,6 +597,8 @@ function renderHabitCardHtml(h, opts = {}) {
     hasLinks ? "is-clickable" : "",
     opts.asAnchor && isToggled ? "is-toggled" : "",
     isActive ? "is-active" : "",
+    opts.softDim ? "card-soft-dim" : "",
+    opts.synergy ? "card-synergy" : "",
     opts.relGlow || "",
   ]
     .filter(Boolean)
@@ -711,10 +717,82 @@ function renderTagSuggestChips(containerSel, inputSel) {
     .join("");
 }
 
+function evaluateSelectionFit(habitId, selectedIds, byId) {
+  let posHits = 0;
+  let negHits = 0;
+  let netWeight = 0;
+  const rels = [];
+  for (const anchorId of selectedIds) {
+    if (anchorId === habitId) continue;
+    const anchor = byId[anchorId];
+    if (!anchor) continue;
+    const conns = getConnectedNeighbors(anchorId).filter((r) => r.id === habitId);
+    for (const r of conns) {
+      // For a "Weniger" (max) anchor, negative edges reduce it (helpful!); for "Mehr"/Neutral, positive edges help!
+      const effectiveW = anchor.kind === "max" ? -Number(r.weight || 0) : Number(r.weight || 0);
+      if (effectiveW > 0) posHits += 1;
+      else if (effectiveW < 0) negHits += 1;
+      netWeight += effectiveW;
+      rels.push({ ...r, anchorId, anchorName: anchor.name, effectiveW });
+    }
+  }
+  return { posHits, negHits, netWeight, rels };
+}
+
+function isHabitDormantNow(h, selectedIds, connectedToSelected) {
+  if (h.active_since) return false;
+  if (Number(h.direct || 0) !== 0 || Number(h.routed || 0) !== 0) return false;
+  if (selectedIds.includes(h.id) || connectedToSelected.has(h.id)) return false;
+  if (Number(h.days_since_created ?? 0) < 7) return false;
+  if (h.target != null && (h.target_period || "day") === "day") return false;
+  const med = h.median_interval_days != null ? Number(h.median_interval_days) : null;
+  const sinceLast = h.days_since_last != null ? Number(h.days_since_last) : null;
+  // Rare multi-week / multi-month cadence (e.g. Psilocybin every 3-6 months): fold right away until ~72% of cycle elapsed!
+  if (med != null && med >= 14 && sinceLast != null && sinceLast < 0.72 * med) return true;
+  // Single or sporadic event inactive for >14 days and not yet due
+  if (sinceLast != null && sinceLast > 14 && (med == null || sinceLast < 0.72 * med)) return true;
+  // Never used and >14 days old without a target
+  if ((h.total_events || 0) === 0 && Number(h.days_since_created ?? 0) >= 14 && h.target == null) return true;
+  return false;
+}
+
+function isHabitCadenceDue(h) {
+  const med = h.median_interval_days != null ? Number(h.median_interval_days) : null;
+  const sinceLast = h.days_since_last != null ? Number(h.days_since_last) : null;
+  if (med == null || med < 3 || sinceLast == null) return false;
+  if (Number(h.direct || 0) > 0 || h.status === "met") return false;
+  return sinceLast / med >= 0.72;
+}
+
+function computeSmartScore(h, ctx) {
+  let score = 0;
+  if (h.active_since) score += 1000;
+  const fit = ctx.fitById[h.id];
+  if (fit && ctx.selectedIds.length) {
+    score += fit.posHits * 130 - fit.negHits * 150 + fit.netWeight * 25;
+  }
+  const med = h.median_interval_days != null ? Number(h.median_interval_days) : null;
+  const sinceLast = h.days_since_last != null ? Number(h.days_since_last) : null;
+  if (med != null && med >= 2 && sinceLast != null && Number(h.direct || 0) === 0) {
+    const dueRatio = sinceLast / med;
+    if (dueRatio >= 0.72) score += 55 * Math.min(1.8, dueRatio);
+  }
+  if (h.kind === "min" && h.status !== "met") {
+    score += (h.target_period || "day") === "day" ? 45 : 35;
+  }
+  const hrFit = Number(h.hour_fit || 0);
+  score += (h.kind === "max" ? 18 : 42) * hrFit;
+  if (ctx.todayNeighborSet.has(h.id)) score += 18;
+  if (h.kind === "max") score -= 24;
+  if (h.kind === "min" && h.status === "met") score -= 45;
+  return score;
+}
+
 function renderToday(data) {
   updateBrandMark(data);
   const grid = $("#habit-grid");
   const clustersBox = $("#focus-clusters");
+  const dormantBox = $("#dormant-habits-wrap");
   const empty = $("#empty-state");
   const filterBar = $("#today-filter-bar");
   const clearFocusBtn = $("#btn-clear-focus");
@@ -744,7 +822,33 @@ function renderToday(data) {
     return true;
   });
 
-  if (state.sortMode === "recent") {
+  // Precompute smart context (selection fit + neighbors of today's logged events)
+  const selectedIds = state.toggledFocus;
+  const connectedToSelected = new Set();
+  const fitById = {};
+  for (const h of data.habits) {
+    const fit = evaluateSelectionFit(h.id, selectedIds, byId);
+    fitById[h.id] = fit;
+    if (fit.rels.length) connectedToSelected.add(h.id);
+  }
+  const todayNeighborSet = new Set();
+  for (const h of data.habits) {
+    if (Number(h.direct || 0) > 0) {
+      getConnectedNeighbors(h.id).forEach((r) => {
+        if (Number(r.weight || 0) > 0) todayNeighborSet.add(r.id);
+      });
+    }
+  }
+  const smartCtx = { selectedIds, fitById, todayNeighborSet };
+  const isSmart = state.sortMode === "smart";
+
+  if (isSmart) {
+    visible.sort((a, b) => {
+      const diff = computeSmartScore(b, smartCtx) - computeSmartScore(a, smartCtx);
+      if (Math.abs(diff) > 0.01) return diff;
+      return (a.sort_order ?? 0) - (b.sort_order ?? 0);
+    });
+  } else if (state.sortMode === "recent") {
     visible.sort((a, b) => {
       const aCore = a.kind !== "neutral" ? 0 : 1;
       const bCore = b.kind !== "neutral" ? 0 : 1;
@@ -757,66 +861,173 @@ function renderToday(data) {
     });
   }
 
+  const cardRenderOpts = (h, extra = {}) => {
+    const fit = fitById[h.id] || { posHits: 0, negHits: 0, netWeight: 0, rels: [] };
+    const isConflict = selectedIds.length > 0 && fit.negHits > 0 && fit.posHits === 0;
+    const isMaxDim = isSmart && h.kind === "max" && !h.active_since && !selectedIds.includes(h.id);
+    const isSynergy = selectedIds.length >= 2 && fit.posHits >= 2 && fit.negHits === 0;
+    let relBadge = extra.relBadge || "";
+    if (!relBadge && isSmart && isHabitCadenceDue(h)) {
+      relBadge = `<span class="chip pos-chip">${esc(t("due_badge", { d: Math.round(Number(h.median_interval_days)) }))}</span>`;
+    }
+    return {
+      ...extra,
+      relBadge,
+      softDim: extra.softDim !== undefined ? extra.softDim : isConflict || isMaxDim,
+      synergy: extra.synergy !== undefined ? extra.synergy : isSynergy,
+    };
+  };
+
   if (!data.habits.length) {
     empty.classList.remove("hidden");
     clustersBox.classList.add("hidden");
     clustersBox.innerHTML = "";
     grid.innerHTML = "";
+    if (dormantBox) {
+      dormantBox.classList.add("hidden");
+      dormantBox.innerHTML = "";
+    }
   } else {
     empty.classList.add("hidden");
 
-    // 1. Render any toggled focus clusters (each anchor on top + its connected cards directly underneath!)
+    // 1. Render toggled focus cluster(s) — unified multi-select synergy compass when >= 2 cards selected!
     const shownInClusters = new Set();
-    if (state.toggledFocus.length) {
+    if (selectedIds.length >= 2) {
       clustersBox.classList.remove("hidden");
-      clustersBox.innerHTML = state.toggledFocus
-        .map((anchorId) => {
-          const anchor = byId[anchorId];
-          if (!anchor) return "";
-          shownInClusters.add(anchorId);
-          const rels = getConnectedNeighbors(anchorId).filter((r) => !!byId[r.id]);
-          rels.forEach((r) => shownInClusters.add(r.id));
-          const childrenHtml = rels.length
-            ? rels
-                .map((r) => {
-                  const child = byId[r.id];
-                  const cls = r.isAi ? "ai-chip" : r.weight >= 0 ? "pos-chip" : "neg-chip";
+      selectedIds.forEach((id) => shownInClusters.add(id));
+      const anchorsHtml = selectedIds
+        .map((id) => (byId[id] ? renderHabitCardHtml(byId[id], { asAnchor: true }) : ""))
+        .join("");
+      const candidateIds = Array.from(connectedToSelected).filter((id) => !shownInClusters.has(id) && !!byId[id]);
+      candidateIds.forEach((id) => shownInClusters.add(id));
+      candidateIds.sort((aId, bId) => {
+        const fa = fitById[aId], fb = fitById[bId];
+        if (fb.posHits !== fa.posHits) return fb.posHits - fa.posHits;
+        if (fa.negHits !== fb.negHits) return fa.negHits - fb.negHits;
+        return computeSmartScore(byId[bId], smartCtx) - computeSmartScore(byId[aId], smartCtx);
+      });
+      const childrenHtml = candidateIds.length
+        ? candidateIds
+            .map((cid) => {
+              const child = byId[cid];
+              const fit = fitById[cid];
+              const badges = [];
+              if (fit.posHits >= 2 && fit.negHits === 0) {
+                badges.push(`<span class="chip pos-chip">${esc(t("synergy_badge", { k: fit.posHits, n: selectedIds.length }))}</span>`);
+              } else {
+                fit.rels.slice(0, 2).forEach((r) => {
+                  const cls = r.isAi ? "ai-chip" : r.effectiveW >= 0 ? "pos-chip" : "neg-chip";
                   const arrowTxt =
                     r.dir === "in"
-                      ? `${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} → ${anchor.name}`
-                      : `${anchor.name} → ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}`;
-                  const badge = `<span class="chip ${cls}">${r.isAi ? `${t("mode_ai")} ` : ""}${esc(arrowTxt)}</span>`;
-                  return renderHabitCardHtml(child, { relBadge: badge });
-                })
-                .join("")
-            : `<div class="muted sm-text">${esc(t("no_connected"))}</div>`;
+                      ? `${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} → ${r.anchorName}`
+                      : `${r.anchorName} → ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}`;
+                  badges.push(`<span class="chip ${cls}">${r.isAi ? `${t("mode_ai")} ` : ""}${esc(arrowTxt)}</span>`);
+                });
+              }
+              return renderHabitCardHtml(child, cardRenderOpts(child, { relBadge: badges.join("") }));
+            })
+            .join("")
+        : `<div class="muted sm-text">${esc(t("no_connected"))}</div>`;
 
-          return `
-          <div class="focus-cluster">
-            <div class="focus-anchor-wrap">${renderHabitCardHtml(anchor, { asAnchor: true })}</div>
-            <div class="focus-children">
-              <div class="focus-children-head">
-                <span>${esc(t("connected_with", { name: anchor.name, n: rels.length }))}</span>
-              </div>
-              <div class="focus-children-grid">${childrenHtml}</div>
+      clustersBox.innerHTML = `
+      <div class="focus-cluster">
+        <div class="focus-anchors-row">${anchorsHtml}</div>
+        <div class="focus-children">
+          <div class="focus-children-head">
+            <span>${esc(t("multi_connected_head", { n: candidateIds.length }))}</span>
+          </div>
+          <div class="focus-children-grid">${childrenHtml}</div>
+        </div>
+      </div>`;
+    } else if (selectedIds.length === 1) {
+      const anchorId = selectedIds[0];
+      const anchor = byId[anchorId];
+      if (anchor) {
+        clustersBox.classList.remove("hidden");
+        shownInClusters.add(anchorId);
+        const rels = getConnectedNeighbors(anchorId).filter((r) => !!byId[r.id]);
+        rels.forEach((r) => shownInClusters.add(r.id));
+        rels.sort((a, b) => {
+          const wa = anchor.kind === "max" ? -a.weight : a.weight;
+          const wb = anchor.kind === "max" ? -b.weight : b.weight;
+          if ((wb > 0) !== (wa > 0)) return wb > 0 ? 1 : -1;
+          return computeSmartScore(byId[b.id], smartCtx) - computeSmartScore(byId[a.id], smartCtx);
+        });
+        const childrenHtml = rels.length
+          ? rels
+              .map((r) => {
+                const child = byId[r.id];
+                const effW = anchor.kind === "max" ? -r.weight : r.weight;
+                const cls = r.isAi ? "ai-chip" : effW >= 0 ? "pos-chip" : "neg-chip";
+                const arrowTxt =
+                  r.dir === "in"
+                    ? `${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} → ${anchor.name}`
+                    : `${anchor.name} → ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}`;
+                const badge = `<span class="chip ${cls}">${r.isAi ? `${t("mode_ai")} ` : ""}${esc(arrowTxt)}</span>`;
+                return renderHabitCardHtml(child, cardRenderOpts(child, { relBadge: badge }));
+              })
+              .join("")
+          : `<div class="muted sm-text">${esc(t("no_connected"))}</div>`;
+
+        clustersBox.innerHTML = `
+        <div class="focus-cluster">
+          <div class="focus-anchor-wrap">${renderHabitCardHtml(anchor, { asAnchor: true })}</div>
+          <div class="focus-children">
+            <div class="focus-children-head">
+              <span>${esc(t("connected_with", { name: anchor.name, n: rels.length }))}</span>
             </div>
-          </div>`;
-        })
-        .join("");
+            <div class="focus-children-grid">${childrenHtml}</div>
+          </div>
+        </div>`;
+      }
     } else {
       clustersBox.classList.add("hidden");
       clustersBox.innerHTML = "";
     }
 
-    // 2. Render remaining habits in regular grid
-    const rest = state.toggledFocus.length
+    // 2. Render remaining habits in regular grid (+ fold rare/dormant cards cleanly in "Jetzt" mode!)
+    const rest = selectedIds.length
       ? visible.filter((h) => !shownInClusters.has(h.id))
       : visible;
+
+    let activeRest = rest;
+    let dormantRest = [];
+    if (isSmart && !q && state.filterKind === "all") {
+      activeRest = [];
+      for (const h of rest) {
+        if (isHabitDormantNow(h, selectedIds, connectedToSelected)) dormantRest.push(h);
+        else activeRest.push(h);
+      }
+      if (!activeRest.length && !shownInClusters.size && dormantRest.length) {
+        activeRest = dormantRest;
+        dormantRest = [];
+      }
+    }
 
     if (!visible.length) {
       grid.innerHTML = `<div class="muted sm-text" style="padding:12px 2px;">${esc(t("no_filter_match"))}</div>`;
     } else {
-      grid.innerHTML = rest.map((h) => renderHabitCardHtml(h)).join("");
+      grid.innerHTML = activeRest.map((h) => renderHabitCardHtml(h, cardRenderOpts(h))).join("");
+    }
+
+    if (dormantBox) {
+      if (dormantRest.length) {
+        dormantBox.classList.remove("hidden");
+        const btnLbl = state.showDormantToday
+          ? t("dormant_hide", { n: dormantRest.length })
+          : t("dormant_show", { n: dormantRest.length });
+        const expandedHtml = state.showDormantToday
+          ? `<div class="habit-grid">${dormantRest.map((h) => renderHabitCardHtml(h, cardRenderOpts(h, { softDim: true }))).join("")}</div>`
+          : "";
+        dormantBox.innerHTML = `
+          <div class="dormant-toggle-row">
+            <button type="button" class="btn ghost sm" data-toggle-dormant="1">${esc(btnLbl)}</button>
+          </div>
+          ${expandedHtml}`;
+      } else {
+        dormantBox.classList.add("hidden");
+        dormantBox.innerHTML = "";
+      }
     }
   }
 
@@ -1653,8 +1864,9 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           )
           .join("");
         return `
-        <div class="list-row">
+        <div class="list-row setup-drag-row" data-habit-id="${esc(h.id)}">
           <div class="row-inline" style="flex:1;min-width:0;">
+            <span class="drag-handle" title="${esc(t("drag_reorder_title"))}" aria-label="${esc(t("drag_reorder_title"))}">⋮⋮</span>
             <span class="ev-dot" style="background:${esc(h.color)}"></span>
             <strong>${esc(h.name)}</strong>
             <span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span>
@@ -1664,11 +1876,6 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
             ${formatAnchorBadge(h)}
           </div>
           <div class="row-inline">
-            <span class="order-btns">
-              <button type="button" class="btn ghost sm" data-move-idx="${idx}" data-move-dir="-1" title="${esc(t("move_up"))}" ${idx === 0 ? "disabled" : ""}>↑</button>
-              <button type="button" class="btn ghost sm" data-move-idx="${idx}" data-move-dir="1" title="${esc(t("move_down"))}" ${idx === state.habits.length - 1 ? "disabled" : ""}>↓</button>
-            </span>
-            <button type="button" class="btn ghost sm" data-archive-id="${esc(h.id)}" title="${esc(t("archive_title"))}">✓</button>
             <button type="button" class="btn ghost sm" data-setup-edit="${esc(h.id)}" title="${esc(t("btn_edit"))}">Edit</button>
           </div>
         </div>`;
@@ -2359,6 +2566,7 @@ function renderStateCurveSection(curves, timelineMeta) {
 }
 
 function renderWeekMatrix(dates, weekMatrix, endDay) {
+  state.lastMatrixData = { dates, weekMatrix, endDay };
   const wm = $("#week-matrix");
   const titleEl = $("#matrix-title");
   const nextBtn = $("#btn-matrix-next");
@@ -2382,10 +2590,16 @@ function renderWeekMatrix(dates, weekMatrix, endDay) {
     wm.innerHTML = `<div class="muted sm-text">${esc(t("no_habits_yet"))}</div>`;
     return;
   }
+
+  // Fold inactive (all-zero) rows in this 7-day window cleanly so rare 3-6 month habits never bloat the table!
+  const activeRows = weekMatrix.filter((r) => (r.days || []).some((c) => Number(c.effective || 0) !== 0));
+  const inactiveRows = weekMatrix.filter((r) => !(r.days || []).some((c) => Number(c.effective || 0) !== 0));
+  const shownRows = !activeRows.length || state.showInactiveMatrix ? weekMatrix : activeRows;
+
   const headerDays = (dates || [])
     .map((d) => `<th class="${d === todayIsoNow ? "col-today" : ""}">${d.slice(8, 10)}.${d.slice(5, 7)}.</th>`)
     .join("");
-  const rows = weekMatrix
+  const rows = shownRows
     .map(
       (r) => `
     <tr>
@@ -2399,7 +2613,15 @@ function renderWeekMatrix(dates, weekMatrix, endDay) {
     </tr>`
     )
     .join("");
-  wm.innerHTML = `<table class="matrix"><thead><tr><th>${esc(t("th_habit"))}</th>${headerDays}</tr></thead><tbody>${rows}</tbody></table>`;
+  const foldBar =
+    activeRows.length && inactiveRows.length
+      ? `<div class="matrix-fold-bar"><div class="dormant-toggle-row"><button type="button" class="btn ghost sm" data-toggle-inactive-matrix="1">${esc(
+          state.showInactiveMatrix
+            ? t("matrix_hide_inactive", { n: inactiveRows.length })
+            : t("matrix_show_inactive", { n: inactiveRows.length })
+        )}</button></div></div>`
+      : "";
+  wm.innerHTML = `<table class="matrix"><thead><tr><th>${esc(t("th_habit"))}</th>${headerDays}</tr></thead><tbody>${rows}</tbody></table>${foldBar}`;
 }
 
 async function loadWeekMatrix(endDay) {
@@ -2430,7 +2652,11 @@ function renderRhythmsPanel() {
     return;
   }
   const nowHour = new Date().getHours();
-  rl.innerHTML = rhythms
+  const activeRhythms = rhythms.filter((r) => (r.hours || []).some((v) => v > 0));
+  const emptyRhythms = rhythms.filter((r) => !(r.hours || []).some((v) => v > 0));
+  const shownRhythms = !activeRhythms.length || state.showEmptyRhythms ? rhythms : activeRhythms;
+
+  const cardsHtml = shownRhythms
     .map((r) => {
       const mx = Math.max(1, ...r.hours);
       const tm = tomorrowMap[r.habit_id] || {};
@@ -2504,6 +2730,15 @@ function renderRhythmsPanel() {
       </div>`;
     })
     .join("");
+  const foldRhythmHtml =
+    activeRhythms.length && emptyRhythms.length
+      ? `<div class="dormant-toggle-row" style="margin-top:6px;"><button type="button" class="btn ghost sm" data-toggle-empty-rhythms="1">${esc(
+          state.showEmptyRhythms
+            ? t("rhythm_hide_empty", { n: emptyRhythms.length })
+            : t("rhythm_show_empty", { n: emptyRhythms.length })
+        )}</button></div>`
+      : "";
+  rl.innerHTML = cardsHtml + foldRhythmHtml;
 }
 
 async function loadAnalysis() {
@@ -2839,6 +3074,35 @@ function bindEvents() {
   };
   $("#habit-grid").addEventListener("click", handleCardAreaClick);
   $("#focus-clusters").addEventListener("click", handleCardAreaClick);
+  const dormantWrap = $("#dormant-habits-wrap");
+  if (dormantWrap) {
+    dormantWrap.addEventListener("click", (e) => {
+      if (e.target.closest("[data-toggle-dormant]")) {
+        state.showDormantToday = !state.showDormantToday;
+        if (state.todayData) renderToday(state.todayData);
+        return;
+      }
+      handleCardAreaClick(e);
+    });
+  }
+  const wmBox = $("#week-matrix");
+  if (wmBox) {
+    wmBox.addEventListener("click", (e) => {
+      if (!e.target.closest("[data-toggle-inactive-matrix]")) return;
+      state.showInactiveMatrix = !state.showInactiveMatrix;
+      if (state.lastMatrixData) {
+        renderWeekMatrix(state.lastMatrixData.dates, state.lastMatrixData.weekMatrix, state.lastMatrixData.endDay);
+      }
+    });
+  }
+  const rlBox = $("#rhythm-list");
+  if (rlBox) {
+    rlBox.addEventListener("click", (e) => {
+      if (!e.target.closest("[data-toggle-empty-rhythms]")) return;
+      state.showEmptyRhythms = !state.showEmptyRhythms;
+      renderRhythmsPanel();
+    });
+  }
   $("#btn-clear-focus").addEventListener("click", () => {
     state.toggledFocus = [];
     if (state.todayData) renderToday(state.todayData);
@@ -3339,36 +3603,66 @@ function bindEvents() {
     if (sw) $("#hf-color").value = sw.dataset.color;
   });
   $("#btn-cancel-edit").addEventListener("click", resetHabitForm);
-  $("#setup-habit-list").addEventListener("click", async (e) => {
-    const moveBtn = e.target.closest("[data-move-idx]");
-    if (moveBtn && !moveBtn.disabled) {
-      const idx = Number(moveBtn.dataset.moveIdx);
-      const dir = Number(moveBtn.dataset.moveDir);
-      const nextIdx = idx + dir;
-      if (nextIdx >= 0 && nextIdx < state.habits.length) {
-        const ordered = state.habits.map((h) => h.id);
-        [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-        await api("/api/habits/reorder", {
-          method: "POST",
-          body: JSON.stringify({ habit_ids: ordered }),
-        });
-        await loadSetup();
-      }
-      return;
-    }
-    const archBtn = e.target.closest("[data-archive-id]");
-    if (archBtn) {
-      await api(`/api/habits/${encodeURIComponent(archBtn.dataset.archiveId)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ archived: true }),
-      });
-      toast(t("habit_archived"));
-      await loadSetup();
-      return;
-    }
+  const setupList = $("#setup-habit-list");
+  setupList.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-setup-edit]");
     if (btn) populateHabitForm(btn.dataset.setupEdit);
   });
+
+  // Smooth touch- & mouse-friendly pointer drag-and-drop reordering in Setup (zero accidental archive taps!)
+  let dragRow = null;
+  let dragStartOrder = [];
+  const finishHabitDrag = async () => {
+    if (!dragRow) return;
+    dragRow.classList.remove("is-dragging");
+    dragRow = null;
+    const newOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
+    const changed = newOrder.length === dragStartOrder.length && newOrder.some((id, i) => id !== dragStartOrder[i]);
+    if (changed) {
+      try {
+        await api("/api/habits/reorder", {
+          method: "POST",
+          body: JSON.stringify({ habit_ids: newOrder }),
+        });
+        const byIdMap = Object.fromEntries(state.habits.map((h) => [h.id, h]));
+        state.habits = newOrder.map((id, i) => ({ ...byIdMap[id], sort_order: i })).filter((x) => x && x.id);
+        toast(t("reordered_toast"));
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+        await loadSetup();
+      }
+    }
+  };
+  setupList.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest(".drag-handle");
+    if (!handle) return;
+    const row = handle.closest(".setup-drag-row");
+    if (!row) return;
+    e.preventDefault();
+    dragRow = row;
+    dragStartOrder = Array.from(setupList.querySelectorAll(".setup-drag-row")).map((el) => el.dataset.habitId);
+    row.classList.add("is-dragging");
+    try { handle.setPointerCapture(e.pointerId); } catch {}
+  });
+  setupList.addEventListener("pointermove", (e) => {
+    if (!dragRow) return;
+    e.preventDefault();
+    const rows = Array.from(setupList.querySelectorAll(".setup-drag-row"));
+    for (const r of rows) {
+      if (r === dragRow) continue;
+      const rect = r.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid && r.compareDocumentPosition(dragRow) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        setupList.insertBefore(dragRow, r);
+        break;
+      } else if (e.clientY > mid && dragRow.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        setupList.insertBefore(dragRow, r.nextSibling);
+        break;
+      }
+    }
+  });
+  setupList.addEventListener("pointerup", finishHabitDrag);
+  setupList.addEventListener("pointercancel", finishHabitDrag);
   $("#archive-habit-list").addEventListener("click", async (e) => {
     const unarch = e.target.closest("[data-unarchive-id]");
     if (!unarch) return;

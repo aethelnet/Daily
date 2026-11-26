@@ -91,9 +91,10 @@
           <button type="button" class="pill hidden" id="btn-clear-focus" data-i18n-title="btn_clear_focus_title" title="Alle aufgeklappten Gruppen schließen">✕ <span data-i18n="groups">Gruppen</span> (<span id="focus-count">0</span>)</button>
         </div>
         <div class="row-inline">
-          <div class="mode-switch" id="today-sort-switch" role="group" data-i18n-title="sort_title" title="Sortierung: Eigene Reihenfolge oder zuletzt aktive Karten nach oben">
-            <button type="button" class="mode-btn active" data-sort="manual" data-i18n="sort_manual">Eigene</button>
-            <button type="button" class="mode-btn" data-sort="recent" data-i18n="sort_recent">Zuletzt aktiv</button>
+          <div class="mode-switch" id="today-sort-switch" role="group" data-i18n-title="sort_title" title="Sortierung: Jetzt relevant, eigene Reihenfolge oder zuletzt aktiv">
+            <button type="button" class="mode-btn active" data-sort="smart" data-i18n="sort_smart">Jetzt</button>
+            <button type="button" class="mode-btn" data-sort="manual" data-i18n="sort_manual">Eigene</button>
+            <button type="button" class="mode-btn" data-sort="recent" data-i18n="sort_recent">Zuletzt</button>
           </div>
           <input type="text" id="today-search" class="filter-search" data-i18n-placeholder="filter_search_ph" placeholder="Filtern…" />
         </div>
@@ -109,6 +110,7 @@
 
       <div id="focus-clusters" class="focus-clusters hidden"></div>
       <div id="habit-grid" class="habit-grid"></div>
+      <div id="dormant-habits-wrap" class="dormant-wrap hidden"></div>
 
       <div class="panel log-panel">
         <div class="panel-head">
