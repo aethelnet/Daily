@@ -343,7 +343,9 @@
 
       mood_title: "Momentaufnahme — Wie geht’s dir gerade?",
       mood_desc: "Alles optional — tippe nur an, was gerade relevant ist (oder 1 Zahl und fertig).",
-      mood_add_summary: "+ Eigene Achse hinzufügen / ausgeblendete wiederherstellen",
+      mood_add_summary: "Achsen & Farben anpassen / eigene Achse hinzufügen",
+      mood_colors_lbl: "Farben:",
+      axis_color_saved: "Farbe für „{name}“ gespeichert",
       ma_name_ph: "Name (z. B. Schlafqualität, Körpergefühl, Sozialer Akku)",
       ma_low_ph: "1 = niedrig (optional)",
       ma_high_ph: "5 = hoch (optional)",
@@ -772,7 +774,9 @@
 
       mood_title: "Snapshot — How are you right now?",
       mood_desc: "Everything optional — tap only what fits right now (or just 1 number and done).",
-      mood_add_summary: "+ Add custom axis / restore hidden axes",
+      mood_add_summary: "Customize axes & colors / add custom axis",
+      mood_colors_lbl: "Colors:",
+      axis_color_saved: "Color for “{name}” saved",
       ma_name_ph: "Name (e.g. Sleep quality, Body feel, Social battery)",
       ma_low_ph: "1 = low (optional)",
       ma_high_ph: "5 = high (optional)",

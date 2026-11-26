@@ -512,9 +512,9 @@
             <button type="button" class="btn ghost sm hidden" id="btn-chart-now" data-i18n="btn_chart_now">Jetzt</button>
           </div>
           <span class="legend-inline sm-text" id="state-legend">
-            <span class="leg-item"><span class="dot-obs" style="background:var(--text)"></span><span data-i18n="leg_actual">Aufnahme</span></span>
-            <button type="button" class="leg-toggle active" data-sline="tabpfn" data-i18n-title="leg_tabpfn_title" title="TabPFN-Kurve ein-/ausblenden"><span class="line-ai"></span>TabPFN</button>
-            <button type="button" class="leg-toggle active" data-sline="ode" data-i18n-title="leg_ode_title" title="Liquid-ODE-Kurve (Uhrwerk) ein-/ausblenden"><span class="line-ode"></span>ODE</button>
+            <span class="leg-item"><span class="dot-obs" id="state-leg-dot" style="background:#368470"></span><span data-i18n="leg_actual">Aufnahme</span></span>
+            <button type="button" class="leg-toggle active" data-sline="tabpfn" data-i18n-title="leg_tabpfn_title" title="TabPFN-Kurve ein-/ausblenden"><span class="line-ai" id="state-leg-ai"></span>TabPFN</button>
+            <button type="button" class="leg-toggle active" data-sline="ode" data-i18n-title="leg_ode_title" title="Liquid-ODE-Kurve (Uhrwerk) ein-/ausblenden"><span class="line-ode" id="state-leg-ode"></span>ODE</button>
           </span>
         </div>
         <div id="state-axis-pills" class="row-inline" style="margin-bottom:8px;"></div>
@@ -619,9 +619,13 @@
       <div id="mood-axes-list" class="stack"></div>
 
       <details class="nudge-box" style="margin-top:10px;">
-        <summary data-i18n="mood_add_summary">+ Eigene Achse hinzufügen / ausgeblendete wiederherstellen</summary>
-        <form id="mood-add-axis-form" class="stack" style="margin-top:8px;">
-          <input type="text" id="ma-name" data-i18n-placeholder="ma_name_ph" placeholder="Name (z. B. Schlafqualität, Körpergefühl, Sozialer Akku)" required />
+        <summary data-i18n="mood_add_summary">Achsen &amp; Farben anpassen / eigene Achse hinzufügen</summary>
+        <div id="mood-color-list" class="dim-color-grid" style="margin-top:8px;"></div>
+        <form id="mood-add-axis-form" class="stack" style="margin-top:10px;">
+          <div class="row-inline">
+            <input type="color" id="ma-color" value="#3d6b7d" class="dim-color-inp" title="Farbe" />
+            <input type="text" id="ma-name" data-i18n-placeholder="ma_name_ph" placeholder="Name (z. B. Schlafqualität, Körpergefühl, Sozialer Akku)" required style="flex:1;" />
+          </div>
           <div class="row-2">
             <input type="text" id="ma-low" data-i18n-placeholder="ma_low_ph" placeholder="1 = niedrig (optional)" />
             <input type="text" id="ma-high" data-i18n-placeholder="ma_high_ph" placeholder="5 = hoch (optional)" />

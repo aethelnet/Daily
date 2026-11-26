@@ -169,12 +169,21 @@
       }
     }
 
-    // 2. State dimensions
+    // 2. State dimensions (LWW on updated_at so axis colors & archived state sync across devices)
     const dimById = Object.fromEntries(out.state_dimensions.map((d) => [d.id, d]));
     for (const rd of remote.state_dimensions || []) {
-      if (rd.id && rd.name && !dimById[rd.id]) {
-        out.state_dimensions.push({ ...rd });
-        dimById[rd.id] = rd;
+      if (!rd.id || !rd.name) continue;
+      const ld = dimById[rd.id];
+      if (!ld) {
+        const copy = { ...rd };
+        out.state_dimensions.push(copy);
+        dimById[rd.id] = copy;
+      } else {
+        const rUpd = rd.updated_at || rd.created_at || "";
+        const lUpd = ld.updated_at || ld.created_at || "";
+        if (rUpd > lUpd) {
+          Object.assign(ld, rd, { color: rd.color || ld.color });
+        }
       }
     }
 

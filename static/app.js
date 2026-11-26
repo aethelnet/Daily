@@ -7,6 +7,57 @@ const getLocale = () => (window.DailyI18n ? window.DailyI18n.getLocale() : "de-D
 const dimName = (d) => (window.DailyI18n ? window.DailyI18n.dimName(d) : d ? d.name : "");
 const dimLow = (d) => (window.DailyI18n ? window.DailyI18n.dimLow(d) : d ? d.low_label || "" : "");
 const dimHigh = (d) => (window.DailyI18n ? window.DailyI18n.dimHigh(d) : d ? d.high_label || "" : "");
+const DEFAULT_DIM_COLORS = {
+  stimmung: "#368470",
+  "mental-fit": "#3d6b7d",
+  stress: "#c85a44",
+  anspannung: "#b4783c",
+  antrieb: "#6e68a8",
+};
+const dimColor = (d) => (d && d.color && /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : DEFAULT_DIM_COLORS[d && d.id] || "#3d6b7d");
+
+// Anti-muddy composite mood color: pick the 1-2 most salient rated axes (ignoring low 1/5 "none" values)
+// and build a crisp two-tone orb + whisper-soft row wash instead of averaging 5 colors into brown!
+function computeMoodComposite(ratings, dimsById) {
+  const entries = Object.entries(ratings || {})
+    .filter(([, v]) => v != null && !Number.isNaN(Number(v)))
+    .map(([did, v]) => {
+      const dim = dimsById[did] || { id: did, sort_order: 99 };
+      const val = Number(v);
+      return {
+        did,
+        val,
+        salience: Math.max(0, val - 1.5),
+        color: dimColor(dim),
+        order: Number(dim.sort_order ?? 99),
+      };
+    });
+  if (!entries.length) {
+    return { c1: "var(--ai)", c2: "var(--ai)", orbBg: "var(--ai)", orbOpacity: 0.7 };
+  }
+  entries.sort((a, b) => b.salience - a.salience || b.val - a.val || a.order - b.order);
+  const salient = entries.filter((x) => x.salience > 0.05);
+  if (!salient.length) {
+    // All rated axes are low (1/5): show calm muted tint of the first rated axis
+    const c = entries[0].color;
+    return { c1: c, c2: c, orbBg: c, orbOpacity: 0.5 };
+  }
+  if (salient.length === 1 || salient[0].color === salient[1].color) {
+    const c = salient[0].color;
+    return { c1: c, c2: c, orbBg: c, orbOpacity: 0.94 };
+  }
+  const a = salient[0];
+  const b = salient[1];
+  const ratio = a.salience / (a.salience + b.salience);
+  const splitLo = Math.max(12, Math.min(72, Math.round(ratio * 100 - 15)));
+  const splitHi = Math.max(28, Math.min(88, Math.round(ratio * 100 + 15)));
+  return {
+    c1: a.color,
+    c2: b.color,
+    orbBg: `linear-gradient(135deg, ${a.color} 0%, ${a.color} ${splitLo}%, ${b.color} ${splitHi}%, ${b.color} 100%)`,
+    orbOpacity: 0.96,
+  };
+}
 const windowLabel = (w) => t(`win_short_${w || "any"}`);
 const weekdayShort = (idx) => t(`wd_${idx}`);
 const periodShort = (p) => (p === "week" ? t("per_badge_week") : p === "month" ? t("per_badge_month") : "");
@@ -763,10 +814,13 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
   if (entry.kind === "snap") {
     const sn = entry.item;
     const hhmm = sn.occurred_at.slice(11, 16);
+    const comp = computeMoodComposite(sn.ratings, dimsById);
     const ratingChips = Object.entries(sn.ratings || {})
       .map(([did, val]) => {
-        const dname = dimsById[did] ? dimName(dimsById[did]) : dimName({ id: did, name: did });
-        return `<span class="chip ai-chip">${esc(dname)} ${fmtNum(val)}/5</span>`;
+        const dObj = dimsById[did] || { id: did, name: did };
+        const dname = dimName(dObj);
+        const col = dimColor(dObj);
+        return `<span class="chip"><span class="chip-dot" style="background:${esc(col)}"></span>${esc(dname)} ${fmtNum(val)}/5</span>`;
       })
       .join("");
     const causeTxt = (sn.causes || [])
@@ -774,8 +828,8 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
       .join(", ");
     const causeChip = causeTxt ? `<span class="chip">← ${esc(causeTxt)}</span>` : "";
     return `
-    <div class="ev-row snap-row">
-      <span class="ev-dot" style="background:var(--ai)"></span>
+    <div class="ev-row snap-row" style="--snap-c1:${esc(comp.c1)};--snap-c2:${esc(comp.c2)};">
+      <span class="ev-dot snap-orb" style="background:${comp.orbBg};opacity:${comp.orbOpacity}"></span>
       <span class="mono muted sm-text" data-snap-edit="${sn.id}" style="cursor:pointer;" title="${esc(t("edit_entry_title"))}">${hhmm}</span>
       <strong>${esc(t("btn_mood"))}</strong>
       <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
@@ -1203,6 +1257,7 @@ function renderMoodModal() {
   const list = $("#mood-axes-list");
   list.innerHTML = state.stateDims
     .map((d) => {
+      const col = dimColor(d);
       const cur = state.moodRatings[d.id];
       const btns = [1, 2, 3, 4, 5]
         .map(
@@ -1217,9 +1272,9 @@ function renderMoodModal() {
           ? `<div class="mood-anchors"><span>${esc(lo)}</span><span>${esc(hi)}</span></div>`
           : "";
       return `
-      <div class="mood-axis">
+      <div class="mood-axis" style="--axis-c:${esc(col)}">
         <div class="mood-axis-head">
-          <strong>${esc(dimName(d))}</strong>
+          <span class="row-inline" style="gap:6px;"><span class="ev-dot" style="background:${esc(col)}"></span><strong>${esc(dimName(d))}</strong></span>
           <button type="button" class="btn ghost sm" data-hide-dim="${esc(d.id)}" title="${esc(t("mood_hide_title"))}" style="padding:1px 6px;font-size:11px;">✕</button>
         </div>
         <div class="mood-scale">${btns}</div>
@@ -1227,6 +1282,20 @@ function renderMoodModal() {
       </div>`;
     })
     .join("");
+
+  // Color controls stay neatly tucked inside the collapsed <details> drawer (zero everyday clutter!)
+  const colorBox = $("#mood-color-list");
+  if (colorBox) {
+    colorBox.innerHTML = state.stateDims
+      .map(
+        (d) => `
+      <label class="dim-color-item">
+        <input type="color" class="dim-color-inp" data-dim-color="${esc(d.id)}" value="${esc(dimColor(d))}" />
+        <span>${esc(dimName(d))}</span>
+      </label>`
+      )
+      .join("");
+  }
 
   const archBox = $("#mood-archived-axes");
   archBox.innerHTML = state.archivedDims.length
@@ -1437,7 +1506,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
               <button type="button" class="btn ghost sm" data-move-idx="${idx}" data-move-dir="1" title="${esc(t("move_down"))}" ${idx === state.habits.length - 1 ? "disabled" : ""}>↓</button>
             </span>
             <button type="button" class="btn ghost sm" data-archive-id="${esc(h.id)}" title="${esc(t("archive_title"))}">✓</button>
-            <button type="button" class="btn ghost sm" data-setup-edit="${esc(h.id)}">${esc(t("btn_edit"))}</button>
+            <button type="button" class="btn ghost sm" data-setup-edit="${esc(h.id)}" title="${esc(t("btn_edit"))}">✎</button>
           </div>
         </div>`;
       })
@@ -1770,10 +1839,11 @@ function renderStateCurveSection(curves, timelineMeta) {
   }
 
   pillsEl.innerHTML = curves
-    .map(
-      (c) =>
-        `<button type="button" class="pill ${c.id === state.selectedStateCurveId ? "active" : ""}" data-scurve="${esc(c.id)}">${esc(dimName(c))}${c.rated_count ? ` (${c.rated_count})` : ""}</button>`
-    )
+    .map((c) => {
+      const col = dimColor(c);
+      const isAct = c.id === state.selectedStateCurveId;
+      return `<button type="button" class="pill ${isAct ? "active" : ""}" data-scurve="${esc(c.id)}"><span class="pill-dot" style="background:${esc(col)}"></span>${esc(dimName(c))}${c.rated_count ? ` (${c.rated_count})` : ""}</button>`;
+    })
     .join("");
 
   // Optional #tag overlay pills on the timeline (zero noise when unused!)
@@ -1799,6 +1869,12 @@ function renderStateCurveSection(curves, timelineMeta) {
   }
 
   const cur = curves.find((c) => c.id === state.selectedStateCurveId) || curves[0];
+  const axisColor = dimColor(cur);
+  const legDot = $("#state-leg-dot");
+  if (legDot) legDot.style.background = axisColor;
+  const legOde = $("#state-leg-ode");
+  if (legOde) legOde.style.borderTopColor = axisColor;
+  chartEl.style.setProperty("--chart-axis-c", axisColor);
   if (!cur.rated_count) {
     chartEl.innerHTML = `<div class="muted sm-text">${t("an_first_snap_html", { name: esc(dimName(cur)) })}</div>`;
     return;
@@ -1888,12 +1964,12 @@ function renderStateCurveSection(curves, timelineMeta) {
 
   const tl = cur.timeline || { actual: [], ode: [], tabpfn: [] };
   let defsExtra = `<linearGradient id="ode-past-area" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#368470" stop-opacity="0.15" />
-      <stop offset="100%" stop-color="#368470" stop-opacity="0.0" />
+      <stop offset="0%" stop-color="${esc(axisColor)}" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="${esc(axisColor)}" stop-opacity="0.0" />
     </linearGradient>
     <linearGradient id="fut-zone-bg" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="var(--ai)" stop-opacity="0.06" />
-      <stop offset="100%" stop-color="var(--ai)" stop-opacity="0.015" />
+      <stop offset="0%" stop-color="${esc(axisColor)}" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="${esc(axisColor)}" stop-opacity="0.015" />
     </linearGradient>`;
   let bandLayer = "";
   let curveLayer = "";
@@ -1969,11 +2045,12 @@ function renderStateCurveSection(curves, timelineMeta) {
     }
   };
 
+  const tabpfnStroke = "color-mix(in srgb, var(--text) 56%, transparent)";
   if (state.showOdeLine) {
     drawContinuousSeries(tl.ode, {
       id: "ode",
       label: "ODE",
-      stroke: "#368470",
+      stroke: axisColor,
       width: 2.4,
       dash: "",
       pastOpacity: 0.96,
@@ -1984,7 +2061,7 @@ function renderStateCurveSection(curves, timelineMeta) {
     drawContinuousSeries(tl.tabpfn, {
       id: "tabpfn",
       label: "TabPFN",
-      stroke: "var(--ai)",
+      stroke: tabpfnStroke,
       width: 2.0,
       dash: "5 4",
       pastOpacity: 0.9,
@@ -2018,7 +2095,7 @@ function renderStateCurveSection(curves, timelineMeta) {
       const cx = xOf(pt.t).toFixed(1);
       const cy = yOf(pt.v).toFixed(1);
       const tip = `${fmtRelTime(pt.t)}: ${fmtNum(pt.v)}/5${pt.note ? ` · ${pt.note}` : ""}`;
-      return `<circle cx="${cx}" cy="${cy}" r="4.8" fill="var(--text)" stroke="var(--surface)" stroke-width="2.2"><title>${esc(tip)}</title></circle>`;
+      return `<circle cx="${cx}" cy="${cy}" r="4.8" fill="${esc(axisColor)}" stroke="var(--surface)" stroke-width="2.2"><title>${esc(tip)}</title></circle>`;
     })
     .join("");
 
@@ -2076,7 +2153,7 @@ function renderStateCurveSection(curves, timelineMeta) {
     curLow || curHigh ? `1 = ${curLow || t("an_anchor_low")} · 5 = ${curHigh || t("an_anchor_high")}` : "";
 
   // Store geometry snapshot for zero-latency live hover crosshair
-  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, visActual, anchorTxt, rightSummary };
+  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, axisColor, visActual, anchorTxt, rightSummary };
 
   chartEl.innerHTML = `
     <div class="state-chart-wrap" data-pan-chart="1">
@@ -2868,6 +2945,26 @@ function bindEvents() {
       await openMoodModal();
     }
   });
+  $("#mood-color-list").addEventListener("change", async (e) => {
+    const inp = e.target.closest("[data-dim-color]");
+    if (!inp) return;
+    const dimId = inp.dataset.dimColor;
+    const color = inp.value;
+    try {
+      const updated = await api(`/api/state/dimensions/${encodeURIComponent(dimId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ color }),
+      });
+      const local = state.stateDims.find((d) => d.id === dimId);
+      if (local) local.color = updated.color || color;
+      renderMoodModal();
+      toast(t("axis_color_saved", { name: dimName(local || { id: dimId, name: dimId }) }));
+      if (state.tab === "today") await refreshAfterLogMutation();
+      if (state.tab === "analysis") await loadAnalysis();
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+    }
+  });
   $("#mood-add-axis-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("#ma-name").value.trim();
@@ -2879,6 +2976,7 @@ function bindEvents() {
           name,
           low_label: $("#ma-low").value.trim(),
           high_label: $("#ma-high").value.trim(),
+          color: ($("#ma-color") && $("#ma-color").value) || "",
         }),
       });
       $("#ma-name").value = "";
@@ -3728,15 +3826,16 @@ function bindEvents() {
     const odePt = state.showOdeLine ? interpSeriesAt(tl.ode, hr) : null;
     const tpPt = state.showTabpfnLine ? interpSeriesAt(tl.tabpfn, hr) : null;
 
+    const ac = g.axisColor || "#368470";
     let markers = `<line x1="${cx.toFixed(1)}" y1="${g.padT}" x2="${cx.toFixed(1)}" y2="${g.padT + g.plotH}" stroke="var(--text-2)" stroke-width="1" opacity="0.32" />`;
     if (odePt) {
-      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(odePt.v).toFixed(1)}" r="4" fill="#368470" stroke="var(--surface)" stroke-width="1.8" />`;
+      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(odePt.v).toFixed(1)}" r="4" fill="${esc(ac)}" stroke="var(--surface)" stroke-width="1.8" />`;
     }
     if (tpPt) {
-      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(tpPt.v).toFixed(1)}" r="3.8" fill="var(--ai)" stroke="var(--surface)" stroke-width="1.8" />`;
+      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(tpPt.v).toFixed(1)}" r="3.8" fill="color-mix(in srgb, var(--text) 62%, transparent)" stroke="var(--surface)" stroke-width="1.8" />`;
     }
     if (snappedDot) {
-      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(snappedDot.v).toFixed(1)}" r="7.5" fill="none" stroke="var(--text)" stroke-width="1.4" opacity="0.45" />`;
+      markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(snappedDot.v).toFixed(1)}" r="7.5" fill="none" stroke="${esc(ac)}" stroke-width="1.6" opacity="0.6" />`;
     }
     const hoverEl = $("#state-chart-hover");
     if (hoverEl) hoverEl.innerHTML = markers;
@@ -3747,11 +3846,11 @@ function bindEvents() {
     const isFut = hr > g.nowHr + 0.1;
     const pills = [`<span class="ro-pill"><strong>${esc(tsStr)}</strong></span>`];
     if (snappedDot) {
-      pills.push(`<span class="ro-pill"><span class="dot-obs" style="background:var(--text)"></span>${fmtNum(snappedDot.v)}/5${snappedDot.note ? ` <span class="muted">${esc(snappedDot.note.slice(0, 32))}</span>` : ""}</span>`);
+      pills.push(`<span class="ro-pill"><span class="dot-obs" style="background:${esc(ac)}"></span>${fmtNum(snappedDot.v)}/5${snappedDot.note ? ` <span class="muted">${esc(snappedDot.note.slice(0, 32))}</span>` : ""}</span>`);
     }
     if (odePt) {
       const cTxt = isFut ? ` <span class="muted">(${Math.round(odePt.conf * 100)}%)</span>` : "";
-      pills.push(`<span class="ro-pill"><span class="line-ode"></span>ODE ${fmtNum(odePt.v)}${cTxt}</span>`);
+      pills.push(`<span class="ro-pill"><span class="line-ode" style="border-top-color:${esc(ac)}"></span>ODE ${fmtNum(odePt.v)}${cTxt}</span>`);
     }
     if (tpPt) {
       const cTxt = isFut ? ` <span class="muted">(${Math.round(tpPt.conf * 100)}%)</span>` : "";

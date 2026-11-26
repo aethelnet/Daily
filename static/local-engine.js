@@ -5,12 +5,13 @@
 (function () {
   const DB_KEY = "daily_standalone_db_v1";
   const DEFAULT_DIMS = [
-    { id: "stimmung", name: "Stimmung", low_label: "melancholisch", high_label: "leicht / gut", sort_order: 0, archived: 0 },
-    { id: "mental-fit", name: "Mental fit", low_label: "leer / neblig", high_label: "wach / klar", sort_order: 1, archived: 0 },
-    { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck", sort_order: 2, archived: 0 },
-    { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt", sort_order: 3, archived: 0 },
-    { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit", sort_order: 4, archived: 0 },
+    { id: "stimmung", name: "Stimmung", low_label: "melancholisch", high_label: "leicht / gut", color: "#368470", sort_order: 0, archived: 0 },
+    { id: "mental-fit", name: "Mental fit", low_label: "leer / neblig", high_label: "wach / klar", color: "#3d6b7d", sort_order: 1, archived: 0 },
+    { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck", color: "#c85a44", sort_order: 2, archived: 0 },
+    { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt", color: "#b4783c", sort_order: 3, archived: 0 },
+    { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit", color: "#6e68a8", sort_order: 4, archived: 0 },
   ];
+  const DEFAULT_DIM_COLOR_MAP = Object.fromEntries(DEFAULT_DIMS.map((d) => [d.id, d.color]));
 
   function nowIso() {
     const d = new Date();
@@ -114,6 +115,16 @@
           }
           if (!sn.updated_at) {
             sn.updated_at = sn.created_at || nowIso();
+            migrated = true;
+          }
+        }
+        for (const dm of parsed.state_dimensions || []) {
+          if (!dm.color) {
+            dm.color = DEFAULT_DIM_COLOR_MAP[dm.id] || "#3d6b7d";
+            migrated = true;
+          }
+          if (!dm.updated_at) {
+            dm.updated_at = dm.created_at || nowIso();
             migrated = true;
           }
         }
@@ -934,6 +945,7 @@
           name: dim.name,
           low_label: dim.low_label || "",
           high_label: dim.high_label || "",
+          color: dim.color || DEFAULT_DIM_COLOR_MAP[dim.id] || "#3d6b7d",
           rated_count: dimSnaps.length,
           ode_tau_hours: tauH,
           dates: curveDates,
@@ -1465,15 +1477,25 @@
       const name = (body.name || "").trim();
       if (!name) throw new Error("Name fehlt");
       const ex = db.state_dimensions.find((d) => d.name.toLowerCase() === name.toLowerCase());
-      if (ex) { ex.archived = 0; saveDB(db); return ex; }
+      const cleanCol = typeof body.color === "string" && /^#[0-9a-fA-F]{6}$/.test(body.color.trim()) ? body.color.trim().toLowerCase() : "";
+      if (ex) {
+        ex.archived = 0;
+        if (cleanCol) ex.color = cleanCol;
+        ex.updated_at = nowIso();
+        saveDB(db);
+        return ex;
+      }
+      const did = slugify(name);
       const dim = {
-        id: slugify(name),
+        id: did,
         name,
         low_label: (body.low_label || "").trim(),
         high_label: (body.high_label || "").trim(),
+        color: cleanCol || DEFAULT_DIM_COLOR_MAP[did] || "#3d6b7d",
         sort_order: db.state_dimensions.length,
         archived: 0,
         created_at: nowIso(),
+        updated_at: nowIso(),
       };
       db.state_dimensions.push(dim);
       saveDB(db);
@@ -1485,6 +1507,13 @@
       const d = db.state_dimensions.find((x) => x.id === did);
       if (!d) throw new Error("Achse nicht gefunden");
       if (body.archived !== undefined) d.archived = body.archived ? 1 : 0;
+      if (typeof body.color === "string" && /^#[0-9a-fA-F]{6}$/.test(body.color.trim())) {
+        d.color = body.color.trim().toLowerCase();
+      }
+      if (body.name !== undefined && String(body.name).trim()) d.name = String(body.name).trim();
+      if (body.low_label !== undefined) d.low_label = String(body.low_label).trim();
+      if (body.high_label !== undefined) d.high_label = String(body.high_label).trim();
+      d.updated_at = nowIso();
       saveDB(db);
       return d;
     }
