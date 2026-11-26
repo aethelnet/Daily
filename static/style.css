@@ -540,35 +540,58 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   display: flex;
   justify-content: center;
 }
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 26px;
-  color: var(--muted);
-  font-size: 14px;
-  letter-spacing: -1px;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-  border-radius: 5px;
-  flex-shrink: 0;
-  transition: color 0.12s var(--ease), background 0.12s var(--ease);
-}
-.drag-handle:hover { color: var(--text); background: var(--surface-hover); }
-.drag-handle:active { cursor: grabbing; }
 .setup-drag-row {
-  transition: background 0.12s var(--ease), box-shadow 0.12s var(--ease), transform 0.12s var(--ease);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+  transition: background 0.12s var(--ease), border-color 0.12s var(--ease), box-shadow 0.12s var(--ease), transform 0.12s var(--ease);
+}
+.setup-drag-row:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
 }
 .setup-drag-row.is-dragging {
+  cursor: grabbing;
+  touch-action: none;
   background: var(--surface);
+  border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
-  border-radius: 8px;
-  opacity: 0.92;
+  transform: scale(1.01);
+  opacity: 0.96;
   position: relative;
   z-index: 5;
 }
+
+.route-cluster {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.route-cluster-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 11px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.route-cluster-items {
+  display: flex;
+  flex-direction: column;
+}
+.route-cluster-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.route-cluster-row:last-child { border-bottom: none; }
 
 /* Multi-toggle connected routing clusters on Today */
 .focus-clusters {
