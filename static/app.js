@@ -2016,6 +2016,10 @@ function renderRhythmsPanel() {
       aiPeaks.forEach((pk) => { aiPeakByHr[pk.hour] = pk; });
       const aiMaxP = tm.ai_hours ? Math.max(0.05, ...tm.ai_hours) : 1;
 
+      const scopeForHr = (hr) =>
+        Array.isArray(tm.ai_scopes) && tm.ai_scopes[hr] ? tm.ai_scopes[hr] : hr >= nowHour ? "today" : "tomorrow";
+      const scopeLabel = (sc) => (sc === "today" ? t("an_later_today") : t("tomorrow"));
+
       const markers = Array.from({ length: 24 }, (_, hr) => {
         const parts = [];
         if (state.showRhythmObs && obsTimeByHr[hr]) {
@@ -2023,8 +2027,9 @@ function renderRhythmsPanel() {
         }
         if (state.showRhythmAi && aiPeakByHr[hr]) {
           const pk = aiPeakByHr[hr];
+          const sc = pk.scope || scopeForHr(hr);
           const op = Math.max(0.24, Math.min(1, 0.16 + 0.92 * Number(pk.prob || 0.3))).toFixed(2);
-          parts.push(`<span class="dot-ai ${isMax ? "kind-max" : ""}" style="opacity:${op}" title="${esc(t("leg_ai_tom"))} ~${pk.time} (${pk.pct}%)"></span>`);
+          parts.push(`<span class="dot-ai ${isMax ? "kind-max" : ""}" style="opacity:${op}" title="${esc(scopeLabel(sc))} ~${pk.time} (${pk.pct}%)"></span>`);
         }
         return `<div class="marker-slot">${parts.join("")}</div>`;
       }).join("");
@@ -2038,7 +2043,7 @@ function renderRhythmsPanel() {
           const pTomorrow = tm.ai_hours ? tm.ai_hours[hr] || 0 : 0;
           const haloPct = state.showRhythmAi && tm.ai_hours && pTomorrow > 0.08 ? Math.min(100, Math.round((pTomorrow / aiMaxP) * 92)) : 0;
           const haloOp = Math.max(0.25, Math.min(1, 0.2 + pTomorrow)).toFixed(2);
-          const aiTip = tm.ai_hours ? ` · ${t("leg_ai_tom")}: ${Math.round(pTomorrow * 100)}%` : "";
+          const aiTip = tm.ai_hours ? ` · ${scopeLabel(scopeForHr(hr))}: ${Math.round(pTomorrow * 100)}%` : "";
           const nowCls = hr === nowHour ? "is-now-hr" : "";
           return `
             <div class="spark-col ${nowCls}" title="${String(hr).padStart(2, "0")}:00 → ${cnt}×${aiTip}">
@@ -2050,7 +2055,7 @@ function renderRhythmsPanel() {
 
       const metaParts = [];
       if (state.showRhythmObs && obsTimes.length) metaParts.push(`${t("an_obs_short")} ~${obsTimes.join(", ")}`);
-      if (state.showRhythmAi && aiPeaks.length) metaParts.push(`${t("leg_ai_tom")} ~${aiPeaks.map((p) => p.time).join(", ")}`);
+      if (state.showRhythmAi && aiPeaks.length) metaParts.push(`24h ~${aiPeaks.map((p) => p.time).join(", ")}`);
       const meta = metaParts.join(" · ") || "—";
 
       return `
