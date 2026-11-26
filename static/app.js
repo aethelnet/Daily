@@ -35,6 +35,8 @@ const state = {
   retroAmounts: {},
   moodRatings: {},
   moodCauses: new Set(),
+  logRange: null, // null = single day (state.day); or { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
+  logRangeData: null,
 };
 
 // ---- Cross-Device Auth, Server Base URL & Offline-First Queue ----
@@ -334,6 +336,9 @@ async function loadToday() {
     localStorage.setItem(`daily_today_cache_${state.day}`, JSON.stringify(data));
     syncNudgeModeUI(data.routing_mode || state.settings.nudge_mode || "observed");
     renderToday(data);
+    if (state.logRange) {
+      await loadLogRange(state.logRange.start, state.logRange.end);
+    }
   } catch (err) {
     const cached = localStorage.getItem(`daily_today_cache_${state.day}`);
     if (cached) {
@@ -680,69 +685,159 @@ function renderToday(data) {
   }
 
   // Day log (events + Momentaufnahmen interleaved chronologically!)
-  const snaps = data.snapshots || [];
-  const dimsById = {};
-  (data.state_dimensions || state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
-  const habitsById = {};
-  (data.habits || []).forEach((h) => { habitsById[h.id] = h; });
+  if (!state.logRange) {
+    renderLogTimeline({
+      events: data.events || [],
+      snapshots: data.snapshots || [],
+      state_dimensions: data.state_dimensions || state.stateDims || [],
+      habits: data.habits || [],
+      singleDay: data.day,
+    });
+  }
+}
 
-  const timeline = [
-    ...data.events.map((ev) => ({ kind: "event", at: ev.occurred_at, item: ev })),
-    ...snaps.map((sn) => ({ kind: "snap", at: sn.occurred_at, item: sn })),
-  ].sort((a, b) => b.at.localeCompare(a.at));
+function fmtShortDay(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return iso;
+  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return dt.toLocaleDateString(getLocale(), { day: "2-digit", month: "2-digit" });
+}
 
-  $("#log-count").textContent = `(${timeline.length})`;
-  const evList = $("#event-list");
-  if (!timeline.length) {
-    evList.innerHTML = `<div class="muted sm-text">${esc(t("no_events_for_day", { day: data.day }))}</div>`;
-  } else {
-    evList.innerHTML = timeline
-      .map((entry) => {
-        if (entry.kind === "snap") {
-          const sn = entry.item;
-          const hhmm = sn.occurred_at.slice(11, 16);
-          const ratingChips = Object.entries(sn.ratings || {})
-            .map(([did, val]) => {
-              const dname = dimsById[did] ? dimName(dimsById[did]) : dimName({ id: did, name: did });
-              return `<span class="chip ai-chip">${esc(dname)} ${fmtNum(val)}/5</span>`;
-            })
-            .join("");
-          const causeTxt = (sn.causes || [])
-            .map((cid) => (habitsById[cid] ? habitsById[cid].name : cid))
-            .join(", ");
-          const causeChip = causeTxt ? `<span class="chip">← ${esc(causeTxt)}</span>` : "";
-          return `
-          <div class="ev-row snap-row">
-            <span class="ev-dot" style="background:#7c3aed"></span>
-            <span class="mono muted sm-text">${hhmm}</span>
-            <strong>${esc(t("btn_mood"))}</strong>
-            <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
-            <span class="muted sm-text" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${renderNoteWithTags(sn.note || "")}</span>
-            <button class="btn ghost sm" data-snap-del="${sn.id}" title="${esc(t("del_title"))}">✕</button>
-          </div>`;
-        }
-        const ev = entry.item;
-        const timeLabel = formatEventTimeRange(ev);
-        const winMin = Number(ev.window_minutes || 0);
-        const srcTag =
-          ev.source === "retro"
-            ? `retro ${Math.round((winMin / 60) * 10) / 10}h`
-            : winMin > 0
-            ? formatDurationMin(winMin)
-            : ev.source;
-        const hasNote = !!(ev.note && ev.note.trim());
-        return `
-        <div class="ev-row">
-          <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
-          <span class="ev-time" data-ev-time="${ev.id}" data-cur="${esc(ev.occurred_at)}" data-cur-label="${esc(timeLabel)}" data-win="${winMin}" data-hid="${esc(ev.habit_id || "")}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
-          <strong>${esc(ev.habit_name)}</strong>
-          <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" data-cur-amt="${ev.amount}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
-          <span class="chip">${esc(srcTag)}</span>
-          <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" data-cur-note="${esc(ev.note || "")}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
-          <button class="btn ghost sm" data-ev-del="${ev.id}" title="${esc(t("del_title"))}">✕</button>
-        </div>`;
+function renderLogEntryHtml(entry, dimsById, habitsById) {
+  if (entry.kind === "snap") {
+    const sn = entry.item;
+    const hhmm = sn.occurred_at.slice(11, 16);
+    const ratingChips = Object.entries(sn.ratings || {})
+      .map(([did, val]) => {
+        const dname = dimsById[did] ? dimName(dimsById[did]) : dimName({ id: did, name: did });
+        return `<span class="chip ai-chip">${esc(dname)} ${fmtNum(val)}/5</span>`;
       })
       .join("");
+    const causeTxt = (sn.causes || [])
+      .map((cid) => (habitsById[cid] ? habitsById[cid].name : cid))
+      .join(", ");
+    const causeChip = causeTxt ? `<span class="chip">← ${esc(causeTxt)}</span>` : "";
+    return `
+    <div class="ev-row snap-row">
+      <span class="ev-dot" style="background:#7c3aed"></span>
+      <span class="mono muted sm-text">${hhmm}</span>
+      <strong>${esc(t("btn_mood"))}</strong>
+      <div class="row-inline" style="gap:4px;">${ratingChips}${causeChip}</div>
+      <span class="muted sm-text" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${renderNoteWithTags(sn.note || "")}</span>
+      <button class="btn ghost sm" data-snap-del="${sn.id}" title="${esc(t("del_title"))}">✕</button>
+    </div>`;
+  }
+  const ev = entry.item;
+  const timeLabel = formatEventTimeRange(ev);
+  const winMin = Number(ev.window_minutes || 0);
+  const srcTag =
+    ev.source === "retro"
+      ? `retro ${Math.round((winMin / 60) * 10) / 10}h`
+      : winMin > 0
+      ? formatDurationMin(winMin)
+      : ev.source;
+  const hasNote = !!(ev.note && ev.note.trim());
+  return `
+  <div class="ev-row">
+    <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
+    <span class="ev-time" data-ev-time="${ev.id}" data-cur="${esc(ev.occurred_at)}" data-cur-label="${esc(timeLabel)}" data-win="${winMin}" data-hid="${esc(ev.habit_id || "")}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
+    <strong>${esc(ev.habit_name)}</strong>
+    <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" data-cur-amt="${ev.amount}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
+    <span class="chip">${esc(srcTag)}</span>
+    <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" data-cur-note="${esc(ev.note || "")}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
+    <button class="btn ghost sm" data-ev-del="${ev.id}" title="${esc(t("del_title"))}">✕</button>
+  </div>`;
+}
+
+function renderLogTimeline({ events, snapshots, state_dimensions, habits, singleDay, rangeStart, rangeEnd }) {
+  const dimsById = {};
+  (state_dimensions || state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
+  const habitsById = {};
+  (habits || state.habits || []).forEach((h) => { habitsById[h.id] = h; });
+
+  const timeline = [
+    ...(events || []).map((ev) => ({ kind: "event", at: ev.occurred_at, day: String(ev.occurred_at || "").slice(0, 10), item: ev })),
+    ...(snapshots || []).map((sn) => ({ kind: "snap", at: sn.occurred_at, day: String(sn.occurred_at || "").slice(0, 10), item: sn })),
+  ].sort((a, b) => b.at.localeCompare(a.at));
+
+  const isMulti = !!(rangeStart && rangeEnd && rangeStart !== rangeEnd);
+  $("#log-count").textContent = isMulti
+    ? `(${timeline.length} · ${fmtShortDay(rangeStart)}–${fmtShortDay(rangeEnd)})`
+    : `(${timeline.length})`;
+
+  const resetBtn = $("#btn-log-reset");
+  if (resetBtn) resetBtn.classList.toggle("hidden", !state.logRange);
+  const toggleBtn = $("#btn-toggle-log-range");
+  if (toggleBtn) toggleBtn.classList.toggle("active", !!state.logRange);
+
+  const evList = $("#event-list");
+  if (!timeline.length) {
+    evList.innerHTML = isMulti
+      ? `<div class="muted sm-text">${esc(t("no_events_for_range", { start: rangeStart, end: rangeEnd }))}</div>`
+      : `<div class="muted sm-text">${esc(t("no_events_for_day", { day: singleDay || state.day }))}</div>`;
+    return;
+  }
+
+  if (!isMulti) {
+    evList.innerHTML = timeline.map((entry) => renderLogEntryHtml(entry, dimsById, habitsById)).join("");
+    return;
+  }
+
+  // Multi-day grouped view with crisp day dividers
+  const groups = new Map();
+  for (const entry of timeline) {
+    if (!groups.has(entry.day)) groups.set(entry.day, []);
+    groups.get(entry.day).push(entry);
+  }
+  const html = [];
+  for (const [dayIso, entries] of groups.entries()) {
+    html.push(
+      `<div class="log-day-divider"><span>${esc(formatDayHeadline(dayIso))}</span><span class="log-day-count">${entries.length}</span></div>`
+    );
+    for (const entry of entries) {
+      html.push(renderLogEntryHtml(entry, dimsById, habitsById));
+    }
+  }
+  evList.innerHTML = html.join("");
+}
+
+async function loadLogRange(startIso, endIso) {
+  const s = startIso <= endIso ? startIso : endIso;
+  const e = startIso <= endIso ? endIso : startIso;
+  state.logRange = { start: s, end: e };
+  const sInput = $("#log-range-start");
+  const eInput = $("#log-range-end");
+  if (sInput) sInput.value = s;
+  if (eInput) eInput.value = e;
+  try {
+    const res = await api(`/api/log?start=${encodeURIComponent(s)}&end=${encodeURIComponent(e)}`);
+    state.logRangeData = res;
+    renderLogTimeline({
+      events: res.events,
+      snapshots: res.snapshots,
+      state_dimensions: res.state_dimensions,
+      habits: res.habits,
+      rangeStart: res.start,
+      rangeEnd: res.end,
+    });
+  } catch (err) {
+    toast(t("err_prefix", { msg: err.message }));
+  }
+}
+
+function resetLogRange(reRender = true) {
+  state.logRange = null;
+  state.logRangeData = null;
+  const bar = $("#log-range-bar");
+  if (bar) bar.classList.add("hidden");
+  if (reRender && state.todayData) {
+    renderLogTimeline({
+      events: state.todayData.events || [],
+      snapshots: state.todayData.snapshots || [],
+      state_dimensions: state.todayData.state_dimensions || state.stateDims || [],
+      habits: state.todayData.habits || [],
+      singleDay: state.todayData.day,
+    });
   }
 }
 
@@ -1848,10 +1943,42 @@ async function loadAnalysis() {
 function bindEvents() {
   $$("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
 
-  $("#btn-prev-day").addEventListener("click", () => { state.day = shiftDate(state.day, -1); loadToday(); });
-  $("#btn-next-day").addEventListener("click", () => { state.day = shiftDate(state.day, +1); loadToday(); });
-  $("#btn-go-today").addEventListener("click", () => { state.day = localDateISO(new Date()); loadToday(); });
-  $("#day-picker").addEventListener("change", (e) => { if (e.target.value) { state.day = e.target.value; loadToday(); } });
+  $("#btn-prev-day").addEventListener("click", () => { state.day = shiftDate(state.day, -1); resetLogRange(false); loadToday(); });
+  $("#btn-next-day").addEventListener("click", () => { state.day = shiftDate(state.day, +1); resetLogRange(false); loadToday(); });
+  $("#btn-go-today").addEventListener("click", () => { state.day = localDateISO(new Date()); resetLogRange(false); loadToday(); });
+  $("#day-picker").addEventListener("change", (e) => { if (e.target.value) { state.day = e.target.value; resetLogRange(false); loadToday(); } });
+
+  // Multi-day log history & custom date-range jump
+  $("#btn-log-load-more").addEventListener("click", () => {
+    const curStart = state.logRange ? state.logRange.start : state.day;
+    const curEnd = state.logRange ? state.logRange.end : state.day;
+    loadLogRange(shiftDate(curStart, -3), curEnd);
+  });
+  $("#btn-log-reset").addEventListener("click", () => resetLogRange(true));
+  $("#btn-toggle-log-range").addEventListener("click", () => {
+    const bar = $("#log-range-bar");
+    const willShow = bar.classList.contains("hidden");
+    bar.classList.toggle("hidden", !willShow);
+    if (willShow) {
+      const endVal = state.logRange ? state.logRange.end : state.day;
+      const startVal = state.logRange ? state.logRange.start : shiftDate(endVal, -6);
+      $("#log-range-start").value = startVal;
+      $("#log-range-end").value = endVal;
+    }
+  });
+  $("#btn-apply-log-range").addEventListener("click", () => {
+    const s = $("#log-range-start").value;
+    const e = $("#log-range-end").value || state.day;
+    if (s && e) loadLogRange(s, e);
+  });
+  $("#log-range-bar").addEventListener("click", (e) => {
+    const pBtn = e.target.closest("[data-log-preset]");
+    if (!pBtn) return;
+    const days = Number(pBtn.dataset.logPreset) || 7;
+    const endVal = $("#log-range-end").value || (state.logRange ? state.logRange.end : state.day);
+    const startVal = shiftDate(endVal, -(days - 1));
+    loadLogRange(startVal, endVal);
+  });
 
   // Today filters & sort toggle
   $("#today-kind-pills").addEventListener("click", (e) => {
@@ -2012,7 +2139,8 @@ function bindEvents() {
               occurred_at: `${cur.slice(0, 10)}T${endHHMM}:00`,
               window_minutes: diffMin,
             };
-            const hab = state.habits.find((x) => x.id === timeEl.dataset.hid);
+            const allH = (state.logRangeData && state.logRangeData.habits) || state.habits;
+            const hab = allH.find((x) => x.id === timeEl.dataset.hid) || state.habits.find((x) => x.id === timeEl.dataset.hid);
             if (hab && hab.block_minutes) {
               patch.amount = Math.max(0.1, Math.round((diffMin / Number(hab.block_minutes)) * 10) / 10);
             }

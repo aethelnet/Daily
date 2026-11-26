@@ -117,9 +117,31 @@
       <div class="panel log-panel">
         <div class="panel-head">
           <h3><span data-i18n="day_log">Tages-Log</span> <span id="log-count" class="muted mono"></span></h3>
-          <span class="muted mono sm-text" data-i18n="day_log_hint">Klick auf Uhrzeit, Betrag oder Notiz zum Nachjustieren</span>
+          <div class="row-inline" style="gap:8px;">
+            <span class="muted mono sm-text log-hint-txt" data-i18n="day_log_hint">Klick auf Uhrzeit, Betrag oder Notiz zum Nachjustieren</span>
+            <button type="button" class="btn ghost sm" id="btn-toggle-log-range" data-i18n="btn_log_range">Zeitraum</button>
+          </div>
+        </div>
+        <div id="log-range-bar" class="log-range-bar hidden">
+          <div class="row-inline" style="gap:6px;flex-wrap:wrap;">
+            <span class="muted sm-text" data-i18n="log_from">Von</span>
+            <input type="date" id="log-range-start" class="compact-input" />
+            <span class="muted sm-text" data-i18n="log_to">Bis</span>
+            <input type="date" id="log-range-end" class="compact-input" />
+            <button type="button" class="btn primary sm" id="btn-apply-log-range" data-i18n="btn_show">Anzeigen</button>
+          </div>
+          <div class="row-inline" style="gap:4px;">
+            <button type="button" class="pill" data-log-preset="3" data-i18n="preset_3d">3T</button>
+            <button type="button" class="pill" data-log-preset="7" data-i18n="preset_7d">7T</button>
+            <button type="button" class="pill" data-log-preset="14" data-i18n="preset_14d">14T</button>
+            <button type="button" class="pill" data-log-preset="30" data-i18n="preset_30d">30T</button>
+          </div>
         </div>
         <div id="event-list" class="event-list"></div>
+        <div class="log-footer">
+          <button type="button" class="btn ghost sm" id="btn-log-load-more" data-i18n="btn_log_older">+ 3 Tage davor</button>
+          <button type="button" class="btn ghost sm hidden" id="btn-log-reset" data-i18n="btn_log_only_day">Nur diesen Tag</button>
+        </div>
       </div>
     </section>
 
