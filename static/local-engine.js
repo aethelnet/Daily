@@ -1358,46 +1358,144 @@
         saveDB(db);
         return { active: false, logged: false, habit: h };
       }
-      let elapsedMin = 0;
+      const blockM = Math.max(1, Number(h.block_minutes || 30));
+      const fmtLocalIso = (msVal) => {
+        const dt = new Date(msVal);
+        const p2 = (n) => String(n).padStart(2, "0");
+        return `${dt.getFullYear()}-${p2(dt.getMonth() + 1)}-${p2(dt.getDate())}T${p2(dt.getHours())}:${p2(dt.getMinutes())}:${p2(dt.getSeconds())}`;
+      };
       if (body.override_minutes != null) {
-        elapsedMin = Number(body.override_minutes);
+        const elapsedMin = Number(body.override_minutes);
         if (!Number.isFinite(elapsedMin) || elapsedMin < 1) {
           saveDB(db);
           return { active: false, logged: false, too_short: true, elapsed_minutes: 0, habit: h };
         }
-      } else {
-        const ms = new Date(nowStr).getTime() - new Date(prevSince).getTime();
-        if (Number.isFinite(ms)) {
-          const rawMin = ms / 60000;
-          if (rawMin < 1) {
-            saveDB(db);
-            return { active: false, logged: false, too_short: true, elapsed_minutes: 0, habit: h };
-          }
-          elapsedMin = rawMin;
-        } else {
-          elapsedMin = Number(h.block_minutes || 30);
-        }
+        const amount = Math.max(0.1, Math.round((elapsedMin / blockM) * 10) / 10);
+        const winMin = Math.max(1, Math.round(elapsedMin));
+        const ts = nowIso();
+        const ev = {
+          id: db.next_id++,
+          habit_id: hid,
+          amount,
+          occurred_at: nowStr,
+          window_minutes: winMin,
+          source: "tap",
+          note: "",
+          client_uuid: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          created_at: ts,
+          updated_at: ts,
+          deleted_at: null,
+        };
+        db.events.push(ev);
+        saveDB(db);
+        return { active: false, logged: true, elapsed_minutes: winMin, trimmed_minutes: 0, amount, event: ev, habit: h };
       }
-      const blockM = Math.max(1, Number(h.block_minutes || 30));
-      const amount = Math.max(0.1, Math.round((elapsedMin / blockM) * 10) / 10);
-      const winMin = Math.max(1, Math.round(elapsedMin));
+
+      const startMs = new Date(prevSince).getTime();
+      const endMs = new Date(nowStr).getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+        const elapsedMin = Number(h.block_minutes || 30);
+        const amount = Math.max(0.1, Math.round((elapsedMin / blockM) * 10) / 10);
+        const winMin = Math.max(1, Math.round(elapsedMin));
+        const ts = nowIso();
+        const ev = {
+          id: db.next_id++,
+          habit_id: hid,
+          amount,
+          occurred_at: nowStr,
+          window_minutes: winMin,
+          source: "tap",
+          note: "",
+          client_uuid: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          created_at: ts,
+          updated_at: ts,
+          deleted_at: null,
+        };
+        db.events.push(ev);
+        saveDB(db);
+        return { active: false, logged: true, elapsed_minutes: winMin, trimmed_minutes: 0, amount, event: ev, habit: h };
+      }
+      const rawMin = (endMs - startMs) / 60000;
+      if (rawMin < 1) {
+        saveDB(db);
+        return { active: false, logged: false, too_short: true, elapsed_minutes: 0, habit: h };
+      }
+
+      // Subtract overlapping timed intervals of the SAME habit (prevent double-counting future Von-Bis blocks!)
+      let segs = [[startMs, endMs]];
+      for (const ex of db.events || []) {
+        if (ex.deleted_at || ex.habit_id !== hid || ex.source === "retro") continue;
+        const ew = Number(ex.window_minutes || 0);
+        if (ew <= 0) continue;
+        const exEnd = new Date(String(ex.occurred_at || "").slice(0, 19)).getTime();
+        if (!Number.isFinite(exEnd)) continue;
+        const exStart = exEnd - ew * 60000;
+        if (exEnd <= startMs || exStart >= endMs) continue;
+        const nxt = [];
+        for (const [s, e] of segs) {
+          if (exEnd <= s || exStart >= e) {
+            nxt.push([s, e]);
+          } else {
+            if (exStart > s) nxt.push([s, exStart]);
+            if (exEnd < e) nxt.push([exEnd, e]);
+          }
+        }
+        segs = nxt;
+        if (!segs.length) break;
+      }
+
+      const uncovered = segs.filter(([s, e]) => e - s >= 60000);
+      if (!uncovered.length) {
+        saveDB(db);
+        return {
+          active: false,
+          logged: false,
+          already_covered: true,
+          elapsed_minutes: 0,
+          trimmed_minutes: Math.max(1, Math.round(rawMin)),
+          habit: h,
+        };
+      }
+
+      const uncoveredMin = uncovered.reduce((acc, [s, e]) => acc + (e - s) / 60000, 0);
+      const trimmedMin = Math.max(0, Math.round(rawMin - uncoveredMin));
       const ts = nowIso();
-      const ev = {
-        id: db.next_id++,
-        habit_id: hid,
-        amount,
-        occurred_at: nowStr,
-        window_minutes: winMin,
-        source: "tap",
-        note: "",
-        client_uuid: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        created_at: ts,
-        updated_at: ts,
-        deleted_at: null,
-      };
-      db.events.push(ev);
+      const created = [];
+      let totalAmt = 0;
+      let totalWin = 0;
+      for (const [s, e] of uncovered) {
+        const segMin = (e - s) / 60000;
+        const segAmt = Math.max(0.1, Math.round((segMin / blockM) * 10) / 10);
+        const segWin = Math.max(1, Math.round(segMin));
+        const ev = {
+          id: db.next_id++,
+          habit_id: hid,
+          amount: segAmt,
+          occurred_at: fmtLocalIso(e),
+          window_minutes: segWin,
+          source: "tap",
+          note: "",
+          client_uuid: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          created_at: ts,
+          updated_at: ts,
+          deleted_at: null,
+        };
+        db.events.push(ev);
+        created.push(ev);
+        totalAmt = Math.round((totalAmt + segAmt) * 100) / 100;
+        totalWin += segWin;
+      }
       saveDB(db);
-      return { active: false, logged: true, elapsed_minutes: winMin, amount, event: ev, habit: h };
+      return {
+        active: false,
+        logged: true,
+        elapsed_minutes: totalWin,
+        trimmed_minutes: trimmedMin,
+        amount: totalAmt,
+        event: created[created.length - 1],
+        events: created,
+        habit: h,
+      };
     }
     const mHab = path.match(/^\/api\/habits\/([^/]+)$/);
     if (mHab && method === "PATCH") {
