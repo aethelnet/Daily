@@ -682,6 +682,14 @@ class TestDailyCore(unittest.TestCase):
         )
         self.assertEqual(ai["status"], "ready")
         self.assertTrue(any(c["id"] == "stimmung" and c["rated_count"] == 6 for c in ai["state_curves"]))
+        audit = ai["feature_audit"]
+        self.assertEqual([t["tag"] for t in audit["active_tags"]], ["flow"])
+        self.assertEqual([t["tag"] for t in audit["pending_tags"]], ["rareonce"])
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+        hab_resp = client.get("/api/habits").json()
+        self.assertTrue(any(t["tag"] == "flow" and t["ai_active"] for t in hab_resp["tags"]))
+        self.assertTrue(any(t["tag"] == "rareonce" and not t["ai_active"] for t in hab_resp["tags"]))
 
     def test_active_session_toggle_half_block_rounding_and_e2ee_sync(self) -> None:
         from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db

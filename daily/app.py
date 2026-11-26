@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from .analytics import compute_analysis_board, compute_day_summary, export_tabpfn_features_csv
+from .analytics import compute_analysis_board, compute_day_summary, compute_note_tag_stats, export_tabpfn_features_csv
 from .db import (
     DEFAULT_DB_PATH,
     create_habit,
@@ -309,6 +309,10 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
             "habits": list_habits(include_archived=include_archived, db_path=resolved_db),
             "edges": list_edges(db_path=resolved_db),
             "settings": get_settings(db_path=resolved_db),
+            "tags": compute_note_tag_stats(
+                list_events(db_path=resolved_db),
+                list_snapshots(db_path=resolved_db),
+            ),
         }
 
     @app.post("/api/habits")
@@ -637,6 +641,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
             ],
             "state_curves": insights.get("state_curves", []),
             "live_nudges": {k: v for k, v in ai_nudges["predictions"].items() if k in active_ids},
+            "feature_audit": insights.get("feature_audit"),
         }
         return board
 

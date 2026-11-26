@@ -18,6 +18,27 @@ def extract_note_tags(note: str | None) -> set[str]:
         return set()
     return {m.group(1).lower() for m in _NOTE_TAG_RE.finditer(note)}
 
+
+def compute_note_tag_stats(
+    events: list[dict[str, Any]],
+    snapshots: list[dict[str, Any]] | None = None,
+    limit: int = 24,
+) -> list[dict[str, Any]]:
+    """Count distinct local days per #tag across live events and snapshots (ai_active >= 2 days)."""
+    by_day: dict[str, set[str]] = defaultdict(set)
+    for obj in (*events, *(snapshots or [])):
+        if obj.get("deleted_at") or not obj.get("note"):
+            continue
+        tags = extract_note_tags(obj.get("note"))
+        if not tags:
+            continue
+        day_iso = str(obj.get("occurred_at") or "")[:10]
+        if len(day_iso) == 10:
+            by_day[day_iso].update(tags)
+    counts = Counter(t for tags in by_day.values() for t in tags)
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    return [{"tag": t, "days": int(c), "ai_active": c >= 2} for t, c in ordered]
+
 from .db import (
     DEFAULT_DB_PATH,
     get_last_used_map,

@@ -411,6 +411,15 @@ def compute_ai_insights(
             "calibration": [],
             "overall_mae": None,
             "assumptions": [],
+            "feature_audit": {
+                "habits_count": len(habits),
+                "state_dims_count": len(dim_ids),
+                "observed_days": n_days,
+                "events_count": len(events),
+                "snapshots_count": len(snapshots),
+                "active_tags": [],
+                "pending_tags": [],
+            },
         }
 
     today_d = date.today()
@@ -448,6 +457,19 @@ def compute_ai_insights(
                 pass
     tag_counts = Counter(t for tags in by_day_tags.values() for t in tags)
     active_tags = [t for t, c in tag_counts.most_common(16) if c >= 2]
+    all_tag_stats = [
+        {"tag": t, "days": int(c), "ai_active": t in active_tags}
+        for t, c in sorted(tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:24]
+    ]
+    feature_audit = {
+        "habits_count": len(habit_ids),
+        "state_dims_count": len(dim_ids),
+        "observed_days": n_days,
+        "events_count": len(events),
+        "snapshots_count": len(snapshots),
+        "active_tags": [x for x in all_tag_stats if x["ai_active"]],
+        "pending_tags": [x for x in all_tag_stats if not x["ai_active"]],
+    }
 
     windows_list = ("morning", "afternoon", "evening", "night")
     day_feats: list[dict[str, float]] = []
@@ -1111,6 +1133,7 @@ def compute_ai_insights(
         "overall_mae": overall_mae,
         "assumptions": final_assumptions,
         "state_curves": state_curves,
+        "feature_audit": feature_audit,
     }
     if len(_ANALYSIS_CACHE) > 24:
         _ANALYSIS_CACHE.clear()

@@ -539,6 +539,14 @@
           </div>
         </div>
       </div>
+
+      <details class="panel ai-audit-panel" id="ai-audit-details">
+        <summary class="ai-audit-summary">
+          <span data-i18n="an_audit_title">Was die KI gerade sieht</span>
+          <span id="ai-audit-summary-meta" class="muted mono sm-text"></span>
+        </summary>
+        <div id="ai-audit-body" class="ai-audit-body"></div>
+      </details>
     </section>
   </main>
 
@@ -568,7 +576,8 @@
         <button type="submit" class="btn ghost sm" data-i18n="btn_add_inline">+ Hinzufügen</button>
       </form>
 
-      <input type="text" id="retro-note" data-i18n-placeholder="retro_note_ph" placeholder="Optionale Notiz für diesen Block..." style="margin-top:10px;width:100%;" />
+      <input type="text" id="retro-note" data-i18n-placeholder="retro_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) lernt die KI mit..." style="margin-top:10px;width:100%;" />
+      <div id="retro-tag-chips" class="tag-suggest-row hidden"></div>
 
       <div class="row-end" style="margin-top:14px;">
         <span id="retro-summary" class="muted mono sm-text" style="margin-right:auto;"></span>
@@ -613,8 +622,9 @@
 
       <div class="row-inline" style="margin-top:12px;">
         <input type="time" id="mood-time" class="time-input mono" />
-        <input type="text" id="mood-note" data-i18n-placeholder="mood_note_ph" placeholder="Kurze Notiz (optional)..." style="flex:1;min-width:160px;" />
+        <input type="text" id="mood-note" data-i18n-placeholder="mood_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) lernt die KI mit..." style="flex:1;min-width:160px;" />
       </div>
+      <div id="mood-tag-chips" class="tag-suggest-row hidden"></div>
 
       <div class="row-end" style="margin-top:14px;">
         <button type="button" class="btn ghost" id="btn-cancel-mood" data-i18n="btn_cancel">Abbrechen</button>
@@ -650,8 +660,9 @@
         </div>
         <label class="field">
           <span data-i18n="cl_note">Notiz (optional)</span>
-          <input type="text" id="cl-note" data-i18n-placeholder="cl_note_ph" placeholder="Kontext, Projekt, Gefühl..." />
+          <input type="text" id="cl-note" data-i18n-placeholder="cl_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) lernt die KI mit..." />
         </label>
+        <div id="cl-tag-chips" class="tag-suggest-row hidden"></div>
         <div class="row-end">
           <button type="button" class="btn ghost" id="btn-cancel-cl" data-i18n="btn_cancel">Abbrechen</button>
           <button type="submit" class="btn primary" data-i18n="btn_log">Eintragen</button>
