@@ -640,6 +640,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
                 if a["source_id"] in active_ids and (a["target_id"] in active_ids or a.get("is_state_target"))
             ],
             "state_curves": insights.get("state_curves", []),
+            "timeline_meta": insights.get("timeline_meta"),
             "live_nudges": {k: v for k, v in ai_nudges["predictions"].items() if k in active_ids},
             "feature_audit": insights.get("feature_audit"),
         }

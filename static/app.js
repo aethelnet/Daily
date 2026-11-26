@@ -29,6 +29,9 @@ const state = {
   toggledFocus: [],
   selectedStateCurveId: null,
   lastStateCurves: [],
+  lastTimelineMeta: null,
+  selectedChartTag: null,
+  chartView: null, // continuous pan/zoom viewport { startHr, endHr } relative to today 00:00
   stateZoom: localStorage.getItem("daily_state_zoom") || "d14",
   showTabpfnLine: localStorage.getItem("daily_show_tabpfn") !== "0",
   showOdeLine: localStorage.getItem("daily_show_ode") !== "0",
@@ -1502,15 +1505,73 @@ function buildSmoothCurvePath(pts) {
   return d;
 }
 
-function renderStateCurveSection(curves) {
+const CHART_MIN_SPAN_HR = 6;
+const CHART_MAX_SPAN_HR = 64 * 24;
+const CHART_MIN_HR = -60 * 24;
+const CHART_MAX_HR = 8 * 24;
+
+function getPresetChartView(zoom, nowHr = 12) {
+  if (zoom === "h24") return { startHr: -2, endHr: 28 };
+  if (zoom === "w8") return { startHr: -54 * 24, endHr: 24 + 96 };
+  return { startHr: -13 * 24, endHr: Math.max(24 + 48, nowHr + 48) };
+}
+
+function clampChartView(startHr, endHr) {
+  let span = Math.max(CHART_MIN_SPAN_HR, Math.min(CHART_MAX_SPAN_HR, endHr - startHr));
+  let s = startHr;
+  let e = s + span;
+  if (s < CHART_MIN_HR) {
+    s = CHART_MIN_HR;
+    e = Math.min(CHART_MAX_HR, s + span);
+  }
+  if (e > CHART_MAX_HR) {
+    e = CHART_MAX_HR;
+    s = Math.max(CHART_MIN_HR, e - span);
+  }
+  return { startHr: s, endHr: e };
+}
+
+function syncChartPresetButtons() {
+  const v = state.chartView;
+  const span = v ? v.endHr - v.startHr : 14 * 24;
+  const activeKey = span <= 42 ? "h24" : span <= 26 * 24 ? "d14" : "w8";
+  $$("#state-zoom-switch [data-szoom]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.szoom === activeKey);
+  });
+  const nowBtn = $("#btn-chart-now");
+  if (nowBtn && v) {
+    const meta = state.lastTimelineMeta || {};
+    const nowHr = meta.now_hr != null ? Number(meta.now_hr) : 12;
+    const isNowCentered = nowHr >= v.startHr + span * 0.1 && nowHr <= v.endHr - span * 0.04;
+    nowBtn.classList.toggle("hidden", isNowCentered);
+  }
+}
+
+function renderStateCurveSection(curves, timelineMeta) {
   state.lastStateCurves = curves || [];
+  if (timelineMeta !== undefined) state.lastTimelineMeta = timelineMeta;
   syncStateZoomUI();
+  const meta = state.lastTimelineMeta || {};
   const pillsEl = $("#state-axis-pills");
+  const tagPillsEl = $("#state-tag-pills");
   const chartEl = $("#state-curve-chart");
   if (!pillsEl || !chartEl) return;
 
+  const nowDt = new Date();
+  const originStr = meta.origin_day || localDateISO(nowDt);
+  const [oy, om, od] = originStr.split("-").map(Number);
+  const originMs = new Date(oy, om - 1, od, 0, 0, 0).getTime();
+  const nowHr = meta.now_hr != null ? Number(meta.now_hr) : nowDt.getHours() + nowDt.getMinutes() / 60;
+
+  if (!state.chartView) {
+    const p = getPresetChartView(state.stateZoom, nowHr);
+    state.chartView = clampChartView(p.startHr, p.endHr);
+  }
+  syncChartPresetButtons();
+
   if (!curves || !curves.length) {
     pillsEl.innerHTML = "";
+    if (tagPillsEl) tagPillsEl.classList.add("hidden");
     chartEl.innerHTML = `<div class="muted sm-text">${esc(t("an_no_axes"))}</div>`;
     return;
   }
@@ -1527,22 +1588,53 @@ function renderStateCurveSection(curves) {
     )
     .join("");
 
+  // Optional #tag overlay pills on the timeline (zero noise when unused!)
+  const tagDaysMap = meta.tag_days || {};
+  const tagNames = Object.keys(tagDaysMap).sort((a, b) => (tagDaysMap[b].length - tagDaysMap[a].length) || a.localeCompare(b));
+  if (state.selectedChartTag && !tagDaysMap[state.selectedChartTag]) state.selectedChartTag = null;
+  if (tagPillsEl) {
+    if (tagNames.length) {
+      tagPillsEl.classList.remove("hidden");
+      tagPillsEl.innerHTML =
+        `<span class="muted sm-text" style="font-size:11px;">${esc(t("an_chart_tags_lbl"))}</span>` +
+        tagNames
+          .slice(0, 12)
+          .map(
+            (tg) =>
+              `<button type="button" class="tag-suggest-chip ${state.selectedChartTag === tg ? "selected" : ""}" data-chart-tag="${esc(tg)}" title="${esc(t("an_chart_tag_tip", { tag: tg }))}">#${esc(tg)} <span class="tag-days">${tagDaysMap[tg].length}${esc(t("day_short"))}</span></button>`
+          )
+          .join("");
+    } else {
+      tagPillsEl.classList.add("hidden");
+      tagPillsEl.innerHTML = "";
+    }
+  }
+
   const cur = curves.find((c) => c.id === state.selectedStateCurveId) || curves[0];
   if (!cur.rated_count) {
     chartEl.innerHTML = `<div class="muted sm-text">${t("an_first_snap_html", { name: esc(dimName(cur)) })}</div>`;
     return;
   }
 
-  const zoom = ["h24", "d14", "w8"].includes(state.stateZoom) ? state.stateZoom : "d14";
   const W = 680;
-  const H = 144;
+  const H = 152;
   const padL = 26;
-  const padR = 24;
+  const padR = 20;
   const padT = 14;
   const padB = 26;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
+  const vStart = state.chartView.startHr;
+  const vEnd = state.chartView.endHr;
+  const span = Math.max(1, vEnd - vStart);
+  const xOf = (hr) => padL + ((hr - vStart) / span) * plotW;
   const yOf = (v) => padT + ((5 - Math.max(1, Math.min(5, v))) / 4) * plotH;
+
+  const fmtRelTime = (hr) => {
+    const dt = new Date(originMs + hr * 3600000);
+    const p2 = (n) => String(n).padStart(2, "0");
+    return `${dt.toLocaleDateString(getLocale(), { weekday: "short", day: "2-digit", month: "2-digit" })} ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
+  };
 
   // Horizontal 1..5 guide hairlines
   const guides = [1, 2, 3, 4, 5]
@@ -1553,209 +1645,224 @@ function renderStateCurveSection(curves) {
     })
     .join("");
 
+  // Past/Future background boundary & optional #tag day highlights
   let bgLayer = "";
-  let areaLayer = "";
-  let odeLayer = "";
-  let tabpfnLayer = "";
+  const nowX = xOf(nowHr);
+  if (nowHr < vEnd) {
+    const futX = Math.max(padL, nowX);
+    bgLayer += `<rect x="${futX.toFixed(1)}" y="${padT}" width="${Math.max(0, W - padR - futX).toFixed(1)}" height="${plotH}" fill="var(--ai-soft)" opacity="0.28" />`;
+  }
+  if (nowHr >= vStart && nowHr <= vEnd) {
+    bgLayer += `<line x1="${nowX.toFixed(1)}" y1="${padT}" x2="${nowX.toFixed(1)}" y2="${padT + plotH}" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="2 3" opacity="0.7" />`;
+    bgLayer += `<text x="${Math.min(W - padR - 14, Math.max(padL + 14, nowX)).toFixed(1)}" y="${padT - 3}" text-anchor="middle" fill="var(--accent)" font-size="9" font-weight="600" font-family="var(--mono)">${esc(t("btn_chart_now"))}</text>`;
+  }
+
+  if (state.selectedChartTag && tagDaysMap[state.selectedChartTag]) {
+    for (const dIso of tagDaysMap[state.selectedChartTag]) {
+      const [dy, dm, dd] = dIso.split("-").map(Number);
+      const dStartHr = (new Date(dy, dm - 1, dd, 0, 0, 0).getTime() - originMs) / 3600000;
+      const dEndHr = dStartHr + 24;
+      if (dEndHr < vStart || dStartHr > vEnd) continue;
+      const x1 = Math.max(padL, xOf(dStartHr));
+      const x2 = Math.min(W - padR, xOf(dEndHr));
+      const bw = Math.max(4, x2 - x1);
+      bgLayer += `<rect x="${x1.toFixed(1)}" y="${padT}" width="${bw.toFixed(1)}" height="${plotH}" fill="var(--ai)" opacity="0.13" rx="2"><title>#${esc(state.selectedChartTag)} · ${esc(dIso)}</title></rect>`;
+      bgLayer += `<circle cx="${((x1 + x2) / 2).toFixed(1)}" cy="${(padT + 4).toFixed(1)}" r="2.5" fill="var(--ai)" opacity="0.85"><title>#${esc(state.selectedChartTag)} · ${esc(dIso)}</title></circle>`;
+    }
+  }
+
+  // Helper to render continuous past line + fading future line & expanding confidence ribbon
+  const tl = cur.timeline || { actual: [], ode: [], tabpfn: [] };
+  let defsExtra = "";
+  let bandLayer = "";
+  let curveLayer = "";
+  let futureHoverLayer = "";
+
+  const drawContinuousSeries = (rawPts, opts) => {
+    if (!rawPts || rawPts.length < 2) return;
+    let firstIdx = rawPts.findIndex((p) => p[0] >= vStart);
+    if (firstIdx < 0) firstIdx = rawPts.length - 1;
+    firstIdx = Math.max(0, firstIdx - 1);
+    let lastIdx = rawPts.length - 1;
+    for (let i = firstIdx; i < rawPts.length; i++) {
+      if (rawPts[i][0] > vEnd) {
+        lastIdx = i;
+        break;
+      }
+    }
+    const vis = rawPts.slice(firstIdx, lastIdx + 1);
+    if (vis.length < 2) return;
+
+    const pastPts = [];
+    const futPts = [];
+    for (let i = 0; i < vis.length; i++) {
+      const p = vis[i];
+      if (p[0] <= nowHr) {
+        pastPts.push(p);
+      } else {
+        if (!futPts.length && pastPts.length) {
+          const prev = pastPts[pastPts.length - 1];
+          const dt = p[0] - prev[0];
+          const frac = dt > 1e-6 ? Math.max(0, Math.min(1, (nowHr - prev[0]) / dt)) : 0;
+          const vMid = prev[1] + (p[1] - prev[1]) * frac;
+          const anchor = [nowHr, vMid, 1.0, 0.0];
+          pastPts.push(anchor);
+          futPts.push(anchor);
+        }
+        futPts.push(p);
+      }
+    }
+
+    if (pastPts.length >= 2) {
+      const xy = pastPts.map((p) => ({ x: xOf(p[0]), y: yOf(p[1]) }));
+      const dStr = buildSmoothCurvePath(xy);
+      if (dStr) {
+        if (opts.pastFill) {
+          bandLayer += `<path d="${dStr} L ${xy[xy.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${xy[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z" fill="${opts.pastFill}" />`;
+        }
+        curveLayer += `<path d="${dStr}" fill="none" stroke="${opts.stroke}" stroke-width="${opts.width}" ${opts.dash ? `stroke-dasharray="${opts.dash}"` : ""} stroke-linecap="round" opacity="${opts.pastOpacity}" />`;
+      }
+    }
+
+    if (futPts.length >= 2) {
+      const gId = `fut-grad-${opts.id}`;
+      const x0 = Math.max(padL, xOf(futPts[0][0]));
+      const x1 = Math.min(W - padR, xOf(futPts[futPts.length - 1][0]));
+      const cStart = futPts[0][2] ?? 1;
+      const cEnd = futPts[futPts.length - 1][2] ?? 0.1;
+      defsExtra += `<linearGradient id="${gId}" gradientUnits="userSpaceOnUse" x1="${x0.toFixed(1)}" y1="0" x2="${Math.max(x0 + 1, x1).toFixed(1)}" y2="0">
+        <stop offset="0%" stop-color="${opts.stroke}" stop-opacity="${(0.18 * cStart).toFixed(2)}" />
+        <stop offset="100%" stop-color="${opts.stroke}" stop-opacity="${Math.max(0.02, 0.16 * cEnd).toFixed(2)}" />
+      </linearGradient>`;
+
+      const upper = futPts.map((p) => `${xOf(p[0]).toFixed(1)},${yOf(p[1] + (p[3] || 0)).toFixed(1)}`);
+      const lower = [...futPts].reverse().map((p) => `${xOf(p[0]).toFixed(1)},${yOf(p[1] - (p[3] || 0)).toFixed(1)}`);
+      bandLayer += `<polygon points="${upper.concat(lower).join(" ")}" fill="url(#${gId})" />`;
+
+      for (let i = 0; i < futPts.length - 1; i++) {
+        const a = futPts[i];
+        const b = futPts[i + 1];
+        const avgConf = ((a[2] ?? 0.5) + (b[2] ?? 0.5)) / 2;
+        const segOp = Math.max(0.1, Math.min(0.95, 0.08 + 0.88 * avgConf));
+        curveLayer += `<line x1="${xOf(a[0]).toFixed(1)}" y1="${yOf(a[1]).toFixed(1)}" x2="${xOf(b[0]).toFixed(1)}" y2="${yOf(b[1]).toFixed(1)}" stroke="${opts.stroke}" stroke-width="${opts.width}" ${opts.dash ? `stroke-dasharray="${opts.dash}"` : ""} stroke-linecap="round" stroke-opacity="${segOp.toFixed(2)}" />`;
+      }
+
+      const step = Math.max(1, Math.floor(futPts.length / 10));
+      for (let i = 1; i < futPts.length; i += step) {
+        const p = futPts[i];
+        if (p[0] < vStart || p[0] > vEnd) continue;
+        const pct = Math.round((p[2] ?? 0.2) * 100);
+        const tip = `${fmtRelTime(p[0])} · ${opts.label} ${fmtNum(p[1])}/5 · ${t("an_conf_lbl", { pct })}`;
+        futureHoverLayer += `<circle cx="${xOf(p[0]).toFixed(1)}" cy="${yOf(p[1]).toFixed(1)}" r="6" fill="transparent"><title>${esc(tip)}</title></circle>`;
+      }
+    }
+  };
+
+  if (state.showOdeLine) {
+    drawContinuousSeries(tl.ode, {
+      id: "ode",
+      label: "ODE",
+      stroke: "#0d9488",
+      width: 2.1,
+      dash: "",
+      pastOpacity: 0.95,
+      pastFill: "rgba(13, 148, 136, 0.08)",
+    });
+  }
+  if (state.showTabpfnLine) {
+    drawContinuousSeries(tl.tabpfn, {
+      id: "tabpfn",
+      label: "TabPFN",
+      stroke: "var(--ai)",
+      width: 1.9,
+      dash: "5 4",
+      pastOpacity: 0.9,
+      pastFill: "",
+    });
+  }
+
   let ticksLayer = "";
-  let dotsLayer = "";
-  let markersLayer = "";
-  let xLabels = "";
-  let rightSummary = "";
-  const tauLabel = cur.ode_tau_hours ? `ODE τ=${fmtNum(cur.ode_tau_hours)}h` : "";
-
-  if (zoom === "h24") {
-    const sc = cur.h24 || { hours: [], actual: [], tabpfn: [], ode: [], habit_ticks: [] };
-    const xOfHr = (hr) => padL + (Math.max(0, Math.min(24, hr)) / 24) * plotW;
-
-    // Subtle "Jetzt" vertical line
-    const nowDt = new Date();
-    const nowHr = nowDt.getHours() + nowDt.getMinutes() / 60;
-    const nowX = xOfHr(nowHr).toFixed(1);
-    bgLayer = `<line x1="${nowX}" y1="${padT}" x2="${nowX}" y2="${padT + plotH}" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2 3" opacity="0.65" />`;
-
-    if (state.showOdeLine && sc.ode && sc.ode.length >= 2) {
-      const odePts = sc.ode
-        .map((v, i) => (v != null && sc.hours[i] != null ? { x: xOfHr(sc.hours[i]), y: yOf(v) } : null))
-        .filter(Boolean);
-      const dStr = buildSmoothCurvePath(odePts);
-      if (dStr) {
-        areaLayer += `<path d="${dStr} L ${odePts[odePts.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${odePts[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z" fill="rgba(13, 148, 136, 0.09)" />`;
-        odeLayer = `<path d="${dStr}" fill="none" stroke="#0d9488" stroke-width="2.2" stroke-linecap="round" />`;
-      }
-    }
-
-    if (state.showTabpfnLine && sc.tabpfn && sc.tabpfn.length >= 2) {
-      const tpPts = sc.tabpfn
-        .map((v, i) => (v != null && sc.hours[i] != null ? { x: xOfHr(sc.hours[i]), y: yOf(v) } : null))
-        .filter(Boolean);
-      const dStr = buildSmoothCurvePath(tpPts);
-      if (dStr) {
-        tabpfnLayer = `<path d="${dStr}" fill="none" stroke="var(--ai)" stroke-width="1.8" stroke-dasharray="5 4" stroke-linecap="round" opacity="0.9" />`;
-      }
-    }
-
-    // Tiny colored Habit impulse ticks along bottom X-axis
-    const ticks = sc.habit_ticks || [];
-    ticksLayer = ticks
+  const allTicks = meta.habit_ticks || [];
+  let visibleTicksCount = 0;
+  if (span <= 120) {
+    const visTicks = allTicks.filter((tk) => tk.t >= vStart && tk.t <= vEnd);
+    visibleTicksCount = visTicks.length;
+    ticksLayer = visTicks
       .map((tk) => {
-        const tx = xOfHr(tk.hour).toFixed(1);
+        const tx = xOf(tk.t).toFixed(1);
         const yBot = (padT + plotH).toFixed(1);
         const yTop = (padT + plotH - 9).toFixed(1);
-        const tip = `${tk.time} · ${tk.habit_name} (+${fmtNum(tk.amount)})`;
+        const tip = `${tk.ts.slice(11, 16)} (${tk.ts.slice(8, 10)}.${tk.ts.slice(5, 7)}.) · ${tk.habit_name} (+${fmtNum(tk.amount)})`;
         return `<g>
-          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot}" stroke="${esc(tk.color)}" stroke-width="2.4" stroke-linecap="round" />
-          <circle cx="${tx}" cy="${yTop}" r="2.2" fill="${esc(tk.color)}"><title>${esc(tip)}</title></circle>
+          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot}" stroke="${esc(tk.color)}" stroke-width="2.2" stroke-linecap="round" />
+          <circle cx="${tx}" cy="${yTop}" r="2.1" fill="${esc(tk.color)}"><title>${esc(tip)}</title></circle>
         </g>`;
       })
       .join("");
-
-    // Exact today Momentaufnahme dots
-    const actPts = sc.actual || [];
-    dotsLayer = actPts
-      .map((pt) => {
-        const cx = xOfHr(pt.hour).toFixed(1);
-        const cy = yOf(pt.value).toFixed(1);
-        const tip = `${t("today")} ${pt.time}: ${fmtNum(pt.value)}/5${pt.note ? ` · ${pt.note}` : ""}`;
-        return `<circle cx="${cx}" cy="${cy}" r="4.5" fill="var(--text)" stroke="var(--surface)" stroke-width="2"><title>${esc(tip)}</title></circle>`;
-      })
-      .join("");
-
-    xLabels = [0, 4, 8, 12, 16, 20, 24]
-      .map((hr) => {
-        const lbl = `${String(hr).padStart(2, "0")}:00`;
-        return `<text x="${xOfHr(hr).toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="var(--muted)" font-size="10" font-family="var(--mono)">${lbl}</text>`;
-      })
-      .join("");
-
-    const isEn = window.DailyI18n && window.DailyI18n.getLang() === "en";
-    const parts = [];
-    if (state.showOdeLine && tauLabel) parts.push(tauLabel);
-    parts.push(
-      t("an_today_summary", {
-        s: actPts.length,
-        sp: actPts.length === 1 ? "" : isEn ? "s" : "n",
-        t: ticks.length,
-        tp: ticks.length === 1 ? "" : isEn ? "s" : "e",
-      })
-    );
-    rightSummary = parts.join(" · ");
-  } else if (zoom === "w8") {
-    const sc = cur.w8 || { labels: [], actual: [], tabpfn: [], ode: [] };
-    const n = sc.labels.length || 1;
-    const xOf = (i) => padL + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
-    const fmtWk = (lbl) =>
-      window.DailyI18n && window.DailyI18n.getLang() === "en" ? String(lbl).replace(/^KW\s*/, "W") : lbl;
-
-    // Subtle highlight for current week
-    if (n >= 2) {
-      const lastX = xOf(n - 1);
-      const prevX = xOf(n - 2);
-      bgLayer = `<rect x="${((prevX + lastX) / 2).toFixed(1)}" y="${padT}" width="${(W - padR - (prevX + lastX) / 2 + 8).toFixed(1)}" height="${plotH}" fill="var(--accent-soft)" rx="4" />`;
-    }
-
-    if (state.showOdeLine && sc.ode && sc.ode.length) {
-      const odePts = sc.ode.map((v, i) => (v != null ? { x: xOf(i), y: yOf(v) } : null)).filter(Boolean);
-      const dStr = buildSmoothCurvePath(odePts);
-      if (dStr) {
-        odeLayer = `<path d="${dStr}" fill="none" stroke="#0d9488" stroke-width="2" stroke-linecap="round" />`;
-      }
-    }
-
-    if (state.showTabpfnLine && sc.tabpfn && sc.tabpfn.length) {
-      const tpPts = sc.tabpfn.map((v, i) => (v != null ? { x: xOf(i), y: yOf(v) } : null)).filter(Boolean);
-      const dStr = buildSmoothCurvePath(tpPts);
-      if (dStr) {
-        areaLayer = `<path d="${dStr} L ${tpPts[tpPts.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${tpPts[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z" fill="var(--ai-soft)" opacity="0.38" />`;
-        tabpfnLayer = `<path d="${dStr}" fill="none" stroke="var(--ai)" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" />`;
-      }
-    }
-
-    dotsLayer = (sc.actual || [])
-      .map((v, i) => {
-        if (v == null) return "";
-        const tpV = sc.tabpfn && sc.tabpfn[i];
-        const odV = sc.ode && sc.ode[i];
-        const tip = `${fmtWk(sc.labels[i])}: Ø ${fmtNum(v)}/5${tpV != null ? ` · TabPFN ${fmtNum(tpV)}` : ""}${odV != null ? ` · ODE ${fmtNum(odV)}` : ""}`;
-        return `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="4.5" fill="var(--text)" stroke="var(--surface)" stroke-width="2"><title>${esc(tip)}</title></circle>`;
-      })
-      .join("");
-
-    xLabels = sc.labels
-      .map((lbl, i) => {
-        const isCur = i === n - 1;
-        return `<text x="${xOf(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="${isCur ? "var(--text)" : "var(--muted)"}" font-size="10" font-weight="${isCur ? "600" : "400"}" font-family="var(--mono)">${esc(fmtWk(lbl))}</text>`;
-      })
-      .join("");
-
-    rightSummary = state.showOdeLine && tauLabel ? `${t("an_8w_summary")} · ${tauLabel}` : t("an_8w_summary");
-  } else {
-    // Default: d14 (14 days + tomorrow)
-    const sc = cur.d14 || { dates: cur.dates || [], actual: cur.actual || [], tabpfn: cur.ai_curve || [], ode: [] };
-    const n = sc.dates.length || 1;
-    const xOf = (i) => padL + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
-
-    const tomX = xOf(n - 1);
-    const todayX = xOf(Math.max(0, n - 2));
-    bgLayer = `<rect x="${((todayX + tomX) / 2).toFixed(1)}" y="${padT}" width="${(W - padR - (todayX + tomX) / 2 + 8).toFixed(1)}" height="${plotH}" fill="var(--ai-soft)" rx="4" />`;
-
-    if (state.showOdeLine && sc.ode && sc.ode.length) {
-      const odePts = sc.ode.map((v, i) => (v != null ? { x: xOf(i), y: yOf(v) } : null)).filter(Boolean);
-      const dStr = buildSmoothCurvePath(odePts);
-      if (dStr) {
-        odeLayer = `<path d="${dStr}" fill="none" stroke="#0d9488" stroke-width="2" stroke-linecap="round" />`;
-      }
-      const odeTom = sc.ode[n - 1];
-      if (odeTom != null) {
-        markersLayer += `<circle cx="${tomX.toFixed(1)}" cy="${yOf(odeTom).toFixed(1)}" r="3.5" fill="#0d9488" stroke="var(--surface)" stroke-width="1.5"><title>${esc(t("tomorrow"))} (${sc.dates[n - 1]}): ODE ${fmtNum(odeTom)}/5</title></circle>`;
-      }
-    }
-
-    if (state.showTabpfnLine && sc.tabpfn && sc.tabpfn.length) {
-      const tpPts = sc.tabpfn.map((v, i) => (v != null ? { x: xOf(i), y: yOf(v) } : null)).filter(Boolean);
-      const dStr = buildSmoothCurvePath(tpPts);
-      if (dStr) {
-        areaLayer = `<path d="${dStr} L ${tpPts[tpPts.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${tpPts[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z" fill="var(--ai-soft)" opacity="0.4" />`;
-        tabpfnLayer = `<path d="${dStr}" fill="none" stroke="var(--ai)" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" />`;
-      }
-      const tomVal = sc.tabpfn[n - 1];
-      if (tomVal != null) {
-        markersLayer += `<g transform="translate(${tomX.toFixed(1)},${yOf(tomVal).toFixed(1)})">
-          <rect x="-4" y="-4" width="8" height="8" transform="rotate(45)" fill="var(--ai)" stroke="var(--surface)" stroke-width="1.5">
-            <title>${esc(t("tomorrow"))} (${sc.dates[n - 1]}): TabPFN ${fmtNum(tomVal)}/5</title>
-          </rect>
-        </g>`;
-      }
-    }
-
-    dotsLayer = (sc.actual || [])
-      .map((v, i) => {
-        if (v == null) return "";
-        const tpV = sc.tabpfn && sc.tabpfn[i];
-        const odV = sc.ode && sc.ode[i];
-        const tip = `${sc.dates[i]}: ${t("an_logged_lbl")} ${fmtNum(v)}/5${tpV != null ? ` · TabPFN ${fmtNum(tpV)}` : ""}${odV != null ? ` · ODE ${fmtNum(odV)}` : ""}`;
-        return `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="4.5" fill="var(--text)" stroke="var(--surface)" stroke-width="2"><title>${esc(tip)}</title></circle>`;
-      })
-      .join("");
-
-    xLabels = sc.dates
-      .map((dStr, i) => {
-        const isLast = i === n - 1;
-        const isToday = i === n - 2;
-        if (!isLast && !isToday && i % 3 !== 0) return "";
-        const txt = isLast ? t("tomorrow") : isToday ? t("today") : `${dStr.slice(8, 10)}.${dStr.slice(5, 7)}.`;
-        const fill = isLast ? "var(--ai)" : isToday ? "var(--text)" : "var(--muted)";
-        const fw = isLast || isToday ? "600" : "400";
-        return `<text x="${xOf(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="${fill}" font-size="10" font-weight="${fw}" font-family="var(--mono)">${esc(txt)}</text>`;
-      })
-      .join("");
-
-    const parts = [];
-    if (state.showOdeLine && tauLabel) parts.push(tauLabel);
-    const tomVal = sc.tabpfn && sc.tabpfn[n - 1];
-    if (state.showTabpfnLine && tomVal != null) parts.push(t("an_tabpfn_tom", { v: fmtNum(tomVal) }));
-    rightSummary = parts.join(" · ");
   }
+
+  const visActual = (tl.actual || []).filter((pt) => pt.t >= vStart && pt.t <= vEnd);
+  const dotsLayer = visActual
+    .map((pt) => {
+      const cx = xOf(pt.t).toFixed(1);
+      const cy = yOf(pt.v).toFixed(1);
+      const tip = `${fmtRelTime(pt.t)}: ${fmtNum(pt.v)}/5${pt.note ? ` · ${pt.note}` : ""}`;
+      return `<circle cx="${cx}" cy="${cy}" r="4.2" fill="var(--text)" stroke="var(--surface)" stroke-width="1.8"><title>${esc(tip)}</title></circle>`;
+    })
+    .join("");
+
+  let stepHr = 24;
+  if (span <= 14) stepHr = 2;
+  else if (span <= 38) stepHr = 4;
+  else if (span <= 84) stepHr = 12;
+  else if (span <= 180) stepHr = 24;
+  else if (span <= 420) stepHr = 72;
+  else if (span <= 900) stepHr = 120;
+  else stepHr = 168;
+
+  const firstTick = Math.ceil(vStart / stepHr) * stepHr;
+  const xLabelParts = [];
+  const p2 = (n) => String(n).padStart(2, "0");
+  for (let th = firstTick; th <= vEnd + 0.01; th += stepHr) {
+    const x = xOf(th);
+    if (x < padL + 10 || x > W - padR - 10) continue;
+    const dt = new Date(originMs + th * 3600000);
+    const isFut = th > nowHr + 0.5;
+    let lbl = "";
+    if (stepHr < 24) {
+      lbl = dt.getHours() === 0 ? `${p2(dt.getDate())}.${p2(dt.getMonth() + 1)}.` : `${p2(dt.getHours())}:00`;
+    } else if (Math.abs(th) < 12) {
+      lbl = t("today");
+    } else if (isFut) {
+      const dAhead = Math.max(1, Math.round(th / 24));
+      lbl = `+${dAhead}${t("day_short")}`;
+    } else if (stepHr >= 168) {
+      const dUtc = new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()));
+      const dn = dUtc.getUTCDay() || 7;
+      dUtc.setUTCDate(dUtc.getUTCDate() + 4 - dn);
+      const yStart = new Date(Date.UTC(dUtc.getUTCFullYear(), 0, 1));
+      const wk = Math.ceil(((dUtc - yStart) / 86400000 + 1) / 7);
+      const isEn = window.DailyI18n && window.DailyI18n.getLang() === "en";
+      lbl = `${isEn ? "W" : "KW"}${wk}`;
+    } else {
+      lbl = `${p2(dt.getDate())}.${p2(dt.getMonth() + 1)}.`;
+    }
+    const fill = Math.abs(th) < 12 ? "var(--text)" : isFut ? "var(--ai)" : "var(--muted)";
+    const fw = Math.abs(th) < 12 ? "600" : "400";
+    xLabelParts.push(
+      `<text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="${fill}" font-size="10" font-weight="${fw}" font-family="var(--mono)">${esc(lbl)}</text>`
+    );
+  }
+  const xLabels = xLabelParts.join("");
+
+  const tauLabel = cur.ode_tau_hours ? `ODE τ=${fmtNum(cur.ode_tau_hours)}h` : "";
+  const spanDays = span / 24;
+  const spanTxt = span < 48 ? `${Math.round(span)}h` : `${Math.round(spanDays)}${t("day_short")}`;
+  const summaryParts = [];
+  if (state.showOdeLine && tauLabel) summaryParts.push(tauLabel);
+  summaryParts.push(spanTxt);
+  if (visibleTicksCount) summaryParts.push(`${visibleTicksCount}×`);
+  const rightSummary = summaryParts.join(" · ");
 
   const curLow = dimLow(cur);
   const curHigh = dimHigh(cur);
@@ -1763,21 +1870,26 @@ function renderStateCurveSection(curves) {
     curLow || curHigh ? `1 = ${curLow || t("an_anchor_low")} · 5 = ${curHigh || t("an_anchor_high")}` : "";
 
   chartEl.innerHTML = `
-    <div class="state-chart-wrap" title="${esc(t("an_chart_wheel_title"))}">
+    <div class="state-chart-wrap" data-pan-chart="1" title="${esc(t("an_chart_wheel_title"))}">
       <svg class="state-chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        ${bgLayer}
+        <defs>
+          <clipPath id="state-plot-clip"><rect x="${padL}" y="${padT - 6}" width="${plotW}" height="${plotH + 12}" /></clipPath>
+          ${defsExtra}
+        </defs>
         ${guides}
-        ${areaLayer}
-        ${odeLayer}
-        ${tabpfnLayer}
-        ${ticksLayer}
-        ${dotsLayer}
-        ${markersLayer}
+        <g clip-path="url(#state-plot-clip)">
+          ${bgLayer}
+          ${bandLayer}
+          ${curveLayer}
+          ${ticksLayer}
+          ${dotsLayer}
+          ${futureHoverLayer}
+        </g>
         ${xLabels}
       </svg>
       <div class="state-chart-foot">
         <span>${esc(anchorTxt)}</span>
-        <span class="mono">${esc(rightSummary)}</span>
+        <span class="mono">${esc(rightSummary)} · <span class="muted">${esc(t("an_chart_pan_hint"))}</span></span>
       </div>
     </div>`;
 }
@@ -1785,7 +1897,7 @@ function renderStateCurveSection(curves) {
 async function loadAnalysis() {
   const board = await api("/api/analysis?days=30");
   const ai = board.ai || {};
-  renderStateCurveSection(ai.state_curves || []);
+  renderStateCurveSection(ai.state_curves || [], ai.timeline_meta || null);
 
   // 1. 7-day matrix (with subtle highlight on today's column)
   const wm = $("#week-matrix");
@@ -3057,11 +3169,27 @@ function bindEvents() {
     state.selectedStateCurveId = btn.dataset.scurve;
     renderStateCurveSection(state.lastStateCurves);
   });
+  $("#state-tag-pills").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-chart-tag]");
+    if (!btn) return;
+    const tg = btn.dataset.chartTag;
+    state.selectedChartTag = state.selectedChartTag === tg ? null : tg;
+    renderStateCurveSection(state.lastStateCurves);
+  });
   $("#state-zoom-switch").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-szoom]");
     if (!btn) return;
     state.stateZoom = btn.dataset.szoom;
     localStorage.setItem("daily_state_zoom", state.stateZoom);
+    const nowHr = state.lastTimelineMeta && state.lastTimelineMeta.now_hr != null ? Number(state.lastTimelineMeta.now_hr) : 12;
+    const p = getPresetChartView(state.stateZoom, nowHr);
+    state.chartView = clampChartView(p.startHr, p.endHr);
+    renderStateCurveSection(state.lastStateCurves);
+  });
+  $("#btn-chart-now").addEventListener("click", () => {
+    const nowHr = state.lastTimelineMeta && state.lastTimelineMeta.now_hr != null ? Number(state.lastTimelineMeta.now_hr) : 12;
+    const span = state.chartView ? state.chartView.endHr - state.chartView.startHr : 14 * 24;
+    state.chartView = clampChartView(nowHr - span * 0.78, nowHr + span * 0.22);
     renderStateCurveSection(state.lastStateCurves);
   });
   $("#state-legend").addEventListener("click", (e) => {
@@ -3076,26 +3204,109 @@ function bindEvents() {
     }
     renderStateCurveSection(state.lastStateCurves);
   });
-  let lastWheelZoomAt = 0;
-  $("#state-curve-chart").addEventListener(
+
+  // Smooth continuous wheel zoom (anchored at cursor X) + horizontal trackpad pan
+  const chartHost = $("#state-curve-chart");
+  chartHost.addEventListener(
     "wheel",
     (e) => {
-      if (!state.lastStateCurves.length || Math.abs(e.deltaY) < 6) return;
+      if (!state.lastStateCurves.length || !state.chartView) return;
       e.preventDefault();
-      const nowMs = Date.now();
-      if (nowMs - lastWheelZoomAt < 230) return;
-      lastWheelZoomAt = nowMs;
-      const order = ["h24", "d14", "w8"];
-      const idx = Math.max(0, order.indexOf(state.stateZoom));
-      const nextIdx = e.deltaY > 0 ? Math.min(order.length - 1, idx + 1) : Math.max(0, idx - 1);
-      if (nextIdx !== idx) {
-        state.stateZoom = order[nextIdx];
-        localStorage.setItem("daily_state_zoom", state.stateZoom);
-        renderStateCurveSection(state.lastStateCurves);
+      const rect = chartHost.getBoundingClientRect();
+      const frac = rect.width > 0 ? Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width)) : 0.5;
+      const { startHr, endHr } = state.chartView;
+      const span = endHr - startHr;
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        const shift = (dx / Math.max(200, rect.width)) * span * 0.85;
+        state.chartView = clampChartView(startHr + shift, endHr + shift);
+      } else {
+        const anchorHr = startHr + frac * span;
+        const factor = Math.exp(Math.max(-180, Math.min(180, e.deltaY)) * 0.0018);
+        const nextSpan = Math.max(CHART_MIN_SPAN_HR, Math.min(CHART_MAX_SPAN_HR, span * factor));
+        state.chartView = clampChartView(anchorHr - frac * nextSpan, anchorHr + (1 - frac) * nextSpan);
       }
+      renderStateCurveSection(state.lastStateCurves);
     },
     { passive: false }
   );
+
+  // Smooth click-drag / swipe panning across the continuous timeline
+  let chartDrag = null;
+  chartHost.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !state.chartView || !state.lastStateCurves.length) return;
+    const wrap = e.target.closest("[data-pan-chart]");
+    if (!wrap) return;
+    chartDrag = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      origStart: state.chartView.startHr,
+      origEnd: state.chartView.endHr,
+      width: Math.max(180, wrap.getBoundingClientRect().width),
+    };
+    wrap.classList.add("is-dragging");
+    try { chartHost.setPointerCapture(e.pointerId); } catch {}
+  });
+  chartHost.addEventListener("pointermove", (e) => {
+    if (!chartDrag || e.pointerId !== chartDrag.pointerId) return;
+    const dx = e.clientX - chartDrag.startX;
+    const span = chartDrag.origEnd - chartDrag.origStart;
+    const shiftHr = -(dx / chartDrag.width) * span;
+    state.chartView = clampChartView(chartDrag.origStart + shiftHr, chartDrag.origEnd + shiftHr);
+    renderStateCurveSection(state.lastStateCurves);
+  });
+  const endChartDrag = (e) => {
+    if (!chartDrag || e.pointerId !== chartDrag.pointerId) return;
+    chartDrag = null;
+    const wrap = chartHost.querySelector("[data-pan-chart]");
+    if (wrap) wrap.classList.remove("is-dragging");
+    try { chartHost.releasePointerCapture(e.pointerId); } catch {}
+  };
+  chartHost.addEventListener("pointerup", endChartDrag);
+  chartHost.addEventListener("pointercancel", endChartDrag);
+
+  // 2-finger pinch zoom on touchscreens
+  let pinchState = null;
+  chartHost.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2 && state.chartView) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const rect = chartHost.getBoundingClientRect();
+      pinchState = {
+        dist: Math.max(10, Math.hypot(dx, dy)),
+        frac: rect.width > 0 ? Math.max(0.05, Math.min(0.95, (midX - rect.left) / rect.width)) : 0.5,
+        origStart: state.chartView.startHr,
+        origEnd: state.chartView.endHr,
+      };
+    }
+  }, { passive: true });
+  chartHost.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2 && pinchState) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const curDist = Math.max(10, Math.hypot(dx, dy));
+      const span = pinchState.origEnd - pinchState.origStart;
+      const anchor = pinchState.origStart + pinchState.frac * span;
+      const nextSpan = Math.max(CHART_MIN_SPAN_HR, Math.min(CHART_MAX_SPAN_HR, span * (pinchState.dist / curDist)));
+      state.chartView = clampChartView(anchor - pinchState.frac * nextSpan, anchor + (1 - pinchState.frac) * nextSpan);
+      renderStateCurveSection(state.lastStateCurves);
+    }
+  }, { passive: false });
+  chartHost.addEventListener("touchend", () => { pinchState = null; });
+
+  // Double-click zooms in 2x at clicked position
+  chartHost.addEventListener("dblclick", (e) => {
+    if (!state.chartView || !state.lastStateCurves.length) return;
+    const rect = chartHost.getBoundingClientRect();
+    const frac = rect.width > 0 ? Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width)) : 0.5;
+    const span = state.chartView.endHr - state.chartView.startHr;
+    const anchor = state.chartView.startHr + frac * span;
+    const nextSpan = Math.max(CHART_MIN_SPAN_HR, span * 0.5);
+    state.chartView = clampChartView(anchor - frac * nextSpan, anchor + (1 - frac) * nextSpan);
+    renderStateCurveSection(state.lastStateCurves);
+  });
 
   $("#ai-assumptions-list").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-adopt-ai]");

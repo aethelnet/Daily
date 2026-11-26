@@ -839,8 +839,56 @@ def compute_ai_insights(
 
     today_iso_str = today_d.isoformat()
     today_midnight_hr = datetime.combine(today_d, datetime.min.time()).timestamp() / 3600.0
+    now_local = datetime.now()
+    now_rel_hr = round(max(0.0, min(24.0, (now_local.timestamp() / 3600.0) - today_midnight_hr)), 2)
     h24_offsets = [i * 0.5 for i in range(49)]  # 00:00, 00:30, ..., 24:00
     h24_times_hr = [today_midnight_hr + off for off in h24_offsets]
+
+    # Continuous multi-scale timeline grid relative to today 00:00 (hours):
+    # -56d..-3d every 6h, -3d..+3d every 1h, +3d..+7d every 6h (smooth zoom from 6h to 9w!)
+    tl_rel_hrs: list[float] = []
+    h_cur = -56.0 * 24.0
+    while h_cur < -3.0 * 24.0:
+        tl_rel_hrs.append(h_cur)
+        h_cur += 6.0
+    h_cur = -3.0 * 24.0
+    while h_cur <= 3.0 * 24.0:
+        tl_rel_hrs.append(h_cur)
+        h_cur += 1.0
+    h_cur = 3.0 * 24.0 + 6.0
+    while h_cur <= 7.0 * 24.0:
+        tl_rel_hrs.append(h_cur)
+        h_cur += 6.0
+    tl_abs_hrs = [today_midnight_hr + off for off in tl_rel_hrs]
+
+    # Daily dates spanning -56d .. +7d for continuous TabPFN curve + fading future
+    tl_day_offsets = list(range(-56, 8))
+    tl_dates = [(today_d + timedelta(days=d_off)).isoformat() for d_off in tl_day_offsets]
+
+    all_habit_ticks = [
+        {
+            "t": round(t_hr - today_midnight_hr, 2),
+            "ts": iso[:16],
+            "habit_id": hid,
+            "habit_name": hname,
+            "color": hcol,
+            "amount": round(amt, 2),
+        }
+        for t_hr, hid, amt, iso, hname, hcol in parsed_pos_events
+        if -60.0 * 24.0 <= (t_hr - today_midnight_hr) <= 24.0
+    ]
+
+    tag_days_map: dict[str, list[str]] = defaultdict(list)
+    for d_iso, tags_set in sorted(by_day_tags.items()):
+        for tg in tags_set:
+            tag_days_map[tg].append(d_iso)
+
+    timeline_meta = {
+        "origin_day": today_iso_str,
+        "now_hr": now_rel_hr,
+        "habit_ticks": all_habit_ticks,
+        "tag_days": dict(tag_days_map),
+    }
 
     today_habit_ticks = [
         {
@@ -956,6 +1004,7 @@ def compute_ai_insights(
             return vec
 
         X_curve_all = np.array([habit_vec_for_day(d) for d in curve_dates], dtype=np.float32)
+        X_tl_days = np.array([habit_vec_for_day(d) for d in tl_dates], dtype=np.float32)
         d14_eval_hours = [
             (datetime.combine(date.fromisoformat(d), datetime.min.time()) + timedelta(hours=18)).timestamp() / 3600.0
             for d in curve_dates
@@ -1090,6 +1139,78 @@ def compute_ai_insights(
                         w8_ode.append(None)
                         w8_tabpfn.append(None)
 
+                # Continuous pan/zoom timeline series (56d past .. +7d fading future)
+                tl_actual = [
+                    {
+                        "t": round(t_hr - today_midnight_hr, 2),
+                        "v": round(val, 2),
+                        "ts": iso[:16],
+                        "note": note,
+                    }
+                    for t_hr, val, iso, note in dim_snaps
+                    if -60.0 * 24.0 <= (t_hr - today_midnight_hr) <= 24.0
+                ]
+
+                # Empirical residual std for honest future confidence ribbon width
+                if dim_snaps:
+                    ode_fit_vals = eval_ode([s[0] for s in dim_snaps], tau_h, theta)
+                    ode_resids = [abs(s[1] - pv) for s, pv in zip(dim_snaps, ode_fit_vals)]
+                    ode_err = max(0.22, min(1.2, float(np.mean(ode_resids)) * 1.25)) if ode_resids else 0.45
+                    ode_tl_vals = eval_ode(tl_abs_hrs, tau_h, theta)
+                    ode_decay_h = max(18.0, float(tau_h) * 2.2)
+                    ode_timeline = []
+                    for rel_h, ov in zip(tl_rel_hrs, ode_tl_vals):
+                        if rel_h <= now_rel_hr:
+                            ode_timeline.append([round(rel_h, 2), ov, 1.0, 0.0])
+                        else:
+                            dh = rel_h - now_rel_hr
+                            conf = round(max(0.08, math.exp(-dh / ode_decay_h)), 3)
+                            spread = round(min(1.5, (ode_err + 0.35) * (1.0 - conf)), 2)
+                            ode_timeline.append([round(rel_h, 2), ov, conf, spread])
+                else:
+                    ode_timeline = []
+
+                # Continuous TabPFN timeline (daily -56d..+7d, plus today intraday detail, with fading future confidence)
+                tabpfn_timeline: list[list[float]] = []
+                if dim_snaps:
+                    data_strength = min(1.0, len(rated_days_d) / 14.0)
+                    if reg_c_fitted is not None and keep_c is not None:
+                        try:
+                            tl_tp_preds = [round(float(max(1.0, min(5.0, p))), 2) for p in reg_c_fitted.predict(X_tl_days[:, keep_c])]
+                            tr_preds = reg_c_fitted.predict(X_r_full[:, keep_c])
+                            tp_err = max(0.25, min(1.25, float(np.mean(np.abs(y_r - tr_preds))) * 1.35 + 0.15))
+                        except Exception:
+                            fallback_m = round(float(np.mean([s[1] for s in dim_snaps])), 2)
+                            tl_tp_preds = [fallback_m] * len(tl_dates)
+                            tp_err = 0.55
+                    else:
+                        fallback_m = today_tabpfn_val if today_tabpfn_val is not None else round(float(np.mean([s[1] for s in dim_snaps])), 2)
+                        tl_tp_preds = [fallback_m] * len(tl_dates)
+                        tp_err = 0.6
+
+                    for d_off, pv in zip(tl_day_offsets, tl_tp_preds):
+                        if d_off == 0 and tabpfn_24:
+                            # Inject today's hourly TabPFN resolution cleanly
+                            for idx_h in range(0, len(h24_offsets), 2):
+                                rel_h = float(h24_offsets[idx_h])
+                                v_h = float(tabpfn_24[idx_h])
+                                if rel_h <= now_rel_hr:
+                                    tabpfn_timeline.append([round(rel_h, 2), v_h, 1.0, 0.0])
+                                else:
+                                    dh = rel_h - now_rel_hr
+                                    conf = round(max(0.1, (0.45 + 0.55 * data_strength) * math.exp(-dh / 72.0)), 3)
+                                    spread = round(min(1.5, (tp_err + 0.3) * (1.0 - conf)), 2)
+                                    tabpfn_timeline.append([round(rel_h, 2), v_h, conf, spread])
+                            continue
+                        rel_h = float(d_off * 24 + 18)
+                        if rel_h <= now_rel_hr:
+                            tabpfn_timeline.append([round(rel_h, 2), pv, 1.0, 0.0])
+                        else:
+                            dh = rel_h - now_rel_hr
+                            conf = round(max(0.08, (0.4 + 0.6 * data_strength) * math.exp(-dh / 76.0)), 3)
+                            spread = round(min(1.6, (tp_err + 0.4) * (1.0 - conf)), 2)
+                            tabpfn_timeline.append([round(rel_h, 2), pv, conf, spread])
+
                 state_curves.append(
                     {
                         "id": did,
@@ -1102,6 +1223,12 @@ def compute_ai_insights(
                         "dates": curve_dates,
                         "actual": actual_14,
                         "ai_curve": tabpfn_14,
+                        # Continuous pan/zoom timeline
+                        "timeline": {
+                            "actual": tl_actual,
+                            "ode": ode_timeline,
+                            "tabpfn": tabpfn_timeline,
+                        },
                         # Multi-scale payloads
                         "h24": {
                             "hours": h24_offsets,
@@ -1133,6 +1260,7 @@ def compute_ai_insights(
         "overall_mae": overall_mae,
         "assumptions": final_assumptions,
         "state_curves": state_curves,
+        "timeline_meta": timeline_meta,
         "feature_audit": feature_audit,
     }
     if len(_ANALYSIS_CACHE) > 24:

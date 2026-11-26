@@ -627,6 +627,14 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(len(st_curve["w8"]["labels"]), 8)
         self.assertEqual(len(st_curve["w8"]["ode"]), 8)
         self.assertEqual(len(st_curve["w8"]["tabpfn"]), 8)
+        # Continuous pan/zoom timeline + fading future confidence (conf strictly decays into the future!)
+        tl = st_curve["timeline"]
+        self.assertGreater(len(tl["ode"]), 100)
+        self.assertGreater(len(tl["tabpfn"]), 30)
+        fut_ode = [p for p in tl["ode"] if p[0] > 24.0]
+        self.assertGreater(len(fut_ode), 10)
+        self.assertGreater(fut_ode[0][2], fut_ode[-1][2])  # confidence decays with horizon
+        self.assertLess(fut_ode[0][3], fut_ode[-1][3])     # confidence ribbon widens with horizon
 
         # 3. Quiet +45m anchor follow-up: fires when unlogged, silent once logged or disabled!
         sched = NudgeScheduler(self.db)
