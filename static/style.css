@@ -2282,7 +2282,37 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 
 /* ==================== HABIT-COUPLED ONE-OFF NOTES ("OFFENE ZETTEL") ==================== */
 .tasks-panel {
-  margin-top: 14px;
+  margin-bottom: 14px;
+}
+.task-habit-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.tk-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  padding: 3px 9px;
+}
+.task-more-wrap {
+  margin-top: 6px;
+}
+.tk-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+  padding-left: 27px;
+}
+.tk-edit-form .tk-edit-title {
+  flex: 1 1 160px;
+  min-width: 130px;
+}
+.tk-edit-form select {
+  max-width: 150px;
 }
 .tasks-hint-txt {
   opacity: 0.8;

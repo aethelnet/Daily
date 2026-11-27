@@ -117,10 +117,6 @@
         </p>
       </div>
 
-      <div id="focus-clusters" class="focus-clusters hidden"></div>
-      <div id="habit-grid" class="habit-grid"></div>
-      <div id="dormant-habits-wrap" class="dormant-wrap hidden"></div>
-
       <div id="tasks-panel" class="panel tasks-panel">
         <div class="panel-head">
           <h3><span data-i18n="tasks_title">Offene Zettel</span> <span id="tasks-count" class="muted mono"></span></h3>
@@ -141,7 +137,9 @@
           </select>
           <button type="submit" class="btn primary sm" data-i18n="tk_add_btn">+</button>
         </form>
+        <div id="tasks-habit-pills" class="task-habit-pills hidden"></div>
         <div id="tasks-actionable-list" class="task-list"></div>
+        <div id="tasks-more-wrap" class="task-more-wrap hidden"></div>
         <details id="tasks-blocked-details" class="task-sub-details hidden">
           <summary><span data-i18n="tasks_waiting_head">Wartet auf Vorher-Schritt</span> <span id="tasks-blocked-count" class="muted mono"></span></summary>
           <div id="tasks-blocked-list" class="task-list" style="margin-top:6px;"></div>
@@ -151,6 +149,10 @@
           <div id="tasks-done-list" class="task-list" style="margin-top:6px;"></div>
         </details>
       </div>
+
+      <div id="focus-clusters" class="focus-clusters hidden"></div>
+      <div id="habit-grid" class="habit-grid"></div>
+      <div id="dormant-habits-wrap" class="dormant-wrap hidden"></div>
 
       <div class="panel log-panel">
         <div class="panel-head">

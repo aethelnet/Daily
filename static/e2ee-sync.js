@@ -346,78 +346,92 @@
   let _syncInFlight = null;
   let _syncQueued = false;
 
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function _syncBrowserVaultOnce(opts = {}) {
     const cfg = loadCfg();
     if (!cfg.enabled || !cfg.key_b64u) return { skipped: true };
     if (!window.DailyLocalEngine) return { skipped: true };
     if (typeof navigator !== "undefined" && navigator.onLine === false) return { offline: true };
 
-    let remoteEnvelope = null;
-    if (!opts.skipPull) {
-      const bust = `_=${Date.now()}`;
+    const maxAttempts = cfg.provider === "gist" ? 4 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let remoteEnvelope = null;
+      const doPull = !opts.skipPull || attempt > 0;
+      if (doPull) {
+        const bust = `_=${Date.now()}`;
+        if (cfg.provider === "gist") {
+          if (!cfg.gist_id || !cfg.auth_token) throw new Error("Gist-ID oder Token fehlt");
+          // NOTE: Do NOT set `cache: "no-store"` — Firefox/WebKit sends Cache-Control/Pragma which api.github.com rejects in CORS preflight!
+          const getRes = await fetch(`https://api.github.com/gists/${encodeURIComponent(cfg.gist_id)}?${bust}`, {
+            headers: {
+              Authorization: `Bearer ${cfg.auth_token}`,
+              Accept: "application/vnd.github+json",
+            },
+          });
+          if (!getRes.ok) throw new Error(`Gist Abruf fehlgeschlagen (HTTP ${getRes.status})`);
+          const gist = await getRes.json();
+          const f = gist.files && gist.files[VAULT_FILENAME];
+          if (f && f.content) remoteEnvelope = JSON.parse(f.content);
+        } else if (cfg.provider === "url") {
+          if (!cfg.endpoint_url) throw new Error("WebDAV / Relay URL fehlt");
+          const auth = formatAuthHeader(cfg.auth_token);
+          const headers = auth ? { Authorization: auth } : {};
+          const sep = cfg.endpoint_url.includes("?") ? "&" : "?";
+          const getRes = await fetch(`${cfg.endpoint_url}${sep}${bust}`, { headers });
+          if (getRes.ok) {
+            const body = await getRes.json();
+            if (body && body.alg === "AES-256-GCM") remoteEnvelope = body;
+          } else if (getRes.status !== 404) {
+            throw new Error(`Tresor-Abruf fehlgeschlagen (HTTP ${getRes.status})`);
+          }
+        }
+      }
+
+      let mergedDb = window.DailyLocalEngine.getRawDB();
+      if (remoteEnvelope) {
+        const remoteState = await decryptPayload(remoteEnvelope, cfg.key_b64u);
+        mergedDb = mergeDatabases(mergedDb, remoteState);
+        window.DailyLocalEngine.setRawDB(mergedDb);
+      }
+
+      const freshEnvelope = await encryptPayload(
+        { schema: 1, updated_at: new Date().toISOString(), ...mergedDb },
+        cfg.key_b64u
+      );
+
       if (cfg.provider === "gist") {
-        if (!cfg.gist_id || !cfg.auth_token) throw new Error("Gist-ID oder Token fehlt");
-        // NOTE: Do NOT set `cache: "no-store"` — Firefox/WebKit sends Cache-Control/Pragma which api.github.com rejects in CORS preflight!
-        const getRes = await fetch(`https://api.github.com/gists/${encodeURIComponent(cfg.gist_id)}?${bust}`, {
+        const patchRes = await fetch(`https://api.github.com/gists/${encodeURIComponent(cfg.gist_id)}`, {
+          method: "PATCH",
           headers: {
             Authorization: `Bearer ${cfg.auth_token}`,
             Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
           },
+          body: JSON.stringify({ files: { [VAULT_FILENAME]: { content: JSON.stringify(freshEnvelope) } } }),
         });
-        if (!getRes.ok) throw new Error(`Gist Abruf fehlgeschlagen (HTTP ${getRes.status})`);
-        const gist = await getRes.json();
-        const f = gist.files && gist.files[VAULT_FILENAME];
-        if (f && f.content) remoteEnvelope = JSON.parse(f.content);
-      } else if (cfg.provider === "url") {
-        if (!cfg.endpoint_url) throw new Error("WebDAV / Relay URL fehlt");
-        const auth = formatAuthHeader(cfg.auth_token);
-        const headers = auth ? { Authorization: auth } : {};
-        const sep = cfg.endpoint_url.includes("?") ? "&" : "?";
-        const getRes = await fetch(`${cfg.endpoint_url}${sep}${bust}`, { headers });
-        if (getRes.ok) {
-          const body = await getRes.json();
-          if (body && body.alg === "AES-256-GCM") remoteEnvelope = body;
-        } else if (getRes.status !== 404) {
-          throw new Error(`Tresor-Abruf fehlgeschlagen (HTTP ${getRes.status})`);
+        if (patchRes.ok) break;
+        // HTTP 409 Conflict happens when desktop daemon + mobile PWA push concurrently to the same Gist:
+        // silently back off with jitter, re-pull, CRDT-merge, and re-push!
+        if ((patchRes.status === 409 || patchRes.status === 422 || patchRes.status === 502 || patchRes.status === 503) && attempt + 1 < maxAttempts) {
+          await sleepMs(450 * (attempt + 1) + Math.round(Math.random() * 350));
+          continue;
         }
-      }
-    }
-
-    let mergedDb = window.DailyLocalEngine.getRawDB();
-    if (remoteEnvelope) {
-      const remoteState = await decryptPayload(remoteEnvelope, cfg.key_b64u);
-      mergedDb = mergeDatabases(mergedDb, remoteState);
-      window.DailyLocalEngine.setRawDB(mergedDb);
-    }
-
-    const freshEnvelope = await encryptPayload(
-      { schema: 1, updated_at: new Date().toISOString(), ...mergedDb },
-      cfg.key_b64u
-    );
-
-    if (cfg.provider === "gist") {
-      const patchRes = await fetch(`https://api.github.com/gists/${encodeURIComponent(cfg.gist_id)}`, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${cfg.auth_token}`,
-          Accept: "application/vnd.github+json",
+        throw new Error(`Gist Speichern fehlgeschlagen (HTTP ${patchRes.status})`);
+      } else if (cfg.provider === "url") {
+        const auth = formatAuthHeader(cfg.auth_token);
+        const headers = {
           "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ files: { [VAULT_FILENAME]: { content: JSON.stringify(freshEnvelope) } } }),
-      });
-      if (!patchRes.ok) throw new Error(`Gist Speichern fehlgeschlagen (HTTP ${patchRes.status})`);
-    } else if (cfg.provider === "url") {
-      const auth = formatAuthHeader(cfg.auth_token);
-      const headers = {
-        "Content-Type": "application/json",
-        ...(auth ? { Authorization: auth } : {}),
-      };
-      const putRes = await fetch(cfg.endpoint_url, {
-        method: "PUT",
-        headers,
-        body: JSON.stringify(freshEnvelope),
-      });
-      if (!putRes.ok) throw new Error(`Tresor-Speichern fehlgeschlagen (HTTP ${putRes.status})`);
+          ...(auth ? { Authorization: auth } : {}),
+        };
+        const putRes = await fetch(cfg.endpoint_url, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify(freshEnvelope),
+        });
+        if (!putRes.ok) throw new Error(`Tresor-Speichern fehlgeschlagen (HTTP ${putRes.status})`);
+        break;
+      }
     }
 
     const ts = new Date().toISOString();
@@ -434,6 +448,8 @@
       let res = await _syncBrowserVaultOnce(opts);
       while (_syncQueued) {
         _syncQueued = false;
+        // Coalesce rapid back-to-back taps/task edits before pushing again to avoid Gist 409 races
+        await sleepMs(450);
         res = await _syncBrowserVaultOnce();
       }
       return res;

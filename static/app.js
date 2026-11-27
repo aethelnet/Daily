@@ -107,6 +107,8 @@ const state = {
   tasks: [],
   taskFilterHabitId: null,
   addingPrereqForTaskId: null,
+  editingTaskId: null,
+  showAllTasks: false,
   settings: {},
   tags: [],
   filterKind: localStorage.getItem("daily_today_focus") === "1" ? "focus" : "all",
@@ -1270,20 +1272,58 @@ function renderTasksPanel() {
     }
   }
 
+  // Quick 1-tap Habit filter pills right inside Offene Zettel (only shown when tasks span multiple buckets or >= 3 open!)
+  const pillsWrap = $("#tasks-habit-pills");
+  if (pillsWrap) {
+    const countsByBucket = new Map();
+    for (const tk of openTasks) {
+      const k = tk.habit_id || "__none__";
+      countsByBucket.set(k, (countsByBucket.get(k) || 0) + 1);
+    }
+    if (openTasks.length >= 2 && countsByBucket.size >= 2) {
+      pillsWrap.classList.remove("hidden");
+      const allActive = !state.taskFilterHabitId;
+      const pillHtmls = [
+        `<button type="button" class="pill tk-pill ${allActive ? "active" : ""}" data-tk-pill="">Alle <span class="mono">${openTasks.length}</span></button>`,
+      ];
+      for (const [k, cnt] of countsByBucket.entries()) {
+        if (k === "__none__") {
+          pillHtmls.push(`<button type="button" class="pill tk-pill ${state.taskFilterHabitId === "__none__" ? "active" : ""}" data-tk-pill="__none__">${esc(t("tk_no_habit"))} <span class="mono">${cnt}</span></button>`);
+        } else {
+          const h = (state.habits || []).find((x) => x.id === k);
+          if (!h) continue;
+          pillHtmls.push(`<button type="button" class="pill tk-pill ${state.taskFilterHabitId === k ? "active" : ""}" data-tk-pill="${esc(k)}"><span class="tk-dot" style="background:${esc(h.color)}"></span>${esc(h.name)} <span class="mono">${cnt}</span></button>`);
+        }
+      }
+      pillsWrap.innerHTML = pillHtmls.join("");
+    } else {
+      pillsWrap.classList.add("hidden");
+      pillsWrap.innerHTML = "";
+    }
+  }
+
   // Optional habit filter chip
   const fChip = $("#tasks-filter-chip");
-  const filterHab = state.taskFilterHabitId ? (state.habits || []).find((h) => h.id === state.taskFilterHabitId) : null;
+  const filterIsNone = state.taskFilterHabitId === "__none__";
+  const filterHab = !filterIsNone && state.taskFilterHabitId ? (state.habits || []).find((h) => h.id === state.taskFilterHabitId) : null;
   if (fChip) {
     if (filterHab) {
       fChip.classList.remove("hidden");
       fChip.innerHTML = `<span class="tk-dot" style="background:${esc(filterHab.color)}"></span>${esc(filterHab.name)} <button type="button" class="tk-chip-x" id="btn-clear-task-filter" title="${esc(t("tk_filter_clear"))}">×</button>`;
+    } else if (filterIsNone) {
+      fChip.classList.remove("hidden");
+      fChip.innerHTML = `${esc(t("tk_no_habit"))} <button type="button" class="tk-chip-x" id="btn-clear-task-filter" title="${esc(t("tk_filter_clear"))}">×</button>`;
     } else {
       fChip.classList.add("hidden");
       fChip.innerHTML = "";
     }
   }
 
-  const scoped = filterHab ? allTasks.filter((tk) => tk.habit_id === filterHab.id) : allTasks;
+  const scoped = filterIsNone
+    ? allTasks.filter((tk) => !tk.habit_id)
+    : filterHab
+    ? allTasks.filter((tk) => tk.habit_id === filterHab.id)
+    : allTasks;
   const actionable = scoped.filter((tk) => !tk.done_at && !tk.is_blocked);
   const blocked = scoped.filter((tk) => !tk.done_at && tk.is_blocked);
   const cutoffMs = Date.now() - 7 * 86400000;
@@ -1298,6 +1338,10 @@ function renderTasksPanel() {
     countEl.textContent = openN ? `(${actionable.length}${blocked.length ? ` + ${blocked.length}` : ""})` : "";
   }
 
+  const MAX_COMPACT = 5;
+  const visibleActionable = state.showAllTasks || actionable.length <= MAX_COMPACT ? actionable : actionable.slice(0, MAX_COMPACT);
+  const hiddenMoreN = actionable.length - visibleActionable.length;
+
   const actList = $("#tasks-actionable-list");
   if (actList) {
     if (!actionable.length && !blocked.length) {
@@ -1305,7 +1349,7 @@ function renderTasksPanel() {
     } else if (!actionable.length) {
       actList.innerHTML = "";
     } else {
-      actList.innerHTML = actionable
+      actList.innerHTML = visibleActionable
         .map((tk) => {
           const habPill = tk.habit_name
             ? `<button type="button" class="tk-hab-pill" data-tk-filter-hab="${esc(tk.habit_id)}" style="--tk-col:${esc(tk.habit_color || "var(--accent)")}"><span class="tk-dot" style="background:${esc(tk.habit_color || "var(--accent)")}"></span>${esc(tk.habit_name)}</button>`
@@ -1314,11 +1358,28 @@ function renderTasksPanel() {
           const dueBadge = formatTaskDueBadge(tk.due_date);
           const blocksBadge = tk.blocks_count ? `<span class="tk-blocks-pill mono" title="${esc(t("tk_blocks_n", { n: tk.blocks_count }))}">↳ ${esc(t("tk_blocks_n", { n: tk.blocks_count }))}</span>` : "";
           const prereqOpen = state.addingPrereqForTaskId === tk.id;
+          const editOpen = state.editingTaskId === tk.id;
           const prereqFormHtml = prereqOpen
             ? `<form class="tk-prereq-form" data-tk-prereq-form="${esc(tk.id)}">
                  <input type="text" class="tk-prereq-inp" placeholder="${esc(t("tk_add_prereq_ph"))}" required />
                  <button type="submit" class="btn primary sm">+</button>
                  <button type="button" class="btn ghost sm" data-tk-prereq-cancel="1">×</button>
+               </form>`
+            : "";
+          const editFormHtml = editOpen
+            ? `<form class="tk-edit-form" data-tk-edit-form="${esc(tk.id)}">
+                 <input type="text" class="tk-edit-title" value="${esc(tk.title)}" required />
+                 <select class="tk-edit-habit">
+                   <option value="">${esc(t("tk_no_habit"))}</option>
+                   ${(state.habits || []).map((h) => `<option value="${esc(h.id)}" ${tk.habit_id === h.id ? "selected" : ""}>${esc(h.name)}</option>`).join("")}
+                 </select>
+                 <input type="date" class="compact-input tk-edit-due" value="${esc(tk.due_date || "")}" title="${esc(t("tk_due_title"))}" />
+                 <select class="tk-edit-blocker">
+                   <option value="">${esc(t("tk_no_blocker"))}</option>
+                   ${openTasks.filter((o) => o.id !== tk.id).map((o) => `<option value="${esc(o.id)}" ${tk.blocked_by_task_id === o.id ? "selected" : ""}>${esc(o.title.slice(0, 38))}</option>`).join("")}
+                 </select>
+                 <button type="submit" class="btn primary sm">OK</button>
+                 <button type="button" class="btn ghost sm" data-tk-edit-cancel="1">×</button>
                </form>`
             : "";
           return `
@@ -1330,13 +1391,26 @@ function renderTasksPanel() {
                 <div class="tk-actions">
                   <button type="button" class="tk-act-btn" data-tk-prereq-toggle="${esc(tk.id)}" title="${esc(t("tk_add_prereq_btn"))}">↳</button>
                   <button type="button" class="tk-act-btn ${tk.priority ? "is-on" : ""}" data-tk-toggle-prio="${esc(tk.id)}" title="${esc(t("tk_prio_title"))}">↑</button>
+                  <button type="button" class="tk-act-btn" data-tk-edit-toggle="${esc(tk.id)}" title="Bearbeiten (Habit, Frist, Blocker)">✎</button>
                   <button type="button" class="tk-act-btn is-del" data-tk-del="${esc(tk.id)}" title="Entfernen">×</button>
                 </div>
               </div>
               ${prereqFormHtml}
+              ${editFormHtml}
             </div>`;
         })
         .join("");
+    }
+  }
+
+  const moreWrap = $("#tasks-more-wrap");
+  if (moreWrap) {
+    if (hiddenMoreN > 0 || (state.showAllTasks && actionable.length > MAX_COMPACT)) {
+      moreWrap.classList.remove("hidden");
+      moreWrap.innerHTML = `<button type="button" class="btn ghost sm" data-tk-toggle-more="1">${hiddenMoreN > 0 ? `+ ${hiddenMoreN} weitere Zettel anzeigen` : "Kompakt anzeigen"}</button>`;
+    } else {
+      moreWrap.classList.add("hidden");
+      moreWrap.innerHTML = "";
     }
   }
 
@@ -7150,6 +7224,30 @@ function bindEvents() {
         renderTasksPanel();
         return;
       }
+      const pillBtn = e.target.closest("[data-tk-pill]");
+      if (pillBtn) {
+        state.taskFilterHabitId = pillBtn.dataset.tkPill || null;
+        renderTasksPanel();
+        return;
+      }
+      if (e.target.closest("[data-tk-toggle-more]")) {
+        state.showAllTasks = !state.showAllTasks;
+        renderTasksPanel();
+        return;
+      }
+      const editToggle = e.target.closest("[data-tk-edit-toggle]");
+      if (editToggle) {
+        const tid = editToggle.dataset.tkEditToggle;
+        state.editingTaskId = state.editingTaskId === tid ? null : tid;
+        state.addingPrereqForTaskId = null;
+        renderTasksPanel();
+        return;
+      }
+      if (e.target.closest("[data-tk-edit-cancel]")) {
+        state.editingTaskId = null;
+        renderTasksPanel();
+        return;
+      }
       const filtHab = e.target.closest("[data-tk-filter-hab]");
       if (filtHab) {
         const hid = filtHab.dataset.tkFilterHab;
@@ -7246,6 +7344,27 @@ function bindEvents() {
       }
     });
     tkPanel.addEventListener("submit", async (e) => {
+      const ef = e.target.closest("[data-tk-edit-form]");
+      if (ef) {
+        e.preventDefault();
+        const tid = ef.dataset.tkEditForm;
+        const title = (ef.querySelector(".tk-edit-title")?.value || "").trim();
+        const habit_id = ef.querySelector(".tk-edit-habit")?.value || null;
+        const due_date = ef.querySelector(".tk-edit-due")?.value || "";
+        const blocked_by_task_id = ef.querySelector(".tk-edit-blocker")?.value || null;
+        if (!title) return;
+        try {
+          await api(`/api/tasks/${encodeURIComponent(tid)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ title, habit_id, due_date, blocked_by_task_id }),
+          });
+          state.editingTaskId = null;
+          await loadToday();
+        } catch (err) {
+          toast(t("err_prefix", { msg: err.message }));
+        }
+        return;
+      }
       const pf = e.target.closest("[data-tk-prereq-form]");
       if (!pf) return;
       e.preventDefault();
