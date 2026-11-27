@@ -76,7 +76,10 @@
             <option value="neutral" selected data-i18n="kind_neutral">Neutral</option>
             <option value="measure" data-i18n="kind_measure">Messwert (Ø)</option>
           </select>
-          <input type="text" id="qc-unit" data-i18n-placeholder="qc_unit_ph" placeholder="°C, kg…" class="unit-sm hidden" maxlength="12" />
+          <div class="ac-wrap unit-ac-wrap hidden" id="qc-unit-wrap">
+            <input type="text" id="qc-unit" data-i18n-placeholder="qc_unit_ph" placeholder="°C, µg…" class="unit-sm" maxlength="12" autocomplete="off" />
+            <div id="qc-unit-ac" class="ac-list unit-ac-list hidden" role="listbox"></div>
+          </div>
           <input type="number" id="qc-target" step="any" data-i18n-placeholder="qc_target_ph" placeholder="Ziel (opt.)" class="num-sm hidden" />
           <select id="qc-period" data-i18n-title="qc_period_title" title="Zeitraum" class="hidden">
             <option value="day" selected data-i18n="per_day_short">/ Tag</option>
@@ -103,7 +106,7 @@
             <button type="button" class="mode-btn" data-sort="manual" data-i18n="sort_manual">Eigene</button>
           </div>
           <div class="ac-wrap today-search-wrap">
-            <input type="text" id="today-search" class="filter-search" autocomplete="off" data-i18n-placeholder="filter_search_ph" placeholder="Zettel &amp; Karten filtern…" />
+            <input type="text" id="today-search" class="filter-search" autocomplete="off" data-i18n-placeholder="filter_search_ph" placeholder="Suchen (Zettel, Karten, Log)…" />
             <div id="today-search-ac" class="ac-list hidden" role="listbox"></div>
           </div>
         </div>
@@ -156,7 +159,10 @@
 
       <div class="panel log-panel">
         <div class="panel-head">
-          <h3><span data-i18n="day_log">Tages-Log</span> <span id="log-count" class="muted mono"></span></h3>
+          <div class="row-inline" style="gap:8px;flex-wrap:wrap;">
+            <h3><span data-i18n="day_log">Tages-Log</span> <span id="log-count" class="muted mono"></span></h3>
+            <span id="log-filter-chip" class="chip hidden"></span>
+          </div>
           <div class="row-inline" style="gap:8px;">
             <span class="muted mono sm-text log-hint-txt" data-i18n="day_log_hint">Klick auf Uhrzeit, Betrag oder Notiz zum Nachjustieren</span>
             <button type="button" class="btn ghost sm" id="btn-toggle-log-range" data-i18n="btn_log_range">Zeitraum</button>
@@ -260,7 +266,10 @@
               <div class="unit-step-pair">
                 <label class="field" style="flex:1;min-width:0;">
                   <span data-i18n="lbl_unit">Einheit</span>
-                  <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, °C, kg, h" />
+                  <div class="ac-wrap unit-ac-wrap">
+                    <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, °C, µg, kg, h" autocomplete="off" />
+                    <div id="hf-unit-ac" class="ac-list unit-ac-list hidden" role="listbox"></div>
+                  </div>
                 </label>
                 <label class="field" style="width:82px;flex-shrink:0;">
                   <span data-i18n="lbl_tap_step">Schritt</span>
