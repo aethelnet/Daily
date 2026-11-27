@@ -858,38 +858,60 @@ function isHabitCadenceDue(h) {
   return sinceLast / med >= 0.72;
 }
 
-function isHabitInFocusNow(h, incomingTargets, selectedIds, connectedToSelected) {
+function isHabitInFocusNow(h, _incomingTargets, selectedIds, connectedToSelected) {
   if (h.active_since) return true;
   if (selectedIds.includes(h.id) || connectedToSelected.has(h.id)) return true;
-  if (h.kind === "min" && h.target != null && h.status !== "met") return true;
   if (h.kind === "max" && (h.status === "warning" || h.status === "exceeded")) return true;
-  if (incomingTargets.has(h.id) && h.status !== "met") return true;
+  if (h.kind === "min" && h.target != null && h.status !== "met") return true;
+  if (h.kind === "measure" && (h.event_count || 0) === 0) return true;
   if (isHabitCadenceDue(h)) return true;
-  if (Number(h.hour_fit || 0) >= 0.55 && h.kind !== "max" && h.status !== "met") return true;
   return false;
 }
 
 function computeSmartScore(h, ctx) {
   let score = 0;
-  if (h.active_since) score += 1000;
+  // Tier 1: Running timer & acute limit alerts + active cluster selection synergy
+  if (h.active_since) score += 2000;
   const fit = ctx.fitById[h.id];
   if (fit && ctx.selectedIds.length) {
-    score += fit.posHits * 130 - fit.negHits * 150 + fit.netWeight * 25;
+    score += fit.posHits * 220 - fit.negHits * 240 + fit.netWeight * 30;
+  }
+  const isLimitAlert = h.kind === "max" && (h.status === "warning" || h.status === "exceeded");
+  if (h.kind === "max" && h.status === "exceeded") score += 180;
+  else if (h.kind === "max" && h.status === "warning") score += 140;
+
+  // Tier 2: Open goals with progress bar, unmeasured readings, and overdue cadence
+  const hrFit = Number(h.hour_fit || 0);
+  if (h.kind === "min" && h.target != null && h.status !== "met") {
+    score += (h.target_period || "day") === "day" ? 110 : 85;
+    if (h.status === "in_progress") score += 12;
+  }
+  if (h.kind === "measure") {
+    if ((h.event_count || 0) === 0) score += 95 + 38 * hrFit;
+    else score -= 65; // Already measured today -> rests calmly near the bottom
   }
   const med = h.median_interval_days != null ? Number(h.median_interval_days) : null;
   const sinceLast = h.days_since_last != null ? Number(h.days_since_last) : null;
-  if (med != null && med >= 2 && sinceLast != null && Number(h.direct || 0) === 0) {
+  if (med != null && med >= 2 && sinceLast != null && Number(h.direct || 0) === 0 && (h.event_count || 0) === 0) {
     const dueRatio = sinceLast / med;
-    if (dueRatio >= 0.72) score += 55 * Math.min(1.8, dueRatio);
+    if (dueRatio >= 0.72) score += 90 * Math.min(1.6, dueRatio);
   }
-  if (h.kind === "min" && h.status !== "met") {
-    score += (h.target_period || "day") === "day" ? 45 : 35;
+
+  // Tier 3: Open activities, timer-ready blocks & time-of-day rhythm fit
+  if (h.kind === "min" && h.target == null) {
+    score += 30;
   }
-  const hrFit = Number(h.hour_fit || 0);
-  score += (h.kind === "max" ? 18 : 42) * hrFit;
+  if (h.block_minutes && Number(h.block_minutes) > 0 && h.kind !== "max" && h.kind !== "measure" && h.status !== "met") {
+    score += 22;
+  }
+  if (h.kind !== "measure") {
+    score += (h.kind === "max" ? 16 : 42) * hrFit;
+  }
   if (ctx.todayNeighborSet.has(h.id)) score += 18;
-  if (h.kind === "max") score -= 24;
-  if (h.kind === "min" && h.status === "met") score -= 45;
+
+  // Tier 4: Calmly settle completed goals & healthy (non-alert) Less/Weniger limits below active work
+  if (h.kind === "max" && !isLimitAlert) score -= 55;
+  if (h.kind === "min" && h.status === "met") score -= 80;
   return score;
 }
 
@@ -960,7 +982,8 @@ function renderToday(data) {
   const cardRenderOpts = (h, extra = {}) => {
     const fit = fitById[h.id] || { posHits: 0, negHits: 0, netWeight: 0, rels: [] };
     const isConflict = selectedIds.length > 0 && fit.negHits > 0 && fit.posHits === 0;
-    const isMaxDim = isSmart && h.kind === "max" && !h.active_since && !selectedIds.includes(h.id);
+    const isLimitAlert = h.kind === "max" && (h.status === "warning" || h.status === "exceeded");
+    const isMaxDim = isSmart && h.kind === "max" && !isLimitAlert && !h.active_since && !selectedIds.includes(h.id);
     const isSynergy = selectedIds.length >= 2 && fit.posHits >= 2 && fit.negHits === 0;
     let relBadge = extra.relBadge || "";
     if (!relBadge && isSmart && isHabitCadenceDue(h)) {
