@@ -1083,6 +1083,95 @@
 
       const tagStats = computeTagStats(db);
       const liveSnapsCount = db.snapshots.filter((x) => !x.deleted_at).length;
+
+      // Per-habit empirical counterfactuals ("With vs. Without" on Mood dimensions + non-rollup habits)
+      const activeDims = db.state_dimensions.filter((d) => !d.archived);
+      const habitCounterfactuals = {};
+      for (const s of activeHabits) {
+        const sId = s.id;
+        let nWithAny = 0;
+        for (const dStr of observedDays) {
+          if (byDayWindows[dStr] && byDayWindows[dStr][sId] && byDayWindows[dStr][sId].has("any")) nWithAny += 1;
+        }
+        const nWithoutAny = observedDays.length - nWithAny;
+        const effects = [];
+
+        // Mood / State dimensions on rated days
+        for (const dim of activeDims) {
+          const wVals = [];
+          const woVals = [];
+          for (const dStr of observedDays) {
+            const vs = snapAcc[dStr] && snapAcc[dStr][dim.id];
+            if (!vs || !vs.length) continue;
+            const dayMean = vs.reduce((a, b) => a + b, 0) / vs.length;
+            const hasS = !!(byDayWindows[dStr] && byDayWindows[dStr][sId] && byDayWindows[dStr][sId].has("any"));
+            (hasS ? wVals : woVals).push(dayMean);
+          }
+          if (wVals.length >= 2 && woVals.length >= 2) {
+            const avgW = Math.round((wVals.reduce((a, b) => a + b, 0) / wVals.length) * 100) / 100;
+            const avgWo = Math.round((woVals.reduce((a, b) => a + b, 0) / woVals.length) * 100) / 100;
+            const delta = Math.round((avgW - avgWo) * 100) / 100;
+            if (Math.abs(delta) >= 0.25) {
+              effects.push({
+                source_id: sId,
+                source_name: s.name,
+                target_id: `state:${dim.id}`,
+                target_name: dim.name,
+                is_state_target: true,
+                context_window: "any",
+                avg_with: avgW,
+                avg_without: avgWo,
+                delta,
+                days_with: wVals.length,
+                days_without: woVals.length,
+                source_kind: "empirical",
+              });
+            }
+          }
+        }
+
+        // Non-rollup habits (best time-window or "any")
+        if (observedDays.length >= 4) {
+          for (const tHab of activeHabits) {
+            if (tHab.id === sId || rollupPairs.has(`${sId}::${tHab.id}`)) continue;
+            let bestEff = null;
+            let bestScore = 0;
+            for (const win of ["morning", "afternoon", "evening", "night", "any"]) {
+              const r = evalPair(sId, tHab.id, win, null);
+              if (r.verdict !== "positive" && r.verdict !== "negative") continue;
+              const dVal = Math.abs(r.delta || 0);
+              if (dVal < 0.30) continue;
+              const sc = dVal * (win !== "any" ? 1.1 : 1.0);
+              if (sc > bestScore) {
+                bestScore = sc;
+                bestEff = {
+                  source_id: sId,
+                  source_name: r.source_name,
+                  target_id: tHab.id,
+                  target_name: r.target_name,
+                  is_state_target: false,
+                  context_window: win,
+                  avg_with: r.avg_with,
+                  avg_without: r.avg_without,
+                  delta: r.delta,
+                  days_with: r.days_with,
+                  days_without: r.days_without,
+                  source_kind: "empirical",
+                };
+              }
+            }
+            if (bestEff) effects.push(bestEff);
+          }
+        }
+
+        effects.sort((a, b) => Math.abs(b.delta) * (b.is_state_target ? 1.3 : 1.0) - Math.abs(a.delta) * (a.is_state_target ? 1.3 : 1.0));
+        habitCounterfactuals[sId] = {
+          days_with: nWithAny,
+          days_without: nWithoutAny,
+          effects: effects.slice(0, 4),
+        };
+      }
+
       return {
       observed_days: observedDays.length,
       last7_dates: last7,
@@ -1090,6 +1179,7 @@
       rhythms,
       hypotheses: hyps,
       discovered: discovered.slice(0, 5),
+      habit_counterfactuals: habitCounterfactuals,
       ai: {
         engine: "browser-local",
         engine_label: "Lokal im Browser",

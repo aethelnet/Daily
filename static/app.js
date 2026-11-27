@@ -131,6 +131,9 @@ const state = {
   editingEvent: null,
   logEventsById: {},
   logSnapsById: {},
+  expandedLogEventId: null,
+  analysisBoard: null,
+  analysisBoardPromise: null,
   logRange: null, // null = single day (state.day); or { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
   logRangeData: null,
   routeFilterQuery: "",
@@ -1111,6 +1114,145 @@ function fmtShortDay(iso) {
   return dt.toLocaleDateString(getLocale(), { day: "2-digit", month: "2-digit" });
 }
 
+function classifyEventWindow(iso) {
+  const m = String(iso || "").match(/T(\d{2})/);
+  if (!m) return "any";
+  const hr = Number(m[1]);
+  if (hr >= 5 && hr < 12) return "morning";
+  if (hr >= 12 && hr < 17) return "afternoon";
+  if (hr >= 17 && hr < 22) return "evening";
+  return "night";
+}
+
+async function ensureAnalysisBoard(force = false, fast = false) {
+  if (!force && state.analysisBoard && (fast || !state.analysisBoard.fast)) return state.analysisBoard;
+  if (!force && state.analysisBoardPromise) return state.analysisBoardPromise;
+  const url = fast ? "/api/analysis?days=30&fast=1" : "/api/analysis?days=30";
+  const p = api(url)
+    .then((board) => {
+      // Never downgrade a full AI board with a fast empirical board
+      if (!fast || !state.analysisBoard || state.analysisBoard.fast) {
+        state.analysisBoard = board;
+      }
+      if (state.analysisBoardPromise === p) state.analysisBoardPromise = null;
+      return state.analysisBoard;
+    })
+    .catch((err) => {
+      if (state.analysisBoardPromise === p) state.analysisBoardPromise = null;
+      throw err;
+    });
+  state.analysisBoardPromise = p;
+  return p;
+}
+
+function renderEventCounterfactualHtml(ev, dimsById) {
+  if (!state.analysisBoard) {
+    return `<div class="muted sm-text">${esc(t("log_cf_loading"))}</div>`;
+  }
+  const cfMap = state.analysisBoard.habit_counterfactuals || {};
+  const info = cfMap[ev.habit_id];
+  const evWin = classifyEventWindow(ev.occurred_at);
+  const wDays = info ? Number(info.days_with || 0) : 0;
+  const woDays = info ? Number(info.days_without || 0) : 0;
+
+  let effects = Array.isArray(info?.effects) ? [...info.effects] : [];
+  // Fallback if an older server lacks habit_counterfactuals: read ai.assumptions + discovered
+  if (!info) {
+    const aiAssump = (state.analysisBoard.ai?.assumptions || []).filter((a) => a.source_id === ev.habit_id);
+    const disc = (state.analysisBoard.discovered || []).filter((d) => d.source_id === ev.habit_id);
+    effects = [
+      ...aiAssump.map((a) => ({
+        target_id: a.target_id,
+        target_name: a.target_name,
+        is_state_target: !!a.is_state_target,
+        context_window: a.context_window || "any",
+        avg_with: a.avg_with,
+        avg_without: a.avg_without,
+        delta: a.predicted_delta,
+        days_with: a.days_with,
+        days_without: a.days_without,
+        source_kind: "ai",
+      })),
+      ...disc.map((d) => ({
+        target_id: d.target_id,
+        target_name: d.target_name,
+        is_state_target: false,
+        context_window: d.context_window || "any",
+        avg_with: d.avg_with,
+        avg_without: d.avg_without,
+        delta: d.delta,
+        days_with: d.days_with,
+        days_without: d.days_without,
+        source_kind: "empirical",
+      })),
+    ];
+  }
+
+  // Prefer effects matching this event's time window or "any", deduplicated by target
+  const seen = new Set();
+  effects.sort((a, b) => {
+    const aMatch = a.context_window === evWin ? 1.2 : a.context_window === "any" ? 1.0 : 0.75;
+    const bMatch = b.context_window === evWin ? 1.2 : b.context_window === "any" ? 1.0 : 0.75;
+    const aScore = Math.abs(Number(a.delta || 0)) * (a.is_state_target ? 1.3 : 1.0) * aMatch;
+    const bScore = Math.abs(Number(b.delta || 0)) * (b.is_state_target ? 1.3 : 1.0) * bMatch;
+    return bScore - aScore;
+  });
+  const picked = [];
+  for (const ef of effects) {
+    const key = String(ef.target_id || ef.target_name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push(ef);
+    if (picked.length >= 3) break;
+  }
+
+  if (!picked.length) {
+    if (wDays < 2 || woDays < 2) {
+      return `<div class="muted sm-text">${esc(t("log_cf_collecting", { w: wDays, wo: woDays, name: ev.habit_name }))}</div>`;
+    }
+    return `<div class="muted sm-text">${esc(t("log_cf_neutral", { w: wDays, wo: woDays, name: ev.habit_name }))}</div>`;
+  }
+
+  return picked
+    .map((ef) => {
+      const delta = Number(ef.delta || 0);
+      const sign = delta >= 0 ? "+" : "";
+      const isAi = ef.source_kind === "ai";
+      const chipCls = isAi ? "ai-chip" : delta >= 0 ? "pos-chip" : "neg-chip";
+      const targetLabel = ef.is_state_target
+        ? dimName(
+            (dimsById && dimsById[String(ef.target_id || "").replace(/^state:/, "")]) || {
+              id: String(ef.target_id || "").replace(/^state:/, ""),
+              name: ef.target_name,
+            }
+          )
+        : ef.target_name;
+      const winSuffix =
+        ef.context_window && ef.context_window !== "any" ? ` (${windowLabel(ef.context_window)})` : "";
+      const tagBadge = ef.is_state_target
+        ? `<span class="ev-cf-tag">${esc(t("log_cf_badge_mood"))}</span>`
+        : isAi
+        ? `<span class="ev-cf-tag">${esc(t("log_cf_badge_ai"))}</span>`
+        : "";
+      const statsStr =
+        ef.avg_with != null && ef.avg_without != null
+          ? t("log_cf_stats", { w: fmtNum(ef.avg_with), wo: fmtNum(ef.avg_without) })
+          : "";
+      const nStr =
+        ef.days_with != null && ef.days_without != null
+          ? t("log_cf_days", { w: ef.days_with, wo: ef.days_without })
+          : "";
+      return `
+        <div class="ev-detail-route ev-detail-cf-row">
+          <span class="chip ev-impact-chip ${chipCls}">${esc(targetLabel)} ${sign}${fmtNum(delta)}</span>
+          ${tagBadge}
+          ${statsStr ? `<span class="ev-detail-math mono">${esc(statsStr)}${esc(winSuffix)}</span>` : ""}
+          ${nStr ? `<span class="ev-detail-target-state mono">${esc(nStr)}</span>` : ""}
+        </div>`;
+    })
+    .join("");
+}
+
 function renderLogEntryHtml(entry, dimsById, habitsById) {
   if (entry.kind === "snap") {
     const sn = entry.item;
@@ -1156,16 +1298,85 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
       ? formatDurationMin(winMin)
       : ev.source;
   const hasNote = !!(ev.note && ev.note.trim());
+  const srcHabit = habitsById[ev.habit_id];
+  const directRoutes = Array.isArray(srcHabit?.routes_to) ? srcHabit.routes_to : [];
+  const evAmt = Number(ev.amount || 0);
+  const activeImpacts = directRoutes
+    .map((r) => {
+      const w = Number(r.weight || 0);
+      const contrib = Math.round(evAmt * w * 100) / 100;
+      if (!Number.isFinite(contrib) || Math.abs(contrib) < 0.001) return null;
+      const targetHabit = habitsById[r.target_id];
+      return { r, w, contrib, targetHabit };
+    })
+    .filter(Boolean);
+
+  // Keep collapsed row visually calm so Mood snapshots remain the hero in the timeline;
+  // show only a quiet monochrome count cue ("→ 2") and reveal full math + target progress on tap.
+  const routeCueTitle = activeImpacts
+    .map(({ r, contrib }) => `→ ${contrib >= 0 ? "+" : ""}${fmtNum(contrib)} ${r.target_name}`)
+    .join(" · ");
+  const routeCueHtml = activeImpacts.length
+    ? `<span class="ev-route-cue mono" title="${esc(routeCueTitle)}">→ ${activeImpacts.length}</span>`
+    : "";
+
+  const isExpanded = String(state.expandedLogEventId) === String(ev.id);
+  const detailImpactsHtml = activeImpacts.length
+    ? activeImpacts
+        .map(({ r, w, contrib, targetHabit }) => {
+          const cls = r.is_ai ? "ai-chip" : contrib >= 0 ? "pos-chip" : "neg-chip";
+          const sign = contrib >= 0 ? "+" : "";
+          const wSign = w >= 0 ? "+" : "";
+          const mathStr = `${evAmt >= 0 ? "+" : ""}${fmtNum(evAmt)} × ${wSign}${fmtNum(w)} = ${sign}${fmtNum(contrib)}`;
+          let statusStr = "";
+          if (targetHabit && typeof targetHabit.effective === "number") {
+            const unit = targetHabit.unit && targetHabit.unit !== "x" ? ` ${targetHabit.unit}` : "";
+            const tgtVal = targetHabit.target != null ? ` / ${fmtNum(targetHabit.target)}${unit}` : unit;
+            statusStr = `<span class="ev-detail-target-state mono">${esc(t("today"))}: ${fmtNum(targetHabit.effective)}${esc(tgtVal)}</span>`;
+          }
+          return `
+            <div class="ev-detail-route">
+              <span class="chip route-out-chip ev-impact-chip ${cls}">→ ${sign}${fmtNum(contrib)} ${esc(r.target_name)}</span>
+              <span class="ev-detail-math mono">${esc(mathStr)}</span>
+              ${statusStr}
+            </div>`;
+        })
+        .join("")
+    : `<div class="muted sm-text">${esc(t("log_no_direct_routes"))}</div>`;
+
+  const fullNoteDetailHtml = hasNote
+    ? `<div class="ev-detail-note">${renderNoteWithTags(ev.note)}</div>`
+    : "";
+
+  const cfDetailHtml = renderEventCounterfactualHtml(ev, dimsById);
+
   return `
-  <div class="ev-row">
-    <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
-    <span class="ev-time" data-ev-time="${ev.id}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
-    <strong>${esc(ev.habit_name)}</strong>
-    <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
-    <span class="chip">${esc(srcTag)}</span>
-    <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
-    <button class="btn ghost sm" data-ev-edit="${ev.id}" title="${esc(t("edit_entry_title"))}">Edit</button>
-    <button class="btn ghost sm" data-ev-del="${ev.id}" title="${esc(t("del_title"))}">✕</button>
+  <div class="ev-entry${isExpanded ? " expanded" : ""}" data-ev-entry="${ev.id}">
+    <div class="ev-row" data-ev-toggle="${ev.id}">
+      <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
+      <span class="ev-time" data-ev-time="${ev.id}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
+      <strong>${esc(ev.habit_name)}</strong>
+      <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
+      ${routeCueHtml}
+      <span class="chip">${esc(srcTag)}</span>
+      <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
+      <span class="ev-chevron" aria-hidden="true">${isExpanded ? "▾" : "▸"}</span>
+    </div>
+    <div class="ev-detail${isExpanded ? "" : " hidden"}">
+      <div class="ev-detail-section">
+        <div class="ev-detail-label">${esc(t("log_direct_impact"))}</div>
+        <div class="ev-detail-routes">${detailImpactsHtml}</div>
+      </div>
+      <div class="ev-detail-section">
+        <div class="ev-detail-label">${esc(t("log_cf_heading"))}</div>
+        <div class="ev-detail-routes" data-ev-cf-box="${ev.id}">${cfDetailHtml}</div>
+      </div>
+      ${fullNoteDetailHtml}
+      <div class="ev-detail-actions">
+        <button class="btn ghost sm" type="button" data-ev-edit="${ev.id}" title="${esc(t("edit_entry_title"))}">${esc(t("btn_edit_entry"))}</button>
+        <button class="btn ghost sm ev-detail-del" type="button" data-ev-del="${ev.id}" title="${esc(t("del_title"))}">${esc(t("btn_del_entry"))}</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1173,7 +1384,17 @@ function renderLogTimeline({ events, snapshots, state_dimensions, habits, single
   const dimsById = {};
   (state_dimensions || state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
   const habitsById = {};
-  (habits || state.habits || []).forEach((h) => { habitsById[h.id] = h; });
+  const todayRoutesById = {};
+  (state.todayData?.habits || []).forEach((th) => {
+    if (Array.isArray(th.routes_to) && th.routes_to.length) {
+      todayRoutesById[th.id] = th.routes_to;
+    }
+  });
+  (habits || state.habits || []).forEach((h) => {
+    habitsById[h.id] = Array.isArray(h.routes_to)
+      ? h
+      : { ...h, routes_to: todayRoutesById[h.id] || [] };
+  });
   state.logEventsById = {};
   (events || []).forEach((ev) => { state.logEventsById[ev.id] = ev; });
   state.logSnapsById = {};
@@ -1341,6 +1562,7 @@ async function quickTap(habitId) {
       body: JSON.stringify({ habit_id: habitId, amount: step, occurred_at, source: "tap", client_uuid }),
     });
     toast(`+${fmtNum(step)} ${h ? h.name : ""}`, { undoEventId: created.id });
+    state.analysisBoard = null;
     await loadToday();
   } catch (e) {
     // Offline fallback: queue event idempotently via client_uuid and update cached UI immediately
@@ -1586,6 +1808,7 @@ function closeEditEventModal() {
 }
 
 async function refreshAfterLogMutation() {
+  state.analysisBoard = null;
   await loadToday();
   if (state.logRange) {
     await loadLogRange(state.logRange.start, state.logRange.end);
@@ -3526,7 +3749,7 @@ function renderRhythmsPanel() {
 }
 
 async function loadAnalysis() {
-  const board = await api("/api/analysis?days=30");
+  const board = await ensureAnalysisBoard(true);
   const ai = board.ai || {};
   renderStateCurveSection(ai.state_curves || [], ai.timeline_meta || null);
 
@@ -3964,6 +4187,41 @@ function bindEvents() {
     if (noteEl) {
       const ev = state.logEventsById[Number(noteEl.dataset.evNote)];
       if (ev) openEditEventModal(ev, "#ee-note");
+      return;
+    }
+    const rowToggle = e.target.closest("[data-ev-toggle]");
+    if (rowToggle) {
+      const evId = String(rowToggle.dataset.evToggle);
+      const entryWrap = rowToggle.closest(".ev-entry");
+      const wasOpen = entryWrap?.classList.contains("expanded");
+      $("#event-list").querySelectorAll(".ev-entry.expanded").forEach((el) => {
+        el.classList.remove("expanded");
+        el.querySelector(".ev-detail")?.classList.add("hidden");
+        const ch = el.querySelector(".ev-chevron");
+        if (ch) ch.textContent = "▸";
+      });
+      if (!wasOpen && entryWrap) {
+        state.expandedLogEventId = evId;
+        entryWrap.classList.add("expanded");
+        entryWrap.querySelector(".ev-detail")?.classList.remove("hidden");
+        const ch = entryWrap.querySelector(".ev-chevron");
+        if (ch) ch.textContent = "▾";
+        if (!state.analysisBoard) {
+          ensureAnalysisBoard(false, true)
+            .then(() => {
+              const evObj = state.logEventsById[Number(evId)] || state.logEventsById[evId];
+              const cfBox = entryWrap.querySelector(`[data-ev-cf-box="${evId}"]`);
+              if (evObj && cfBox) {
+                const dimsById = {};
+                (state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
+                cfBox.innerHTML = renderEventCounterfactualHtml(evObj, dimsById);
+              }
+            })
+            .catch(() => {});
+        }
+      } else {
+        state.expandedLogEventId = null;
+      }
     }
   });
 
