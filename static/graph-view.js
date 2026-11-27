@@ -72,7 +72,6 @@
     // View options & camera
     let showHyps = false;
     let onlyConnected = false;
-    let sizeMode = "trend"; // "trend" (exponentially decaying 30-60d mass) | "today" (live today inflation)
     let camX = 0;
     let camY = 0;
     let camZoom = 1;
@@ -157,28 +156,10 @@
       const N = visibleHabits.length;
       const initR = Math.max(75, Math.min(180, 42 + N * 6));
 
-      // Compute organic Liquid Balloon target radii (sublinear log1p scaling so 8x water never crushes 1x sport!)
+      // Compute organic Liquid Balloon target radii (14d half-life exponential decay: active habits swell, reduced habits deflate over weeks!)
       const masses = visibleHabits.map((h) => Number((liquidById[h.id] && liquidById[h.id].mass) || 0));
       const refMass = Math.max(2.6, ...masses);
-      const calcTargetRadius = (h, tInfo, deg) => {
-        if (sizeMode === "today") {
-          const eff = tInfo ? Math.max(0, Number(tInfo.effective || 0)) : 0;
-          const dir = tInfo ? Math.max(0, Number(tInfo.direct || 0)) : 0;
-          let norm = 0;
-          if (h.kind === "measure") {
-            norm = dir > 0 ? 1.2 : 0;
-          } else if (eff > 0) {
-            const per = h.target_period || "day";
-            const div = per === "week" ? 7 : per === "month" ? 30 : 1;
-            const scale = h.target != null && Number(h.target) > 0
-              ? Math.max(0.25, Number(h.target) / div)
-              : Math.max(0.25, Number(h.tap_step || 1));
-            norm = Math.min(4, eff / scale);
-          }
-          const frac = Math.min(1, Math.log1p(norm * 1.7) / Math.log1p(3.5));
-          return clamp(7.5 + frac * 17.5 + Math.min(1.5, deg * 0.25), 7.5, 25.5);
-        }
-        // "trend": exponentially decaying 14d half-life mass -> unwanted balloons visibly deflate week by week!
+      const calcTargetRadius = (h, deg) => {
         const m = Number((liquidById[h.id] && liquidById[h.id].mass) || 0);
         const frac = m > 0 ? Math.min(1, Math.log1p(m * 1.35) / Math.log1p(refMass * 1.35)) : 0;
         return clamp(7.5 + frac * 17.5 + Math.min(1.5, deg * 0.25), 7.5, 25.5);
@@ -192,7 +173,7 @@
         const inCnt = degIn.get(h.id) || 0;
         const outCnt = degOut.get(h.id) || 0;
         const deg = inCnt + outCnt;
-        const targetR = calcTargetRadius(h, tInfo, deg);
+        const targetR = calcTargetRadius(h, deg);
         const startR = cached && typeof cached.r === "number" ? cached.r : targetR;
         return {
           id: h.id,
@@ -620,7 +601,7 @@
           ? ` · ${tr("today")}: ${fmtW(nd.effective)}`
           : "";
       const trendTxt =
-        sizeMode === "trend" && Math.abs(nd.trend || 0) >= 0.08
+        Math.abs(nd.trend || 0) >= 0.08
           ? ` · ${nd.trend > 0 ? tr("graph_trend_up") : tr("graph_trend_down")}`
           : "";
       const actionsHtml = selectedId
@@ -796,19 +777,17 @@
     }
 
     return {
-      update({ habits, edges: edgeList, todayHabits, liquidByHabit, sizeMode: nextSizeMode, reheat = 0.55 }) {
+      update({ habits, edges: edgeList, todayHabits, liquidByHabit, reheat = 0.55 }) {
         rawHabits = Array.isArray(habits) ? habits : [];
         rawEdges = Array.isArray(edgeList) ? edgeList : [];
         todayById = new Map((Array.isArray(todayHabits) ? todayHabits : []).map((h) => [h.id, h]));
         if (liquidByHabit && typeof liquidByHabit === "object") liquidById = liquidByHabit;
-        if (nextSizeMode === "trend" || nextSizeMode === "today") sizeMode = nextSizeMode;
         resize();
         rebuildGraph(reheat);
       },
       setOptions(next = {}) {
         if (typeof next.showHyps === "boolean") showHyps = next.showHyps;
         if (typeof next.onlyConnected === "boolean") onlyConnected = next.onlyConnected;
-        if (next.sizeMode === "trend" || next.sizeMode === "today") sizeMode = next.sizeMode;
         rebuildGraph(0.45);
       },
       getNodesSnapshot() {

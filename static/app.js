@@ -3101,7 +3101,6 @@ let qcColorDirty = false;
 let routingGraph = null;
 let graphShowHyps = false;
 let graphOnlyLinked = false;
-let graphSizeMode = localStorage.getItem("daily_graph_size_mode") === "today" ? "today" : "trend";
 let graphOpenInitialized = false;
 
 function ensureRoutingGraph() {
@@ -3162,13 +3161,11 @@ function renderRoutingGraph(reheat = 0.5) {
   if (!panel.open) return;
   const g = ensureRoutingGraph();
   if (!g) return;
-  $$("#graph-size-switch [data-gsize]").forEach((b) => b.classList.toggle("active", b.dataset.gsize === graphSizeMode));
   g.update({
     habits: state.habits || [],
     edges: state.graphEdges || state.edges || [],
     todayHabits: (state.todayData && state.todayData.habits) || [],
     liquidByHabit: state.liquidByHabit || {},
-    sizeMode: graphSizeMode,
     reheat,
   });
   if (!g._didFirstFit) {
@@ -6671,17 +6668,6 @@ function bindEvents() {
           if (routingGraph) routingGraph.fit();
         }, 380);
       }
-    });
-  }
-  const graphSizeSw = $("#graph-size-switch");
-  if (graphSizeSw) {
-    graphSizeSw.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-gsize]");
-      if (!btn) return;
-      graphSizeMode = btn.dataset.gsize === "today" ? "today" : "trend";
-      localStorage.setItem("daily_graph_size_mode", graphSizeMode);
-      $$("#graph-size-switch [data-gsize]").forEach((b) => b.classList.toggle("active", b.dataset.gsize === graphSizeMode));
-      if (routingGraph) routingGraph.setOptions({ sizeMode: graphSizeMode });
     });
   }
   const btnGraphHyps = $("#btn-graph-hyps");
