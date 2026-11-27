@@ -293,7 +293,15 @@ def _data_signature(
             for s in live_snaps
         ],
         "sd": [
-            (d.get("id"), d.get("name"), d.get("low_label") or "", d.get("high_label") or "", d.get("color") or "", bool(d.get("archived")))
+            (
+                d.get("id"),
+                d.get("name"),
+                d.get("low_label") or "",
+                d.get("high_label") or "",
+                d.get("color") or "",
+                int(d.get("scale_max") or 5),
+                bool(d.get("archived")),
+            )
             for d in (state_dims or [])
         ],
     }
@@ -1165,10 +1173,10 @@ def compute_ai_insights(
                 continue
         return best_tau, best_theta
 
-    def eval_ode(query_hours: list[float], tau_h: float, theta: np.ndarray) -> list[float]:
+    def eval_ode(query_hours: list[float], tau_h: float, theta: np.ndarray, scale_max: float = 5.0) -> list[float]:
         Phi = build_ode_phi(query_hours, tau_h)
         raw = Phi @ theta
-        return [round(float(max(1.0, min(5.0, v))), 2) for v in raw]
+        return [round(float(max(1.0, min(scale_max, v))), 2) for v in raw]
 
     state_curves: list[dict[str, Any]] = []
     if active_dims:
@@ -1222,6 +1230,7 @@ def compute_ai_insights(
             warnings.simplefilter("ignore")
             for dim in active_dims:
                 did = dim["id"]
+                s_max = float(max(2, min(10, int(dim.get("scale_max") or 5))))
                 dim_snaps = sorted(snaps_by_dim.get(did, []), key=lambda x: x[0])
                 rated_days_d = [d for d in observed_days if snap_by_day.get(d, {}).get(did) is not None]
                 actual_14 = [snap_by_day.get(d, {}).get(did) for d in curve_dates]
@@ -1249,7 +1258,7 @@ def compute_ai_insights(
                             reg_c = _make_regressor(engine)
                             reg_c.fit(X_r_full[:, keep_c], y_r)
                             preds_c = reg_c.predict(X_curve_all[:, keep_c])
-                            tabpfn_14 = [round(float(max(1.0, min(5.0, p))), 2) for p in preds_c]
+                            tabpfn_14 = [round(float(max(1.0, min(s_max, p))), 2) for p in preds_c]
                             reg_c_fitted = reg_c
                         except Exception:
                             mean_v = round(float(np.mean(y_r)), 2)
@@ -1258,8 +1267,8 @@ def compute_ai_insights(
                 # B) Continuous-Time Liquid ODE ("Uhrwerk") across 24h, 14d & 8w
                 if dim_snaps:
                     tau_h, theta = fit_liquid_ode(dim_snaps)
-                    ode_24 = eval_ode(h24_times_hr, tau_h, theta)
-                    ode_14 = eval_ode(d14_eval_hours, tau_h, theta)
+                    ode_24 = eval_ode(h24_times_hr, tau_h, theta, s_max)
+                    ode_14 = eval_ode(d14_eval_hours, tau_h, theta, s_max)
                 else:
                     tau_h = 6.0
                     theta = np.zeros(1 + len(habit_ids), dtype=np.float64)
@@ -1294,7 +1303,7 @@ def compute_ai_insights(
                             reg_i = _make_regressor(engine)
                             reg_i.fit(X_intra_tr[:, keep_i], y_intra_tr)
                             p_24 = reg_i.predict(X_h24_grid[:, keep_i])
-                            tabpfn_24 = [round(float(max(1.0, min(5.0, v))), 2) for v in p_24]
+                            tabpfn_24 = [round(float(max(1.0, min(s_max, v))), 2) for v in p_24]
                         except Exception:
                             fallback_v = today_tabpfn_val if today_tabpfn_val is not None else round(float(np.mean(y_intra_tr)), 2)
                             tabpfn_24 = [fallback_v] * len(h24_offsets)
@@ -1312,11 +1321,11 @@ def compute_ai_insights(
                             (datetime.combine(ws + timedelta(days=k), datetime.min.time()) + timedelta(hours=18)).timestamp() / 3600.0
                             for k in range(7)
                         ]
-                        w8_ode.append(round(float(np.mean(eval_ode(w_eval_hrs, tau_h, theta))), 2))
+                        w8_ode.append(round(float(np.mean(eval_ode(w_eval_hrs, tau_h, theta, s_max))), 2))
                         if reg_c_fitted is not None and keep_c is not None:
                             Xw = np.array([habit_vec_for_day(d) for d in w_days], dtype=np.float32)
                             pw = reg_c_fitted.predict(Xw[:, keep_c])
-                            w8_tabpfn.append(round(float(max(1.0, min(5.0, np.mean(pw)))), 2))
+                            w8_tabpfn.append(round(float(max(1.0, min(s_max, np.mean(pw)))), 2))
                         else:
                             w8_tabpfn.append(today_tabpfn_val)
                     else:
@@ -1337,10 +1346,10 @@ def compute_ai_insights(
 
                 # Empirical residual std for honest future confidence ribbon width
                 if dim_snaps:
-                    ode_fit_vals = eval_ode([s[0] for s in dim_snaps], tau_h, theta)
+                    ode_fit_vals = eval_ode([s[0] for s in dim_snaps], tau_h, theta, s_max)
                     ode_resids = [abs(s[1] - pv) for s, pv in zip(dim_snaps, ode_fit_vals)]
                     ode_err = max(0.22, min(1.2, float(np.mean(ode_resids)) * 1.25)) if ode_resids else 0.45
-                    ode_tl_vals = eval_ode(tl_abs_hrs, tau_h, theta)
+                    ode_tl_vals = eval_ode(tl_abs_hrs, tau_h, theta, s_max)
                     ode_decay_h = max(18.0, float(tau_h) * 2.2)
                     ode_timeline = []
                     for rel_h, ov in zip(tl_rel_hrs, ode_tl_vals):
@@ -1360,7 +1369,7 @@ def compute_ai_insights(
                     data_strength = min(1.0, len(rated_days_d) / 14.0)
                     if reg_c_fitted is not None and keep_c is not None:
                         try:
-                            tl_tp_preds = [round(float(max(1.0, min(5.0, p))), 2) for p in reg_c_fitted.predict(X_tl_days[:, keep_c])]
+                            tl_tp_preds = [round(float(max(1.0, min(s_max, p))), 2) for p in reg_c_fitted.predict(X_tl_days[:, keep_c])]
                             tr_preds = reg_c_fitted.predict(X_r_full[:, keep_c])
                             tp_err = max(0.25, min(1.25, float(np.mean(np.abs(y_r - tr_preds))) * 1.35 + 0.15))
                         except Exception:
@@ -1402,6 +1411,7 @@ def compute_ai_insights(
                         "low_label": dim.get("low_label", ""),
                         "high_label": dim.get("high_label", ""),
                         "color": dim.get("color") or "#3d6b7d",
+                        "scale_max": int(s_max),
                         "rated_count": len(dim_snaps),
                         "ode_tau_hours": tau_h,
                         # Legacy fields kept for clean backwards compatibility

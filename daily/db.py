@@ -56,6 +56,14 @@ def _clean_hex_color(raw: str | None, fallback: str = "#3d6b7d") -> str:
     return fallback
 
 
+def _clean_scale_max(raw: Any, fallback: int = 5) -> int:
+    try:
+        v = int(round(float(raw)))
+        return max(2, min(10, v))
+    except Exception:
+        return fallback
+
+
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
 
@@ -239,6 +247,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
                 low_label TEXT NOT NULL DEFAULT '',
                 high_label TEXT NOT NULL DEFAULT '',
                 color TEXT NOT NULL DEFAULT '',
+                scale_max INTEGER NOT NULL DEFAULT 5,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -281,10 +290,12 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
                 )
             conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('state_dims_seeded', '1')")
 
-        # Migrate legacy state_dimensions tables: add color & updated_at and backfill calm defaults
+        # Migrate legacy state_dimensions tables: add color, scale_max & updated_at and backfill calm defaults
         dim_cols = {r[1] for r in conn.execute("PRAGMA table_info(state_dimensions)").fetchall()}
         if "color" not in dim_cols:
             conn.execute("ALTER TABLE state_dimensions ADD COLUMN color TEXT NOT NULL DEFAULT ''")
+        if "scale_max" not in dim_cols:
+            conn.execute("ALTER TABLE state_dimensions ADD COLUMN scale_max INTEGER NOT NULL DEFAULT 5")
         if "updated_at" not in dim_cols:
             conn.execute("ALTER TABLE state_dimensions ADD COLUMN updated_at TEXT")
         conn.execute("UPDATE state_dimensions SET updated_at = created_at WHERE updated_at IS NULL")
@@ -1060,6 +1071,7 @@ def create_state_dimension(
     low_label: str = "",
     high_label: str = "",
     color: str = "",
+    scale_max: int = 5,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
     clean_name = name.strip()
@@ -1067,6 +1079,7 @@ def create_state_dimension(
         raise ValueError("Name der Achse darf nicht leer sein")
     base_id = slugify(clean_name)
     clean_color = _clean_hex_color(color, DEFAULT_DIM_COLORS.get(base_id, "#3d6b7d"))
+    clean_scale = _clean_scale_max(scale_max, 5)
     ts_now = now_iso()
     with get_conn(db_path) as conn:
         # If an archived dimension with the same name exists, simply unarchive it!
@@ -1099,19 +1112,20 @@ def create_state_dimension(
         max_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) FROM state_dimensions").fetchone()[0]
         conn.execute(
             """
-            INSERT INTO state_dimensions(id, name, low_label, high_label, color, sort_order, archived, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?)
+            INSERT INTO state_dimensions(id, name, low_label, high_label, color, scale_max, sort_order, archived, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
-            (did, clean_name, low_label.strip(), high_label.strip(), clean_color, int(max_order) + 1, ts_now, ts_now),
+            (did, clean_name, low_label.strip(), high_label.strip(), clean_color, clean_scale, int(max_order) + 1, ts_now, ts_now),
         )
         row = conn.execute("SELECT * FROM state_dimensions WHERE id = ?", (did,)).fetchone()
     return dict(row)
 
 
 def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
-    allowed = {"name", "low_label", "high_label", "color", "archived", "sort_order"}
+    allowed = {"name", "low_label", "high_label", "color", "scale_max", "archived", "sort_order"}
     sets: list[str] = []
     vals: list[Any] = []
+    next_scale: int | None = None
     for k, v in fields.items():
         if k not in allowed:
             continue
@@ -1119,21 +1133,55 @@ def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = 
             v = 1 if bool(v) else 0
         elif k == "color":
             v = _clean_hex_color(str(v), DEFAULT_DIM_COLORS.get(dim_id, "#3d6b7d"))
+        elif k == "scale_max":
+            v = _clean_scale_max(v, 5)
+            next_scale = v
         elif k in {"name", "low_label", "high_label"}:
             v = str(v).strip()
         sets.append(f"{k} = ?")
         vals.append(v)
     if not sets:
         raise ValueError("No valid fields to update")
+    ts_now = now_iso()
     sets.append("updated_at = ?")
-    vals.append(now_iso())
+    vals.append(ts_now)
     vals.append(dim_id)
+    rescaled_count = 0
     with get_conn(db_path) as conn:
-        cur = conn.execute(f"UPDATE state_dimensions SET {', '.join(sets)} WHERE id = ?", vals)
-        if cur.rowcount == 0:
+        prev_row = conn.execute("SELECT * FROM state_dimensions WHERE id = ?", (dim_id,)).fetchone()
+        if not prev_row:
             raise KeyError(f"State dimension not found: {dim_id}")
+        old_scale = _clean_scale_max(prev_row["scale_max"] if "scale_max" in prev_row.keys() else 5, 5)
+        conn.execute(f"UPDATE state_dimensions SET {', '.join(sets)} WHERE id = ?", vals)
+
+        # Proportionally rescale all existing ratings for this axis when scale_max changes (e.g. 1-5 -> 1-7 or 1-7 -> 1-5)
+        if next_scale is not None and next_scale != old_scale:
+            sn_rows = conn.execute(
+                "SELECT id, ratings_json FROM snapshots WHERE deleted_at IS NULL AND ratings_json LIKE ?",
+                (f'%"{dim_id}"%',),
+            ).fetchall()
+            for sr in sn_rows:
+                try:
+                    rmap = json.loads(sr["ratings_json"] or "{}")
+                except Exception:
+                    continue
+                if dim_id not in rmap or rmap[dim_id] is None:
+                    continue
+                old_v = float(rmap[dim_id])
+                norm = max(0.0, min(1.0, (old_v - 1.0) / float(max(1, old_scale - 1))))
+                new_v = round(1.0 + norm * float(next_scale - 1), 2)
+                rmap[dim_id] = max(1.0, min(float(next_scale), new_v))
+                conn.execute(
+                    "UPDATE snapshots SET ratings_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(rmap, ensure_ascii=False), ts_now, sr["id"]),
+                )
+                rescaled_count += 1
+
         row = conn.execute("SELECT * FROM state_dimensions WHERE id = ?", (dim_id,)).fetchone()
-    return dict(row)
+    out = dict(row)
+    if rescaled_count:
+        out["rescaled_snapshots"] = rescaled_count
+    return out
 
 
 def reorder_state_dimensions(dim_ids: list[str], db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
@@ -1166,23 +1214,29 @@ def create_snapshot(
     client_uuid: str | None = None,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
-    clean_ratings: dict[str, float] = {}
-    for k, v in (ratings or {}).items():
-        if v is None or v == "":
-            continue
-        val = float(v)
-        if 1.0 <= val <= 5.0:
-            clean_ratings[str(k)] = round(val, 1)
     clean_causes = [str(c).strip() for c in (causes or []) if str(c).strip()]
     clean_note = (note or "").strip()
-    if not clean_ratings and not clean_note and not clean_causes:
-        raise ValueError("Bitte mindestens einen Wert, eine Ursache oder eine Notiz eintragen")
 
     ts = occurred_at or now_iso()
     datetime.fromisoformat(ts)
     c_uuid = (client_uuid or "").strip() or uuid.uuid4().hex
     ts_now = now_iso()
     with get_conn(db_path) as conn:
+        dim_scales = {
+            r["id"]: _clean_scale_max(r["scale_max"], 5)
+            for r in conn.execute("SELECT id, scale_max FROM state_dimensions").fetchall()
+        }
+        clean_ratings: dict[str, float] = {}
+        for k, v in (ratings or {}).items():
+            if v is None or v == "":
+                continue
+            val = float(v)
+            s_max = float(dim_scales.get(str(k), 5))
+            if 1.0 <= val <= s_max:
+                clean_ratings[str(k)] = round(val, 2)
+        if not clean_ratings and not clean_note and not clean_causes:
+            raise ValueError("Bitte mindestens einen Wert, eine Ursache oder eine Notiz eintragen")
+
         existing = conn.execute("SELECT * FROM snapshots WHERE client_uuid = ?", (c_uuid,)).fetchone()
         if existing:
             return _decode_snapshot(existing)
@@ -1203,6 +1257,10 @@ def update_snapshot(snapshot_id: int, fields: dict[str, Any], db_path: Path = DE
         if not cur_row:
             raise KeyError(f"Snapshot not found: {snapshot_id}")
         cur_dec = _decode_snapshot(cur_row)
+        dim_scales = {
+            r["id"]: _clean_scale_max(r["scale_max"], 5)
+            for r in conn.execute("SELECT id, scale_max FROM state_dimensions").fetchall()
+        }
 
         ratings = cur_dec["ratings"]
         if "ratings" in fields and fields["ratings"] is not None:
@@ -1211,8 +1269,9 @@ def update_snapshot(snapshot_id: int, fields: dict[str, Any], db_path: Path = DE
                 if v is None or v == "":
                     continue
                 val = float(v)
-                if 1.0 <= val <= 5.0:
-                    clean_ratings[str(k)] = round(val, 1)
+                s_max = float(dim_scales.get(str(k), 5))
+                if 1.0 <= val <= s_max:
+                    clean_ratings[str(k)] = round(val, 2)
             ratings = clean_ratings
 
         causes = cur_dec["causes"]

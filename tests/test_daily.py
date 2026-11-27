@@ -1280,6 +1280,60 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(by_date[yest_iso][f"{temp['id']}__effective"], "")
         self.assertAlmostEqual(float(by_date[today_iso][f"{temp['id']}__effective"]), 36.55, places=2)
 
+    def test_custom_axis_scale_max_rescaling_and_e2ee_sync(self) -> None:
+        from daily.db import init_db, list_state_dimensions
+        from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
+
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        # 1. Create custom 1-6 (forced-choice, no midpoint) axis & log value 6 (previously rejected > 5.0!)
+        fc = client.post(
+            "/api/state/dimensions",
+            json={"name": "Klarheit", "low_label": "neblig", "high_label": "kristallklar", "scale_max": 6},
+        ).json()
+        self.assertEqual(fc["scale_max"], 6)
+        today_iso = date.today().isoformat()
+        sn1 = client.post(
+            "/api/snapshots",
+            json={"ratings": {fc["id"]: 6, "stimmung": 3}, "occurred_at": f"{today_iso}T09:00:00"},
+        ).json()
+        sn2 = client.post(
+            "/api/snapshots",
+            json={"ratings": {fc["id"]: 1, "stimmung": 5}, "occurred_at": f"{today_iso}T15:00:00"},
+        ).json()
+        self.assertEqual(sn1["ratings"][fc["id"]], 6.0)
+        self.assertEqual(sn2["ratings"][fc["id"]], 1.0)
+
+        # 2. Rescale 'stimmung' from 1-5 -> 1-7: midpoint 3/5 -> 4/7, max 5/5 -> 7/7!
+        upd7 = client.patch("/api/state/dimensions/stimmung", json={"scale_max": 7}).json()
+        self.assertEqual(upd7["scale_max"], 7)
+        self.assertEqual(upd7["rescaled_snapshots"], 2)
+        snaps_after_7 = {s["id"]: s["ratings"]["stimmung"] for s in client.get(f"/api/today?day={today_iso}").json()["snapshots"]}
+        self.assertAlmostEqual(snaps_after_7[sn1["id"]], 4.0, places=2)
+        self.assertAlmostEqual(snaps_after_7[sn2["id"]], 7.0, places=2)
+
+        # 3. Rescale back 1-7 -> 1-5: lossless round-trip back to 3.0 & 5.0!
+        upd5 = client.patch("/api/state/dimensions/stimmung", json={"scale_max": 5}).json()
+        self.assertEqual(upd5["scale_max"], 5)
+        snaps_after_5 = {s["id"]: s["ratings"]["stimmung"] for s in client.get(f"/api/today?day={today_iso}").json()["snapshots"]}
+        self.assertAlmostEqual(snaps_after_5[sn1["id"]], 3.0, places=2)
+        self.assertAlmostEqual(snaps_after_5[sn2["id"]], 5.0, places=2)
+
+        # 4. Analysis returns exact scale_max=6 and does NOT clamp 6.0 down to 5.0!
+        client.post("/api/habits", json={"name": "Spaziergang", "kind": "min", "target": 1})
+        an = client.get("/api/analysis?days=30").json()
+        fc_curve = next(c for c in an["ai"]["state_curves"] if c["id"] == fc["id"])
+        self.assertEqual(fc_curve["scale_max"], 6)
+        self.assertEqual(max(pt["v"] for pt in fc_curve["timeline"]["actual"]), 6.0)
+
+        # 5. E2EE merge propagates custom scale_max cleanly to second device
+        other_db = Path(self.tmp.name) / "scale_sync_target.db"
+        init_db(other_db)
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        other_dims = {d["id"]: d for d in list_state_dimensions(db_path=other_db)}
+        self.assertEqual(other_dims[fc["id"]]["scale_max"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

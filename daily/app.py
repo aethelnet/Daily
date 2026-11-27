@@ -64,7 +64,7 @@ from .e2ee import (
     save_e2ee_config,
     sync_e2ee_vault,
 )
-from .ml import DEFAULT_TABPFN_THRESHOLD, compute_ai_insights, compute_ai_routing_edges, predict_contextual_nudges
+from .ml import DEFAULT_TABPFN_THRESHOLD, compute_ai_insights, compute_ai_routing_edges, invalidate_ml_caches, predict_contextual_nudges
 from .nudges import NudgeScheduler, send_desktop_notification
 from .sync import apply_sync_batch, get_pairing_info, get_sync_token
 
@@ -130,6 +130,7 @@ class StateDimensionCreate(BaseModel):
     low_label: str = ""
     high_label: str = ""
     color: str = ""
+    scale_max: int = 5
 
 
 class StateDimensionUpdate(BaseModel):
@@ -137,6 +138,7 @@ class StateDimensionUpdate(BaseModel):
     low_label: str | None = None
     high_label: str | None = None
     color: str | None = None
+    scale_max: int | None = None
     archived: bool | None = None
 
 
@@ -701,13 +703,16 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
     @app.post("/api/state/dimensions")
     def api_create_state_dim(payload: StateDimensionCreate) -> dict[str, Any]:
         try:
-            return create_state_dimension(
+            res = create_state_dimension(
                 name=payload.name,
                 low_label=payload.low_label,
                 high_label=payload.high_label,
                 color=payload.color,
+                scale_max=payload.scale_max,
                 db_path=resolved_db,
             )
+            invalidate_ml_caches()
+            return res
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -718,7 +723,9 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
     @app.patch("/api/state/dimensions/{dim_id}")
     def api_update_state_dim(dim_id: str, payload: StateDimensionUpdate) -> dict[str, Any]:
         try:
-            return update_state_dimension(dim_id, payload.model_dump(exclude_none=True), db_path=resolved_db)
+            res = update_state_dimension(dim_id, payload.model_dump(exclude_none=True), db_path=resolved_db)
+            invalidate_ml_caches()
+            return res
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
         except Exception as exc:
