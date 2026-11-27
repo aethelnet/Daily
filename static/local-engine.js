@@ -1898,9 +1898,24 @@
             if (sn.deleted_at || !sn.ratings || sn.ratings[did] == null) continue;
             const oldV = Number(sn.ratings[did]);
             if (!Number.isFinite(oldV)) continue;
-            const norm = Math.max(0, Math.min(1, (oldV - 1) / Math.max(1, oldScale - 1)));
+            if (!sn.scales || typeof sn.scales !== "object") sn.scales = {};
+            const hasRecorded = sn.scales[did] != null;
+            const srcScale = hasRecorded ? Math.max(2, Math.min(10, Math.round(Number(sn.scales[did] || oldScale)))) : oldScale;
+            if (srcScale === nextScale) {
+              // Already stored on nextScale -> NEVER double-convert!
+              sn.scales[did] = nextScale;
+              continue;
+            }
+            if (!hasRecorded && oldV > oldScale) {
+              // Legacy snapshot value already exceeds oldScale -> stamp without corrupting!
+              sn.scales[did] = Math.max(nextScale, Math.round(oldV));
+              sn.updated_at = tsNow;
+              continue;
+            }
+            const norm = Math.max(0, Math.min(1, (oldV - 1) / Math.max(1, srcScale - 1)));
             const newV = Math.round((1 + norm * (nextScale - 1)) * 100) / 100;
             sn.ratings[did] = Math.max(1, Math.min(nextScale, newV));
+            sn.scales[did] = nextScale;
             sn.updated_at = tsNow;
             rescaledCount += 1;
           }
@@ -1911,11 +1926,18 @@
       return rescaledCount ? { ...d, rescaled_snapshots: rescaledCount } : d;
     }
     if (path === "/api/snapshots" && method === "POST") {
+      const dimScales = Object.fromEntries((db.state_dimensions || []).map((x) => [x.id, Math.max(2, Math.min(10, Math.round(Number(x.scale_max || 5))))]));
+      const rObj = body.ratings || {};
+      const scales = {};
+      for (const k of Object.keys(rObj)) {
+        if (rObj[k] != null && rObj[k] !== "") scales[k] = dimScales[k] || 5;
+      }
       const sn = {
         id: db.next_id++,
         client_uuid: body.client_uuid || `sn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         occurred_at: body.occurred_at || nowIso(),
-        ratings: body.ratings || {},
+        ratings: rObj,
+        scales,
         causes: body.causes || [],
         note: (body.note || "").trim(),
         created_at: nowIso(),
@@ -1931,7 +1953,15 @@
       const sid = Number(mSn[1]);
       const sn = db.snapshots.find((x) => x.id === sid && !x.deleted_at);
       if (!sn) throw new Error("Momentaufnahme nicht gefunden");
-      if (body.ratings !== undefined) sn.ratings = body.ratings || {};
+      if (body.ratings !== undefined) {
+        const dimScales = Object.fromEntries((db.state_dimensions || []).map((x) => [x.id, Math.max(2, Math.min(10, Math.round(Number(x.scale_max || 5))))]));
+        sn.ratings = body.ratings || {};
+        const scales = {};
+        for (const k of Object.keys(sn.ratings)) {
+          if (sn.ratings[k] != null && sn.ratings[k] !== "") scales[k] = dimScales[k] || 5;
+        }
+        sn.scales = scales;
+      }
       if (body.causes !== undefined) sn.causes = body.causes || [];
       if (body.note !== undefined) sn.note = String(body.note).trim();
       if (body.occurred_at !== undefined) sn.occurred_at = body.occurred_at;
