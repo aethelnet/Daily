@@ -94,7 +94,9 @@
       drag_reorder_title: "Halten & ziehen zum Umsortieren",
       drag_hint: "Zeile ziehen",
       reordered_toast: "Reihenfolge gespeichert",
-      filter_search_ph: "Filtern…",
+      filter_search_ph: "Zettel & Karten filtern…",
+      tasks_no_match: "Keine passenden Zettel.",
+      ac_task_meta: "Zettel",
       empty_title: "Noch komplett leer — null Presets, dein eigenes System.",
       empty_body_html:
         "Lege oben deine erste Karte an (z. B. ein Ziel wie <code>Kreativ ≥ 2</code>, ein Limit wie <code>Kaffee ≤ 2</code> oder einen Messwert wie <code>Basaltemperatur °C</code>). Unter <strong>Setup &amp; Routing</strong> kannst du dann alles frei mit <code>+</code> oder <code>−</code> aufeinander routen.",
@@ -657,7 +659,9 @@
       drag_reorder_title: "Hold & drag to reorder",
       drag_hint: "Drag row",
       reordered_toast: "Order saved",
-      filter_search_ph: "Filter…",
+      filter_search_ph: "Filter notes & cards…",
+      tasks_no_match: "No matching notes.",
+      ac_task_meta: "Note",
       empty_title: "Completely empty — zero presets, your own system.",
       empty_body_html:
         "Create your first card above (e.g. a goal like <code>Creative ≥ 2</code>, a limit like <code>Coffee ≤ 2</code>, or a reading like <code>Basal temp °C</code>). Under <strong>Setup &amp; Routing</strong> you can freely route anything onto anything with <code>+</code> or <code>−</code>.",
