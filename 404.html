@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Daily" />
-  <title>Daily // Local Signed-Graph Habit Tracker</title>
+  <title>Daily // Local Signed-Graph Tracker</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" id="dynamic-favicon" type="image/svg+xml" href="/icon.svg" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
@@ -66,12 +66,17 @@
         </div>
 
         <form id="quick-create-form" class="quick-create">
-          <input type="text" id="qc-name" data-i18n-placeholder="qc_placeholder" placeholder="+ Neues Habit (z. B. Kreativ, Buch: Dune, Kochen)..." required />
-          <select id="qc-kind" data-i18n-title="qc_kind_title" title="Richtung (Mehr / Weniger / Neutral)">
+          <label class="qc-color-picker" id="qc-color-wrap" style="background:#2563eb" data-i18n-title="lbl_color" title="Farbe">
+            <input type="color" id="qc-color" value="#2563eb" data-i18n-title="lbl_color" title="Farbe" />
+          </label>
+          <input type="text" id="qc-name" data-i18n-placeholder="qc_placeholder" placeholder="+ Neue Karte (z. B. Kreativ, Kaffee, Temperatur °C)…" required />
+          <select id="qc-kind" data-i18n-title="qc_kind_title" title="Typ (Mehr / Weniger / Neutral / Messwert)">
             <option value="min" data-i18n="kind_min">Mehr (↑)</option>
             <option value="max" data-i18n="kind_max">Weniger (↓)</option>
             <option value="neutral" selected data-i18n="kind_neutral">Neutral</option>
+            <option value="measure" data-i18n="kind_measure">Messwert (Ø)</option>
           </select>
+          <input type="text" id="qc-unit" data-i18n-placeholder="qc_unit_ph" placeholder="°C, kg…" class="unit-sm hidden" maxlength="12" />
           <input type="number" id="qc-target" step="any" data-i18n-placeholder="qc_target_ph" placeholder="Ziel (opt.)" class="num-sm hidden" />
           <select id="qc-period" data-i18n-title="qc_period_title" title="Zeitraum" class="hidden">
             <option value="day" selected data-i18n="per_day_short">/ Tag</option>
@@ -84,18 +89,23 @@
 
       <div id="today-filter-bar" class="filter-bar hidden">
         <div class="row-inline" id="today-kind-pills">
+          <button type="button" class="pill" data-fkind="focus" data-i18n="filter_focus" data-i18n-title="filter_focus_title" title="Nur laufende Timer, offene Ziele, Sammel-Säulen &amp; gerade fällige Karten">Fokus</button>
           <button type="button" class="pill active" data-fkind="all" data-i18n="filter_all">Alle</button>
           <button type="button" class="pill" data-fkind="min" data-i18n="kind_min">Mehr (↑)</button>
           <button type="button" class="pill" data-fkind="max" data-i18n="kind_max">Weniger (↓)</button>
           <button type="button" class="pill" data-fkind="neutral" data-i18n="kind_neutral">Neutral</button>
+          <button type="button" class="pill" data-fkind="measure" data-i18n="kind_measure_short">Messwert</button>
           <button type="button" class="pill hidden" id="btn-clear-focus" data-i18n-title="btn_clear_focus_title" title="Alle aufgeklappten Gruppen schließen">✕ <span data-i18n="groups">Gruppen</span> (<span id="focus-count">0</span>)</button>
         </div>
         <div class="row-inline">
-          <div class="mode-switch" id="today-sort-switch" role="group" data-i18n-title="sort_title" title="Sortierung: Eigene Reihenfolge oder zuletzt aktive Karten nach oben">
-            <button type="button" class="mode-btn active" data-sort="manual" data-i18n="sort_manual">Eigene</button>
-            <button type="button" class="mode-btn" data-sort="recent" data-i18n="sort_recent">Zuletzt aktiv</button>
+          <div class="mode-switch" id="today-sort-switch" role="group" data-i18n-title="sort_title" title="Sortierung: Jetzt relevant (Fälligkeit &amp; Auswahl) oder eigene Reihenfolge">
+            <button type="button" class="mode-btn active" data-sort="smart" data-i18n="sort_smart">Jetzt</button>
+            <button type="button" class="mode-btn" data-sort="manual" data-i18n="sort_manual">Eigene</button>
           </div>
-          <input type="text" id="today-search" class="filter-search" data-i18n-placeholder="filter_search_ph" placeholder="Filtern…" />
+          <div class="ac-wrap today-search-wrap">
+            <input type="text" id="today-search" class="filter-search" autocomplete="off" data-i18n-placeholder="filter_search_ph" placeholder="Filtern…" />
+            <div id="today-search-ac" class="ac-list hidden" role="listbox"></div>
+          </div>
         </div>
       </div>
 
@@ -109,6 +119,7 @@
 
       <div id="focus-clusters" class="focus-clusters hidden"></div>
       <div id="habit-grid" class="habit-grid"></div>
+      <div id="dormant-habits-wrap" class="dormant-wrap hidden"></div>
 
       <div class="panel log-panel">
         <div class="panel-head">
@@ -143,11 +154,40 @@
 
     <!-- ==================== TAB 2: SETUP & ROUTING ==================== -->
     <section id="view-setup" class="view">
+      <details id="routing-graph-panel" class="panel graph-panel">
+        <summary class="graph-summary">
+          <div class="row-inline" style="gap:8px;min-width:0;">
+            <span class="route-caret"></span>
+            <h3 style="margin:0;" data-i18n="graph_title">Routing-Graph</h3>
+            <span class="muted mono sm-text" id="graph-meta"></span>
+          </div>
+          <span class="muted sm-text graph-summary-hint" data-i18n="graph_summary_hint">Ziehen · Tippen · Zoom</span>
+        </summary>
+        <div class="graph-body">
+          <div class="graph-toolbar">
+            <div class="row-inline" style="gap:6px;flex-wrap:wrap;">
+              <button type="button" class="pill" id="btn-graph-hyps" data-i18n="graph_toggle_hyps">+ Annahmen</button>
+              <button type="button" class="pill" id="btn-graph-linked" data-i18n="graph_only_linked">Nur verbundene</button>
+            </div>
+            <div class="row-inline" style="gap:4px;">
+              <button type="button" class="btn ghost sm icon-btn" id="btn-graph-zoom-out" data-i18n-title="graph_zoom_out" title="Herauszoomen">−</button>
+              <button type="button" class="btn ghost sm icon-btn" id="btn-graph-zoom-in" data-i18n-title="graph_zoom_in" title="Hineinzoomen">+</button>
+              <button type="button" class="btn ghost sm" id="btn-graph-fit" data-i18n="graph_fit">Zentrieren</button>
+              <button type="button" class="btn ghost sm" id="btn-graph-reheat" data-i18n="graph_reheat">Neu ordnen</button>
+            </div>
+          </div>
+          <div class="graph-canvas-wrap">
+            <canvas id="routing-graph-canvas" class="graph-canvas"></canvas>
+          </div>
+          <div id="routing-graph-readout" class="graph-readout"></div>
+        </div>
+      </details>
+
       <div class="split-2">
         <!-- Left: Habit Editor & Order -->
         <div class="panel">
           <div class="panel-head">
-            <h3 id="habit-form-title" data-i18n="hf_title_new">Habit anlegen</h3>
+            <h3 id="habit-form-title" data-i18n="hf_title_new">Karte anlegen</h3>
             <button class="btn ghost sm hidden" id="btn-cancel-edit" data-i18n="btn_cancel_edit">Neu anlegen</button>
           </div>
 
@@ -155,8 +195,9 @@
             <input type="hidden" id="hf-id" />
             <label class="field">
               <span data-i18n="lbl_name">Name</span>
-              <input type="text" id="hf-name" data-i18n-placeholder="hf_name_ph" placeholder="z. B. Kreativ, Programmieren, Kochen, Sport" required />
+              <input type="text" id="hf-name" autocomplete="off" data-i18n-placeholder="hf_name_ph" placeholder="z. B. Kreativ, Kochen, Sport, Basaltemperatur" required />
             </label>
+            <div id="hf-name-matches" class="name-match-list hidden" role="listbox"></div>
 
             <div class="row-2">
               <label class="field">
@@ -165,6 +206,7 @@
                   <option value="neutral" data-i18n="opt_neutral">Neutral (nur zählen)</option>
                   <option value="min" data-i18n="opt_min">Mehr davon (↑ · Ziel optional)</option>
                   <option value="max" data-i18n="opt_max">Weniger davon (↓ · Limit optional)</option>
+                  <option value="measure" data-i18n="opt_measure">Messwert (Ø · z. B. °C, kg, bpm)</option>
                 </select>
               </label>
               <label class="field">
@@ -182,10 +224,16 @@
                   <option value="month" data-i18n="opt_per_month">pro Monat</option>
                 </select>
               </label>
-              <label class="field">
-                <span data-i18n="lbl_unit">Einheit</span>
-                <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, h, Blocks" />
-              </label>
+              <div class="unit-step-pair">
+                <label class="field" style="flex:1;min-width:0;">
+                  <span data-i18n="lbl_unit">Einheit</span>
+                  <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, °C, kg, h" />
+                </label>
+                <label class="field" style="width:82px;flex-shrink:0;">
+                  <span data-i18n="lbl_tap_step">Schritt</span>
+                  <input type="number" id="hf-step" value="1" min="0.05" step="0.05" class="mono" data-i18n-title="hf_step_title" title="Schnell-Tap Schrittweite (Standard: 1 · z. B. 0.2 bei Gramm)" />
+                </label>
+              </div>
             </div>
 
             <div class="row-2">
@@ -198,8 +246,6 @@
                   <button type="button" class="swatch" data-color="#d97706" style="background:#d97706"></button>
                   <button type="button" class="swatch" data-color="#dc2626" style="background:#dc2626"></button>
                   <button type="button" class="swatch" data-color="#7c3aed" style="background:#7c3aed"></button>
-                  <button type="button" class="swatch" data-color="#0d9488" style="background:#0d9488"></button>
-                  <button type="button" class="swatch" data-color="#475569" style="background:#475569"></button>
                 </div>
               </label>
               <label class="field">
@@ -207,6 +253,12 @@
                 <input type="number" id="hf-block-min" min="1" max="720" step="1" data-i18n-placeholder="hf_block_min_ph" placeholder="optional · z. B. 30" />
               </label>
             </div>
+
+            <label class="field">
+              <span data-i18n="lbl_habit_group">Gruppe (optional)</span>
+              <input type="text" id="hf-group" autocomplete="off" data-i18n-placeholder="hf_group_ph" placeholder="optional · z. B. Haushalt, Körper, Fokus" />
+            </label>
+            <div id="hf-group-chips" class="tag-suggest-row hidden" style="margin-top:-4px;"></div>
 
             <details class="nudge-box">
               <summary data-i18n="nudge_summary">Optional: Erinnerung &amp; Impuls (adaptiv oder feste Uhrzeit)</summary>
@@ -248,14 +300,15 @@
             </details>
 
             <div class="row-end">
-              <button type="button" class="btn danger sm hidden" id="btn-delete-habit" data-i18n="btn_delete_habit">Habit löschen</button>
+              <button type="button" class="btn danger sm hidden" id="btn-delete-habit" data-i18n="btn_delete_habit">Karte entfernen</button>
               <button type="submit" class="btn primary" id="btn-save-habit" data-i18n="btn_save">Speichern</button>
             </div>
           </form>
 
           <hr class="sep" />
           <div class="panel-head">
-            <h4><span data-i18n="setup_habits_head">Deine Habits &amp; Reihenfolge</span> <span class="muted mono" id="setup-habit-count"></span></h4>
+            <h4><span data-i18n="setup_habits_head">Deine Karten &amp; Reihenfolge</span> <span class="muted mono" id="setup-habit-count"></span></h4>
+            <span class="muted sm-text" data-i18n="drag_hint">Zeile ziehen</span>
           </div>
           <div id="setup-habit-list" class="compact-list"></div>
 
@@ -270,21 +323,28 @@
           <div class="panel">
             <div class="panel-head">
               <h3 data-i18n-html="routing_title_html">Live-Routing (<span class="pos">+</span> / <span class="neg">−</span>)</h3>
+              <div class="mode-switch" id="routing-mode-switch" role="group" data-i18n-title="routing_mode_title" title="Steuert nur die Live-Gewichte auf dem Heute-Tab (Benachrichtigungen bleiben unberührt)">
+                <button type="button" class="mode-btn active" data-routing-mode="observed" data-i18n="routing_mode_manual">Eigene Regeln</button>
+                <button type="button" class="mode-btn" data-routing-mode="tabpfn" data-i18n="routing_mode_ai">Adaptiv (TabPFN)</button>
+              </div>
             </div>
             <p class="muted sm-text" data-i18n-html="routing_desc_html">
               Alles kann frei auf alles andere routen: z. B. <code>Bild gemalt +1 → Kreativ</code> oder <code>Kaffee −1 → Schlaf</code>.
             </p>
             <form id="rollup-form" class="edge-form">
+              <input type="hidden" id="rf-edit-id" />
               <select id="rf-source" required></select>
               <select id="rf-sign">
-                <option value="1" data-i18n="rf_pos">+ zählt mit</option>
+                <option value="1" data-i18n="rf_pos">+ zählt für</option>
                 <option value="-1" data-i18n="rf_neg">− zählt gegen</option>
               </select>
-              <input type="number" id="rf-weight" value="1" step="any" min="0.01" class="num-sm" data-i18n-title="rf_weight_title" title="Gewicht (z. B. 1, 0.5, 2)" />
+              <input type="number" id="rf-weight" value="1" step="0.05" min="0.05" class="num-sm" data-i18n-title="rf_weight_title" title="Gewicht (z. B. 1, 0.5, 0.25)" />
               <span class="arrow">→</span>
               <select id="rf-target" required></select>
-              <button type="submit" class="btn primary sm" data-i18n="btn_connect">Verbinden</button>
+              <button type="submit" class="btn primary sm" id="btn-save-rollup" data-i18n="btn_connect">Verbinden</button>
+              <button type="button" class="btn ghost sm hidden" id="btn-cancel-rollup" data-i18n="btn_cancel">Abbrechen</button>
             </form>
+            <div id="rf-existing-hint" class="rf-existing-hint hidden"></div>
             <div id="rollup-list" class="edge-list"></div>
           </div>
 
@@ -296,6 +356,7 @@
               Vermutungen festhalten (z. B. <em>„Spaziergang nachmittags fördert Fokus“</em>) — im Analyse-Tab siehst du sie direkt gegen deine echten Tage.
             </p>
             <form id="hyp-form" class="stack">
+              <input type="hidden" id="hyp-edit-id" />
               <div class="edge-form">
                 <select id="hyp-source" required></select>
                 <select id="hyp-window">
@@ -314,7 +375,8 @@
               </div>
               <div class="row-inline">
                 <input type="text" id="hyp-note" data-i18n-placeholder="hyp_note_ph" placeholder="Optionale Notiz (z. B. 'danach bin ich 1h klarer')" style="flex:1;" />
-                <button type="submit" class="btn sm" data-i18n="btn_save_hyp">Annahme speichern</button>
+                <button type="button" class="btn ghost sm hidden" id="btn-cancel-hyp" data-i18n="btn_cancel">Abbrechen</button>
+                <button type="submit" class="btn sm" id="btn-save-hyp" data-i18n="btn_save_hyp">Annahme speichern</button>
               </div>
             </form>
             <div id="hyp-list" class="edge-list"></div>
@@ -332,7 +394,7 @@
               <div class="row-inline">
                 <span class="muted sm-text" data-i18n="notif_trigger">Auslöser:</span>
                 <div class="mode-switch" id="nudge-mode-switch" role="group">
-                  <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="notif_obs">Manuell (eigene Regeln)</button>
+                  <button type="button" class="mode-btn active" data-nudge-mode="observed" data-i18n="notif_obs">Ist-Peaks</button>
                   <button type="button" class="mode-btn" data-nudge-mode="tabpfn" data-i18n="notif_ai">Adaptiv (TabPFN)</button>
                 </div>
               </div>
@@ -368,56 +430,8 @@
                 Noch nicht gekoppelt — Daten liegen lokal auf diesem Gerät. Alle Einträge werden vor dem Sync per <strong>AES-256-GCM</strong> verschlüsselt und automatisch konfliktfrei zusammengeführt (egal welches Gerät zuletzt online war).
               </div>
 
-              <div class="nudge-box stack" id="e2ee-box">
-                <strong class="sm-text" data-i18n="sync_step1">Schritt 1 · Verschlüsselten Briefkasten verbinden</strong>
-                <div class="row-inline">
-                  <select id="e2ee-provider">
-                    <option value="gist" data-i18n="sync_prov_gist">Privater GitHub-Gist (kostenlos, 0 Server)</option>
-                    <option value="url" data-i18n="sync_prov_url">Eigener WebDAV-Ordner (Nextcloud, Mailbox.org, eigener Relay)</option>
-                  </select>
-                </div>
-
-                <div id="e2ee-gist-fields" class="stack">
-                  <span class="muted sm-text" data-i18n-html="sync_gist_help_html">
-                    Token mit ausschließlich dem Recht <code>gist</code> erzeugen (funktioniert auch mit einem separaten leeren Account):
-                    <a href="https://github.com/settings/tokens/new?description=Daily-Sync&amp;scopes=gist" target="_blank" rel="noreferrer">Token erstellen →</a>
-                  </span>
-                  <div class="row-inline">
-                    <input type="password" id="e2ee-token" data-i18n-placeholder="sync_token_ph" placeholder="Token einfügen (nur gist-Recht)" class="mono sm-text" style="flex:1;" />
-                    <button type="button" class="btn primary sm" id="btn-e2ee-create-gist" data-i18n="btn_sync_start">Sync starten</button>
-                  </div>
-                </div>
-
-                <div id="e2ee-url-fields" class="stack hidden">
-                  <input type="text" id="e2ee-url" placeholder="https://.../daily-vault.json" class="mono sm-text" />
-                  <div class="row-inline">
-                    <input type="password" id="e2ee-url-token" data-i18n-placeholder="sync_url_tok_ph" placeholder="Token / Authorization-Header (optional)" class="mono sm-text" style="flex:1;" />
-                    <button type="button" class="btn primary sm" id="btn-e2ee-save" data-i18n="btn_sync_start">Sync starten</button>
-                  </div>
-                </div>
-
-                <details class="sm-text" style="margin-top:2px;">
-                  <summary class="muted" style="cursor:pointer;" data-i18n="sync_adv_summary">Erweitert (bestehende Gist-ID oder eigenen 256-Bit-Schlüssel eintragen)</summary>
-                  <div class="stack" style="margin-top:8px;">
-                    <input type="text" id="e2ee-gist-id" data-i18n-placeholder="sync_gist_id_ph" placeholder="Bestehende Gist-ID (optional)" class="mono sm-text" />
-                    <div class="row-inline">
-                      <input type="password" id="e2ee-key" data-i18n-placeholder="sync_key_ph" placeholder="256-Bit-Schlüssel (wird sonst automatisch erzeugt)" class="mono sm-text" style="flex:1;" />
-                      <button type="button" class="btn ghost sm" id="btn-e2ee-save-adv" data-i18n="btn_save">Speichern</button>
-                    </div>
-                  </div>
-                </details>
-              </div>
-
-              <div id="e2ee-join-box" class="nudge-box stack">
-                <strong class="sm-text" data-i18n="sync_join_title">Schon auf einem anderen Gerät aktiv? (z. B. iPhone Home-Screen)</strong>
-                <div class="row-inline">
-                  <input type="text" id="e2ee-join-link" data-i18n-placeholder="sync_join_ph" placeholder="Koppel-Link (#e2ee=...) hier einfügen" class="mono sm-text" style="flex:1;" />
-                  <button type="button" class="btn sm" id="btn-e2ee-join" data-i18n="btn_connect">Verbinden</button>
-                </div>
-              </div>
-
               <div id="e2ee-pair-wrap" class="nudge-box stack hidden">
-                <strong class="sm-text" data-i18n="sync_step2">Schritt 2 · Handy &amp; Tablet koppeln (kein Tippen)</strong>
+                <strong class="sm-text" data-i18n="sync_step2">Handy &amp; Tablet koppeln (nur kopieren / scannen)</strong>
                 <span class="muted sm-text" data-i18n-html="sync_step2_desc_html">QR-Code scannen oder Link auf dem anderen Gerät öffnen — der Schlüssel steckt nur im <code>#</code>-Fragment und landet in keinem Server-Log.</span>
                 <div class="sync-grid">
                   <div id="e2ee-qr-box" class="qr-box hidden"></div>
@@ -433,6 +447,61 @@
                   </div>
                 </div>
               </div>
+
+              <details id="e2ee-setup-details" class="nudge-box sync-setup-details" open>
+                <summary id="e2ee-setup-summary" data-i18n="sync_setup_summary_unpaired">Sync einrichten oder anderes Gerät verbinden</summary>
+                <div class="stack">
+                  <div class="stack" id="e2ee-box">
+                    <strong class="sm-text" data-i18n="sync_step1">Schritt 1 · Verschlüsselten Briefkasten verbinden</strong>
+                    <div class="row-inline">
+                      <select id="e2ee-provider">
+                        <option value="gist" data-i18n="sync_prov_gist">Privater GitHub-Gist (kostenlos, 0 Server)</option>
+                        <option value="url" data-i18n="sync_prov_url">Eigener WebDAV-Ordner (Nextcloud, Mailbox.org, eigener Relay)</option>
+                      </select>
+                    </div>
+
+                    <div id="e2ee-gist-fields" class="stack">
+                      <span class="muted sm-text" data-i18n-html="sync_gist_help_html">
+                        Token mit ausschließlich dem Recht <code>gist</code> erzeugen (funktioniert auch mit einem separaten leeren Account):
+                        <a href="https://github.com/settings/tokens/new?description=Daily-Sync&amp;scopes=gist" target="_blank" rel="noreferrer">Token erstellen →</a>
+                      </span>
+                      <div class="row-inline">
+                        <input type="password" id="e2ee-token" data-i18n-placeholder="sync_token_ph" placeholder="Token einfügen (nur gist-Recht)" class="mono sm-text" style="flex:1;" />
+                        <button type="button" class="btn primary sm" id="btn-e2ee-create-gist" data-i18n="btn_sync_start">Sync starten</button>
+                      </div>
+                    </div>
+
+                    <div id="e2ee-url-fields" class="stack hidden">
+                      <input type="text" id="e2ee-url" placeholder="https://.../daily-vault.json" class="mono sm-text" />
+                      <div class="row-inline">
+                        <input type="password" id="e2ee-url-token" data-i18n-placeholder="sync_url_tok_ph" placeholder="Token / Authorization-Header (optional)" class="mono sm-text" style="flex:1;" />
+                        <button type="button" class="btn primary sm" id="btn-e2ee-save" data-i18n="btn_sync_start">Sync starten</button>
+                      </div>
+                    </div>
+
+                    <details class="sm-text" style="margin-top:2px;">
+                      <summary class="muted" style="cursor:pointer;" data-i18n="sync_adv_summary">Erweitert (bestehende Gist-ID oder eigenen 256-Bit-Schlüssel eintragen)</summary>
+                      <div class="stack" style="margin-top:8px;">
+                        <input type="text" id="e2ee-gist-id" data-i18n-placeholder="sync_gist_id_ph" placeholder="Bestehende Gist-ID (optional)" class="mono sm-text" />
+                        <div class="row-inline">
+                          <input type="password" id="e2ee-key" data-i18n-placeholder="sync_key_ph" placeholder="256-Bit-Schlüssel (wird sonst automatisch erzeugt)" class="mono sm-text" style="flex:1;" />
+                          <button type="button" class="btn ghost sm" id="btn-e2ee-save-adv" data-i18n="btn_save">Speichern</button>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+
+                  <hr class="sep" style="margin:6px 0;" />
+
+                  <div id="e2ee-join-box" class="stack">
+                    <strong class="sm-text" data-i18n="sync_join_title">Schon auf einem anderen Gerät aktiv? (z. B. iPhone Home-Screen)</strong>
+                    <div class="row-inline">
+                      <input type="text" id="e2ee-join-link" data-i18n-placeholder="sync_join_ph" placeholder="Koppel-Link (#e2ee=...) hier einfügen" class="mono sm-text" style="flex:1;" />
+                      <button type="button" class="btn sm" id="btn-e2ee-join" data-i18n="btn_connect">Verbinden</button>
+                    </div>
+                  </div>
+                </div>
+              </details>
 
               <div class="row-inline">
                 <button type="button" class="btn ghost sm" id="btn-export-json" data-i18n="btn_export_json">JSON-Backup</button>
@@ -452,13 +521,15 @@
                     <div id="sync-qr-box" class="qr-box"></div>
                     <div class="stack" style="flex:1;min-width:180px;">
                       <div class="row-inline" id="sync-pair-row">
-                        <input type="text" id="sync-pair-url" readonly class="mono sm-text" style="flex:1;min-width:140px;" />
+                        <input type="text" id="sync-pair-url" readonly class="mono sm-text" style="flex:1;min-width:0;" />
                         <button type="button" class="btn sm" id="btn-copy-pair" data-i18n="btn_copy">Kopieren</button>
                       </div>
-                      <input type="text" id="sync-custom-server" data-i18n-placeholder="lan_server_ph" placeholder="z. B. http://192.168.x.x:8090" class="mono sm-text" />
-                      <div class="row-inline">
-                        <input type="text" id="sync-custom-token" data-i18n-placeholder="lan_token_ph" placeholder="Sync-Token" class="mono sm-text" style="flex:1;" />
-                        <button type="button" class="btn sm" id="btn-save-remote" data-i18n="btn_connect">Verbinden</button>
+                      <div id="sync-lan-client-fields" class="stack">
+                        <input type="text" id="sync-custom-server" data-i18n-placeholder="lan_server_ph" placeholder="z. B. http://192.168.x.x:8090" class="mono sm-text" />
+                        <div class="row-inline">
+                          <input type="text" id="sync-custom-token" data-i18n-placeholder="lan_token_ph" placeholder="Sync-Token" class="mono sm-text" style="flex:1;" />
+                          <button type="button" class="btn sm" id="btn-save-remote" data-i18n="btn_connect">Verbinden</button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -499,9 +570,9 @@
             <button type="button" class="btn ghost sm hidden" id="btn-chart-now" data-i18n="btn_chart_now">Jetzt</button>
           </div>
           <span class="legend-inline sm-text" id="state-legend">
-            <span class="leg-item"><span class="dot-obs" style="background:var(--text)"></span><span data-i18n="leg_actual">Aufnahme</span></span>
-            <button type="button" class="leg-toggle active" data-sline="tabpfn" data-i18n-title="leg_tabpfn_title" title="TabPFN-Kurve ein-/ausblenden"><span class="line-ai"></span>TabPFN</button>
-            <button type="button" class="leg-toggle active" data-sline="ode" data-i18n-title="leg_ode_title" title="Liquid-ODE-Kurve (Uhrwerk) ein-/ausblenden"><span class="line-ode"></span>ODE</button>
+            <span class="leg-item"><span class="dot-obs" id="state-leg-dot" style="background:#368470"></span><span data-i18n="leg_actual">Aufnahme</span></span>
+            <button type="button" class="leg-toggle active" data-sline="tabpfn" data-i18n-title="leg_tabpfn_title" title="TabPFN-Kurve ein-/ausblenden"><span class="line-ai" id="state-leg-ai"></span>TabPFN</button>
+            <button type="button" class="leg-toggle active" data-sline="ode" data-i18n-title="leg_ode_title" title="Liquid-ODE-Kurve (Uhrwerk) ein-/ausblenden"><span class="line-ode" id="state-leg-ode"></span>ODE</button>
           </span>
         </div>
         <div id="state-axis-pills" class="row-inline" style="margin-bottom:8px;"></div>
@@ -596,19 +667,24 @@
   <div id="mood-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="panel-head">
-        <h3 data-i18n="mood_title">Momentaufnahme — Wie geht’s dir gerade?</h3>
+        <h3 id="mood-modal-title" data-i18n="mood_title">Momentaufnahme — Wie geht’s dir gerade?</h3>
         <button class="btn ghost sm" id="btn-close-mood">✕</button>
       </div>
-      <p class="muted sm-text" style="margin:0 0 12px;" data-i18n="mood_desc">
+      <p class="muted sm-text" style="margin:0 0 10px;" data-i18n="mood_desc">
         Alles optional — tippe nur an, was gerade relevant ist (oder 1 Zahl und fertig).
       </p>
 
+      <div id="mood-group-pills" class="row-inline mood-group-bar"></div>
+
       <div id="mood-axes-list" class="stack"></div>
 
-      <details class="nudge-box" style="margin-top:10px;">
-        <summary data-i18n="mood_add_summary">+ Eigene Achse hinzufügen / ausgeblendete wiederherstellen</summary>
+      <details id="mood-manage-details" class="nudge-box" style="margin-top:10px;">
+        <summary data-i18n="mood_add_summary">Achsen &amp; Gruppen verwalten</summary>
         <form id="mood-add-axis-form" class="stack" style="margin-top:8px;">
-          <input type="text" id="ma-name" data-i18n-placeholder="ma_name_ph" placeholder="Name (z. B. Schlafqualität, Körpergefühl, Sozialer Akku)" required />
+          <div class="row-inline">
+            <input type="color" id="ma-color" value="#3d6b7d" class="dim-color-inp" title="Farbe" />
+            <input type="text" id="ma-name" data-i18n-placeholder="ma_name_ph" placeholder="Name (z. B. Schlafqualität, Körpergefühl, Sozialer Akku)" required style="flex:1;" />
+          </div>
           <div class="row-2">
             <input type="text" id="ma-low" data-i18n-placeholder="ma_low_ph" placeholder="1 = niedrig (optional)" />
             <input type="text" id="ma-high" data-i18n-placeholder="ma_high_ph" placeholder="5 = hoch (optional)" />
@@ -618,6 +694,21 @@
           </div>
         </form>
         <div id="mood-archived-axes" class="row-inline" style="margin-top:8px;"></div>
+
+        <hr class="sep" style="margin:10px 0;" />
+        <div id="mood-group-manager" class="stack">
+          <div class="muted sm-text" style="font-weight:600;" data-i18n="mg_head">Gruppen / Fragebögen</div>
+          <div id="mood-group-list" class="compact-list"></div>
+          <form id="mood-group-form" class="stack">
+            <input type="hidden" id="mg-edit-id" />
+            <div class="row-inline">
+              <input type="text" id="mg-name" data-i18n-placeholder="mg_name_ph" placeholder="Neue Gruppe (z. B. Zyklus, Erkältung, Fokus)" style="flex:1;" />
+              <button type="button" class="btn ghost sm hidden" id="btn-cancel-mg" data-i18n="btn_cancel">Abbrechen</button>
+              <button type="submit" class="btn sm" id="btn-save-mg" data-i18n="mg_save">Gruppe speichern</button>
+            </div>
+            <div id="mg-dim-picks" class="row-inline" style="gap:5px;"></div>
+          </form>
+        </div>
       </details>
 
       <div id="mood-causes-wrap" class="stack" style="margin-top:12px;">
@@ -626,6 +717,7 @@
       </div>
 
       <div class="row-inline" style="margin-top:12px;">
+        <input type="date" id="mood-date" class="mono" style="flex:0 1 auto;min-width:130px;" />
         <input type="time" id="mood-time" class="time-input mono" />
         <input type="text" id="mood-note" data-i18n-placeholder="mood_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." style="flex:1;min-width:160px;" />
       </div>
@@ -647,16 +739,21 @@
       </div>
       <form id="cl-form" class="stack">
         <input type="hidden" id="cl-habit-id" />
-        <div class="row-2">
-          <label class="field">
+        <div class="cl-range-grid" id="cl-range-row">
+          <label class="field hidden" id="cl-start-wrap">
+            <span data-i18n="cl_from">Von</span>
+            <input type="time" id="cl-start" class="mono" />
+          </label>
+          <label class="field" id="cl-time-wrap">
+            <span id="cl-time-label" data-i18n="cl_time">Uhrzeit</span>
+            <input type="time" id="cl-time" required class="mono" />
+          </label>
+          <label class="field" id="cl-amount-wrap">
             <span data-i18n="cl_amount">Betrag</span>
             <input type="number" id="cl-amount" value="1" step="any" required />
           </label>
-          <label class="field">
-            <span data-i18n="cl_time">Uhrzeit</span>
-            <input type="time" id="cl-time" required class="mono" />
-          </label>
         </div>
+        <div id="cl-duration-hint" class="muted sm-text mono hidden"></div>
         <div class="row-inline">
           <button type="button" class="pill" data-ago="15" data-i18n="ago_15m">vor 15m</button>
           <button type="button" class="pill" data-ago="30" data-i18n="ago_30m">vor 30m</button>
@@ -671,6 +768,54 @@
         <div class="row-end">
           <button type="button" class="btn ghost" id="btn-cancel-cl" data-i18n="btn_cancel">Abbrechen</button>
           <button type="submit" class="btn primary" data-i18n="btn_log">Eintragen</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL: EDIT DAY LOG ENTRY ==================== -->
+  <div id="edit-event-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card sm-card">
+      <div class="panel-head">
+        <h3 id="ee-title" data-i18n="ee_title">Eintrag bearbeiten</h3>
+        <button class="btn ghost sm" id="btn-close-ee">✕</button>
+      </div>
+      <form id="ee-form" class="stack">
+        <input type="hidden" id="ee-id" />
+        <label class="field">
+          <span data-i18n="ee_habit">Gewohnheit</span>
+          <select id="ee-habit" required></select>
+        </label>
+        <div class="row-2">
+          <label class="field">
+            <span data-i18n="ee_date">Datum</span>
+            <input type="date" id="ee-date" class="mono" required />
+          </label>
+          <label class="field">
+            <span data-i18n="cl_amount">Betrag</span>
+            <input type="number" id="ee-amount" step="any" required />
+          </label>
+        </div>
+        <div class="row-2">
+          <label class="field">
+            <span data-i18n="ee_start_opt">Start (optional)</span>
+            <input type="time" id="ee-start" class="mono" />
+          </label>
+          <label class="field">
+            <span data-i18n="ee_time">Uhrzeit / Ende</span>
+            <input type="time" id="ee-time" class="mono" required />
+          </label>
+        </div>
+        <div id="ee-duration-hint" class="muted sm-text mono hidden"></div>
+        <label class="field">
+          <span data-i18n="cl_note">Notiz (optional)</span>
+          <input type="text" id="ee-note" data-i18n-placeholder="cl_note_ph" placeholder="Notiz für dich — #tags (ab 2 Tagen) fließen ins Modell..." />
+        </label>
+        <div id="ee-tag-chips" class="tag-suggest-row hidden"></div>
+        <div class="row-end">
+          <button type="button" class="btn danger sm" id="btn-ee-delete" style="margin-right:auto;" data-i18n="del_title">Löschen</button>
+          <button type="button" class="btn ghost" id="btn-cancel-ee" data-i18n="btn_cancel">Abbrechen</button>
+          <button type="submit" class="btn primary" data-i18n="btn_save">Speichern</button>
         </div>
       </form>
     </div>
@@ -760,6 +905,7 @@
   <script src="/static/qr.js"></script>
   <script src="/static/local-engine.js"></script>
   <script src="/static/e2ee-sync.js"></script>
+  <script src="/static/graph-view.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

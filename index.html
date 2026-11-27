@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Daily" />
-  <title>Daily // Local Signed-Graph Habit Tracker</title>
+  <title>Daily // Local Signed-Graph Tracker</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" id="dynamic-favicon" type="image/svg+xml" href="/icon.svg" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
@@ -69,12 +69,14 @@
           <label class="qc-color-picker" id="qc-color-wrap" style="background:#2563eb" data-i18n-title="lbl_color" title="Farbe">
             <input type="color" id="qc-color" value="#2563eb" data-i18n-title="lbl_color" title="Farbe" />
           </label>
-          <input type="text" id="qc-name" data-i18n-placeholder="qc_placeholder" placeholder="+ Neues Habit (z. B. Kreativ, Buch: Dune, Kochen)..." required />
-          <select id="qc-kind" data-i18n-title="qc_kind_title" title="Richtung (Mehr / Weniger / Neutral)">
+          <input type="text" id="qc-name" data-i18n-placeholder="qc_placeholder" placeholder="+ Neue Karte (z. B. Kreativ, Kaffee, Temperatur °C)…" required />
+          <select id="qc-kind" data-i18n-title="qc_kind_title" title="Typ (Mehr / Weniger / Neutral / Messwert)">
             <option value="min" data-i18n="kind_min">Mehr (↑)</option>
             <option value="max" data-i18n="kind_max">Weniger (↓)</option>
             <option value="neutral" selected data-i18n="kind_neutral">Neutral</option>
+            <option value="measure" data-i18n="kind_measure">Messwert (Ø)</option>
           </select>
+          <input type="text" id="qc-unit" data-i18n-placeholder="qc_unit_ph" placeholder="°C, kg…" class="unit-sm hidden" maxlength="12" />
           <input type="number" id="qc-target" step="any" data-i18n-placeholder="qc_target_ph" placeholder="Ziel (opt.)" class="num-sm hidden" />
           <select id="qc-period" data-i18n-title="qc_period_title" title="Zeitraum" class="hidden">
             <option value="day" selected data-i18n="per_day_short">/ Tag</option>
@@ -92,6 +94,7 @@
           <button type="button" class="pill" data-fkind="min" data-i18n="kind_min">Mehr (↑)</button>
           <button type="button" class="pill" data-fkind="max" data-i18n="kind_max">Weniger (↓)</button>
           <button type="button" class="pill" data-fkind="neutral" data-i18n="kind_neutral">Neutral</button>
+          <button type="button" class="pill" data-fkind="measure" data-i18n="kind_measure_short">Messwert</button>
           <button type="button" class="pill hidden" id="btn-clear-focus" data-i18n-title="btn_clear_focus_title" title="Alle aufgeklappten Gruppen schließen">✕ <span data-i18n="groups">Gruppen</span> (<span id="focus-count">0</span>)</button>
         </div>
         <div class="row-inline">
@@ -99,7 +102,10 @@
             <button type="button" class="mode-btn active" data-sort="smart" data-i18n="sort_smart">Jetzt</button>
             <button type="button" class="mode-btn" data-sort="manual" data-i18n="sort_manual">Eigene</button>
           </div>
-          <input type="text" id="today-search" class="filter-search" data-i18n-placeholder="filter_search_ph" placeholder="Filtern…" />
+          <div class="ac-wrap today-search-wrap">
+            <input type="text" id="today-search" class="filter-search" autocomplete="off" data-i18n-placeholder="filter_search_ph" placeholder="Filtern…" />
+            <div id="today-search-ac" class="ac-list hidden" role="listbox"></div>
+          </div>
         </div>
       </div>
 
@@ -181,7 +187,7 @@
         <!-- Left: Habit Editor & Order -->
         <div class="panel">
           <div class="panel-head">
-            <h3 id="habit-form-title" data-i18n="hf_title_new">Habit anlegen</h3>
+            <h3 id="habit-form-title" data-i18n="hf_title_new">Karte anlegen</h3>
             <button class="btn ghost sm hidden" id="btn-cancel-edit" data-i18n="btn_cancel_edit">Neu anlegen</button>
           </div>
 
@@ -189,7 +195,7 @@
             <input type="hidden" id="hf-id" />
             <label class="field">
               <span data-i18n="lbl_name">Name</span>
-              <input type="text" id="hf-name" autocomplete="off" data-i18n-placeholder="hf_name_ph" placeholder="z. B. Kreativ, Programmieren, Kochen, Sport" required />
+              <input type="text" id="hf-name" autocomplete="off" data-i18n-placeholder="hf_name_ph" placeholder="z. B. Kreativ, Kochen, Sport, Basaltemperatur" required />
             </label>
             <div id="hf-name-matches" class="name-match-list hidden" role="listbox"></div>
 
@@ -200,6 +206,7 @@
                   <option value="neutral" data-i18n="opt_neutral">Neutral (nur zählen)</option>
                   <option value="min" data-i18n="opt_min">Mehr davon (↑ · Ziel optional)</option>
                   <option value="max" data-i18n="opt_max">Weniger davon (↓ · Limit optional)</option>
+                  <option value="measure" data-i18n="opt_measure">Messwert (Ø · z. B. °C, kg, bpm)</option>
                 </select>
               </label>
               <label class="field">
@@ -220,7 +227,7 @@
               <div class="unit-step-pair">
                 <label class="field" style="flex:1;min-width:0;">
                   <span data-i18n="lbl_unit">Einheit</span>
-                  <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, g, h" />
+                  <input type="text" id="hf-unit" value="x" data-i18n-placeholder="hf_unit_ph" placeholder="x, °C, kg, h" />
                 </label>
                 <label class="field" style="width:82px;flex-shrink:0;">
                   <span data-i18n="lbl_tap_step">Schritt</span>
@@ -293,14 +300,14 @@
             </details>
 
             <div class="row-end">
-              <button type="button" class="btn danger sm hidden" id="btn-delete-habit" data-i18n="btn_delete_habit">Habit löschen</button>
+              <button type="button" class="btn danger sm hidden" id="btn-delete-habit" data-i18n="btn_delete_habit">Karte entfernen</button>
               <button type="submit" class="btn primary" id="btn-save-habit" data-i18n="btn_save">Speichern</button>
             </div>
           </form>
 
           <hr class="sep" />
           <div class="panel-head">
-            <h4><span data-i18n="setup_habits_head">Deine Habits &amp; Reihenfolge</span> <span class="muted mono" id="setup-habit-count"></span></h4>
+            <h4><span data-i18n="setup_habits_head">Deine Karten &amp; Reihenfolge</span> <span class="muted mono" id="setup-habit-count"></span></h4>
             <span class="muted sm-text" data-i18n="drag_hint">Zeile ziehen</span>
           </div>
           <div id="setup-habit-list" class="compact-list"></div>

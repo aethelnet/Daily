@@ -189,7 +189,7 @@
   }
 
   function evalStatus(h, eff) {
-    if (h.target == null || h.kind === "neutral") return "neutral";
+    if (h.target == null || h.kind === "neutral" || h.kind === "measure") return "neutral";
     const t = Number(h.target);
     if (h.kind === "min") return eff >= t ? "met" : eff > 0 ? "in_progress" : "pending";
     if (eff > t) return "exceeded";
@@ -286,8 +286,15 @@
     const liveEvents = db.events.filter((ev) => !ev.deleted_at);
 
     const lastUsed = {};
+    const lastValAt = {};
+    const lastValByH = {};
     for (const ev of liveEvents) {
-      if (Number(ev.amount) > 0 && (!lastUsed[ev.habit_id] || ev.occurred_at > lastUsed[ev.habit_id])) {
+      const amt = Number(ev.amount);
+      if (!lastValAt[ev.habit_id] || ev.occurred_at >= lastValAt[ev.habit_id]) {
+        lastValAt[ev.habit_id] = ev.occurred_at;
+        lastValByH[ev.habit_id] = Math.round(amt * 100) / 100;
+      }
+      if (amt > 0 && (!lastUsed[ev.habit_id] || ev.occurred_at > lastUsed[ev.habit_id])) {
         lastUsed[ev.habit_id] = ev.occurred_at;
       }
     }
@@ -304,6 +311,11 @@
       if (direct[ev.habit_id] != null) {
         direct[ev.habit_id] += Number(ev.amount);
         counts[ev.habit_id] += 1;
+      }
+    }
+    for (const h of allHabits) {
+      if (h.kind === "measure" && counts[h.id] > 0) {
+        direct[h.id] = Math.round((direct[h.id] / counts[h.id]) * 100) / 100;
       }
     }
 
@@ -323,14 +335,22 @@
       const mEnd = toIso(new Date(yy, mm, 0));
 
       const wDir = {};
+      const wCnt = {};
       const mDir = {};
-      allHabits.forEach((h) => { wDir[h.id] = 0; mDir[h.id] = 0; });
+      const mCnt = {};
+      allHabits.forEach((h) => { wDir[h.id] = 0; wCnt[h.id] = 0; mDir[h.id] = 0; mCnt[h.id] = 0; });
       for (const ev of liveEvents) {
         if (wDir[ev.habit_id] == null) continue;
         const ed = ev.occurred_at.slice(0, 10);
         const amt = Number(ev.amount);
-        if (ed >= wStart && ed <= wEnd) wDir[ev.habit_id] += amt;
-        if (ed >= mStart && ed <= mEnd) mDir[ev.habit_id] += amt;
+        if (ed >= wStart && ed <= wEnd) { wDir[ev.habit_id] += amt; wCnt[ev.habit_id] += 1; }
+        if (ed >= mStart && ed <= mEnd) { mDir[ev.habit_id] += amt; mCnt[ev.habit_id] += 1; }
+      }
+      for (const h of allHabits) {
+        if (h.kind === "measure") {
+          if (wCnt[h.id] > 0) wDir[h.id] = Math.round((wDir[h.id] / wCnt[h.id]) * 100) / 100;
+          if (mCnt[h.id] > 0) mDir[h.id] = Math.round((mDir[h.id] / mCnt[h.id]) * 100) / 100;
+        }
       }
       const wRouted = computeRollups(wDir, byId, edges).routed;
       const mRouted = computeRollups(mDir, byId, edges).routed;
@@ -432,6 +452,7 @@
         days_since_created: daysSinceCreated,
         hour_fit: hourFit,
         last_used_at: lastUsed[h.id] || null,
+        last_value: lastValByH[h.id] !== undefined ? lastValByH[h.id] : null,
         status: evalStatus(h, pEff),
         contributors: contributors[h.id] || [],
         routes_to: outMap[h.id] || [],
@@ -462,12 +483,15 @@
     const liveEvents = db.events.filter((ev) => !ev.deleted_at);
 
     const byDayDirect = {};
+    const byDayCounts = {};
     const byDayWindows = {};
     for (const ev of liveEvents) {
       if (!byId[ev.habit_id]) continue;
       const dStr = ev.occurred_at.slice(0, 10);
       byDayDirect[dStr] ||= {};
+      byDayCounts[dStr] ||= {};
       byDayDirect[dStr][ev.habit_id] = (byDayDirect[dStr][ev.habit_id] || 0) + Number(ev.amount);
+      byDayCounts[dStr][ev.habit_id] = (byDayCounts[dStr][ev.habit_id] || 0) + 1;
       if (Number(ev.amount) > 0) {
         byDayWindows[dStr] ||= {};
         (byDayWindows[dStr][ev.habit_id] ||= new Set()).add("any");
@@ -479,7 +503,11 @@
     const byDayEff = {};
     for (const dStr of observedDays) {
       const direct = {};
-      allHabits.forEach((h) => { direct[h.id] = byDayDirect[dStr][h.id] || 0; });
+      allHabits.forEach((h) => {
+        const rawV = byDayDirect[dStr][h.id] || 0;
+        const cnt = (byDayCounts[dStr] && byDayCounts[dStr][h.id]) || 0;
+        direct[h.id] = h.kind === "measure" && cnt > 0 ? Math.round((rawV / cnt) * 100) / 100 : rawV;
+      });
       const { routed } = computeRollups(direct, byId, edges);
       byDayEff[dStr] = {};
       allHabits.forEach((h) => {
@@ -625,7 +653,9 @@
     function evalPair(srcId, dstId, win, expSign, note = "", edgeId = null) {
       const wVals = [];
       const woVals = [];
+      const dstIsMeasure = activeById[dstId] && activeById[dstId].kind === "measure";
       for (const dStr of observedDays) {
+        if (dstIsMeasure && !((byDayCounts[dStr] && byDayCounts[dStr][dstId]) > 0)) continue;
         const hasSrc = !!(byDayWindows[dStr] && byDayWindows[dStr][srcId] && byDayWindows[dStr][srcId].has(win));
         const val = (byDayEff[dStr] && byDayEff[dStr][dstId]) || 0;
         (hasSrc ? wVals : woVals).push(val);
@@ -1212,11 +1242,14 @@
     const dims = db.state_dimensions.filter((d) => !d.archived);
     const edges = enrichEdges(db);
     const byDayDirect = {};
+    const byDayCounts = {};
     const byDayWins = {};
     for (const ev of db.events.filter((e) => !e.deleted_at)) {
       const d = ev.occurred_at.slice(0, 10);
       byDayDirect[d] ||= {};
+      byDayCounts[d] ||= {};
       byDayDirect[d][ev.habit_id] = (byDayDirect[d][ev.habit_id] || 0) + Number(ev.amount);
+      byDayCounts[d][ev.habit_id] = (byDayCounts[d][ev.habit_id] || 0) + 1;
       if (Number(ev.amount) > 0) {
         byDayWins[d] ||= {};
         (byDayWins[d][ev.habit_id] ||= new Set()).add(classifyWindow(ev.occurred_at));
@@ -1239,15 +1272,20 @@
     const lines = [cols.join(",")];
     for (const dStr of days) {
       const direct = {};
-      db.habits.forEach((h) => { direct[h.id] = (byDayDirect[dStr] && byDayDirect[dStr][h.id]) || 0; });
+      db.habits.forEach((h) => {
+        const rawV = (byDayDirect[dStr] && byDayDirect[dStr][h.id]) || 0;
+        const cnt = (byDayCounts[dStr] && byDayCounts[dStr][h.id]) || 0;
+        direct[h.id] = h.kind === "measure" && cnt > 0 ? Math.round((rawV / cnt) * 1000) / 1000 : rawV;
+      });
       const { routed } = computeRollups(direct, byId, edges);
       const wd = (new Date(`${dStr}T12:00:00`).getDay() + 6) % 7;
       const row = [dStr, wd];
       for (const h of activeHabits) {
         const w = (byDayWins[dStr] && byDayWins[dStr][h.id]) || new Set();
+        const isUnmeasured = h.kind === "measure" && !((byDayCounts[dStr] && byDayCounts[dStr][h.id]) > 0);
         row.push(
-          Math.round(direct[h.id] * 1000) / 1000,
-          Math.round((direct[h.id] + (routed[h.id] || 0)) * 1000) / 1000,
+          isUnmeasured ? "" : Math.round(direct[h.id] * 1000) / 1000,
+          isUnmeasured ? "" : Math.round((direct[h.id] + (routed[h.id] || 0)) * 1000) / 1000,
           w.has("morning") ? 1 : 0,
           w.has("afternoon") ? 1 : 0,
           w.has("evening") ? 1 : 0,
@@ -1307,17 +1345,24 @@
       const edges = enrichEdges(db);
       const sIso = dates[0], eIso = dates[dates.length - 1];
       const byDayDirect = {};
+      const byDayCounts = {};
       for (const ev of db.events) {
         if (ev.deleted_at || !byId[ev.habit_id]) continue;
         const dStr = ev.occurred_at.slice(0, 10);
         if (dStr < sIso || dStr > eIso) continue;
         byDayDirect[dStr] ||= {};
+        byDayCounts[dStr] ||= {};
         byDayDirect[dStr][ev.habit_id] = (byDayDirect[dStr][ev.habit_id] || 0) + Number(ev.amount);
+        byDayCounts[dStr][ev.habit_id] = (byDayCounts[dStr][ev.habit_id] || 0) + 1;
       }
       const byDayEff = {};
       for (const dStr of dates) {
         const direct = {};
-        allHabits.forEach((h) => { direct[h.id] = (byDayDirect[dStr] && byDayDirect[dStr][h.id]) || 0; });
+        allHabits.forEach((h) => {
+          const rawV = (byDayDirect[dStr] && byDayDirect[dStr][h.id]) || 0;
+          const cnt = (byDayCounts[dStr] && byDayCounts[dStr][h.id]) || 0;
+          direct[h.id] = h.kind === "measure" && cnt > 0 ? Math.round((rawV / cnt) * 100) / 100 : rawV;
+        });
         const { routed } = computeRollups(direct, byId, edges);
         byDayEff[dStr] = {};
         allHabits.forEach((h) => { byDayEff[dStr][h.id] = Math.round((direct[h.id] + (routed[h.id] || 0)) * 100) / 100; });
@@ -1369,13 +1414,15 @@
       let sfx = 2;
       while (db.habits.some((h) => h.id === hid)) hid = `${slugify(name)}-${sfx++}`;
       const period = ["day", "week", "month"].includes(body.target_period) ? body.target_period : "day";
+      const kind = body.kind || "neutral";
+      const rawUnit = body.unit == null ? "" : String(body.unit).trim();
       const h = {
         id: hid,
         name,
-        kind: body.kind || "neutral",
+        kind,
         target: body.target != null ? Number(body.target) : null,
         target_period: period,
-        unit: (body.unit || "x").trim() || "x",
+        unit: kind === "measure" ? rawUnit : (rawUnit || "x"),
         color: body.color || "#2563eb",
         nudge_enabled: body.nudge_enabled ? 1 : 0,
         nudge_lead_min: Number(body.nudge_lead_min || 20),

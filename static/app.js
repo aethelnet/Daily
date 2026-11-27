@@ -469,6 +469,9 @@ async function loadToday() {
 
 function kindBadgeText(h) {
   const per = periodShort(h.target_period || "day");
+  if (h.kind === "measure") {
+    return h.unit ? `Ø · ${h.unit}` : t("kind_measure");
+  }
   if (h.kind === "min") {
     if (h.target != null) return `↑ ≥ ${fmtNum(h.target)} ${h.unit}${per}`;
     return h.unit && h.unit !== "x" ? `${t("badge_min_open")} · ${h.unit}${per}` : `${t("badge_min_open")}${per}`;
@@ -481,6 +484,7 @@ function kindBadgeText(h) {
 }
 
 function kindBadgeClass(h) {
+  if (h.kind === "measure") return "kind-measure";
   if (h.target != null && h.kind !== "neutral") return h.status || "neutral";
   if (h.kind === "min") return "kind-min";
   if (h.kind === "max") return "kind-max";
@@ -488,7 +492,7 @@ function kindBadgeClass(h) {
 }
 
 function barPercentAndColor(h) {
-  if (h.target == null || h.kind === "neutral") return null;
+  if (h.target == null || h.kind === "neutral" || h.kind === "measure") return null;
   const t = Number(h.target);
   const eff = Math.max(0, Number(h.period_effective ?? h.effective));
   if (h.kind === "min") {
@@ -572,8 +576,28 @@ function renderHabitCardHtml(h, opts = {}) {
   const hasBlockMode = !!(h.block_minutes && Number(h.block_minutes) > 0) || isActive;
 
   const aiPrefix = `${t("mode_ai")} `;
-  const contribHtml = h.contributors.length
-    ? h.contributors
+  const sortedContribs = [...(h.contributors || [])].sort(
+    (a, b) => Math.abs(Number(b.delta || 0)) - Math.abs(Number(a.delta || 0))
+  );
+  const sortedRoutes = [...(h.routes_to || [])].sort(
+    (a, b) => Math.abs(Number(b.weight || 0)) - Math.abs(Number(a.weight || 0))
+  );
+  const isExpandedAnchor = !!(opts.asAnchor && isToggled);
+  const hasBothDirs = sortedContribs.length > 0 && sortedRoutes.length > 0;
+  const maxIn = isExpandedAnchor ? sortedContribs.length : hasBothDirs ? 2 : 3;
+  const maxOut = isExpandedAnchor ? sortedRoutes.length : hasBothDirs ? 2 : 3;
+
+  const shownContribs = sortedContribs.slice(0, maxIn);
+  const hiddenContribs = sortedContribs.slice(maxIn);
+  const contribMoreHtml = hiddenContribs.length
+    ? `<span class="chip more-chip" title="${esc(
+        hiddenContribs
+          .map((c) => `${c.delta >= 0 ? "+" : ""}${fmtNum(c.delta)} ${c.from_name}`)
+          .join(" · ")
+      )}">+${hiddenContribs.length}</span>`
+    : "";
+  const contribHtml = shownContribs.length
+    ? shownContribs
         .map((c) => {
           const cls = c.is_ai ? "ai-chip" : c.delta >= 0 ? "pos-chip" : "neg-chip";
           const pfx = c.is_ai ? aiPrefix : "";
@@ -583,19 +607,31 @@ function renderHabitCardHtml(h, opts = {}) {
             : "";
           return `<span class="chip ${cls}">${pfx}${c.delta >= 0 ? "+" : ""}${fmtNum(c.delta)} ${esc(c.from_name)}${viaHtml}</span>`;
         })
-        .join("")
+        .join("") + contribMoreHtml
     : "";
-  const routesHtml = h.routes_to
-    .map((r) => {
-      const cls = r.is_ai ? "ai-chip" : r.weight >= 0 ? "pos-chip" : "neg-chip";
-      const pfx = r.is_ai ? aiPrefix : "";
-      const tip =
-        r.is_ai && r.prior_weight != null
-          ? `title="Prior: ${r.prior_weight >= 0 ? "+" : ""}${fmtNum(r.prior_weight)} → ${t("mode_ai")}: ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}"`
-          : "";
-      return `<span class="chip route-out-chip ${cls}" ${tip}>${pfx}${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`;
-    })
-    .join("");
+
+  const shownRoutes = sortedRoutes.slice(0, maxOut);
+  const hiddenRoutes = sortedRoutes.slice(maxOut);
+  const routesMoreHtml = hiddenRoutes.length
+    ? `<span class="chip route-out-chip more-chip" title="${esc(
+        hiddenRoutes
+          .map((r) => `${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${r.target_name}`)
+          .join(" · ")
+      )}">+${hiddenRoutes.length}</span>`
+    : "";
+  const routesHtml = shownRoutes.length
+    ? shownRoutes
+        .map((r) => {
+          const cls = r.is_ai ? "ai-chip" : r.weight >= 0 ? "pos-chip" : "neg-chip";
+          const pfx = r.is_ai ? aiPrefix : "";
+          const tip =
+            r.is_ai && r.prior_weight != null
+              ? `title="Prior: ${r.prior_weight >= 0 ? "+" : ""}${fmtNum(r.prior_weight)} → ${t("mode_ai")}: ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)}"`
+              : "";
+          return `<span class="chip route-out-chip ${cls}" ${tip}>${pfx}${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`;
+        })
+        .join("") + routesMoreHtml
+    : "";
   const flowRowsHtml = [
     contribHtml
       ? `<div class="hc-flow-row hc-flow-in"><span class="hc-flow-lbl">${esc(t("flow_in_lbl"))}</span><div class="hc-flow-chips">${contribHtml}</div></div>`
@@ -606,20 +642,34 @@ function renderHabitCardHtml(h, opts = {}) {
   ]
     .filter(Boolean)
     .join("");
+  const isMeasure = h.kind === "measure";
+  const hasTodayMeasure = isMeasure && (h.event_count || 0) > 0;
   const per = h.target_period || "day";
   const heroVal = per !== "day" && h.period_effective != null ? h.period_effective : h.effective;
-  const subLine =
-    per !== "day"
-      ? t("card_period_sub", { per: periodSub(per), today: fmtNum(h.effective) })
-      : h.routed !== 0
-      ? t("card_direct_routed", { d: fmtNum(h.direct), r: `${h.routed > 0 ? "+" : ""}${fmtNum(h.routed)}` })
-      : t("card_times_today", { n: h.event_count });
-  const denomHtml =
-    h.target != null && h.kind !== "neutral"
-      ? `<span class="hc-denom">/ ${fmtNum(h.target)}${periodShort(per)}</span>`
-      : h.unit && h.unit !== "x"
+  const heroDisplay = isMeasure ? (hasTodayMeasure ? fmtNum(h.effective) : "—") : fmtNum(heroVal);
+  const measureUnitSuffix = h.unit ? ` ${h.unit}` : "";
+  const subLine = isMeasure
+    ? hasTodayMeasure
+      ? h.event_count > 1
+        ? t("card_measure_today_avg", { n: h.event_count })
+        : t("card_measure_today_one")
+      : h.last_value != null
+      ? t("card_measure_last", { v: `${fmtNum(h.last_value)}${measureUnitSuffix}` })
+      : t("card_measure_empty")
+    : per !== "day"
+    ? t("card_period_sub", { per: periodSub(per), today: fmtNum(h.effective) })
+    : h.routed !== 0
+    ? t("card_direct_routed", { d: fmtNum(h.direct), r: `${h.routed > 0 ? "+" : ""}${fmtNum(h.routed)}` })
+    : t("card_times_today", { n: h.event_count });
+  const denomHtml = isMeasure
+    ? hasTodayMeasure && h.unit
       ? `<span class="hc-denom">${esc(h.unit)}</span>`
-      : "";
+      : ""
+    : h.target != null && h.kind !== "neutral"
+    ? `<span class="hc-denom">/ ${fmtNum(h.target)}${periodShort(per)}</span>`
+    : h.unit && h.unit !== "x"
+    ? `<span class="hc-denom">${esc(h.unit)}</span>`
+    : "";
 
   const relTag = opts.relBadge || "";
   const caret = hasLinks
@@ -629,6 +679,7 @@ function renderHabitCardHtml(h, opts = {}) {
     hasLinks ? "is-clickable" : "",
     opts.asAnchor && isToggled ? "is-toggled" : "",
     isActive ? "is-active" : "",
+    isMeasure ? "is-measure" : "",
     opts.softDim ? "card-soft-dim" : "",
     opts.synergy ? "card-synergy" : "",
     opts.relGlow || "",
@@ -640,11 +691,20 @@ function renderHabitCardHtml(h, opts = {}) {
     ? `<span class="active-chip" data-active-since="${esc(h.active_since)}" data-active-id="${esc(h.id)}" title="${esc(t("session_edit_start_title"))}"><span class="active-dot"></span><span data-active-txt="1">${esc(t("active_badge", { dur: activeDurTxt }))}</span></span>`
     : "";
 
-  const sessionBtnHtml = hasBlockMode
-    ? isActive
-      ? `<button class="btn sm btn-session-on" data-act="toggle-active" data-id="${esc(h.id)}" data-active-btn="${esc(h.active_since)}" title="${esc(t("btn_stop_title", { since: String(h.active_since).slice(11, 16) }))}">■ ${esc(activeDurTxt)}</button>`
-      : `<button class="btn sm btn-session" data-act="toggle-active" data-id="${esc(h.id)}" title="${esc(t("btn_start_title", { m: h.block_minutes || 30 }))}">${esc(t("btn_start_session"))}</button>`
-    : "";
+  const sessionBtnHtml =
+    hasBlockMode && !isMeasure
+      ? isActive
+        ? `<button class="btn sm btn-session-on" data-act="toggle-active" data-id="${esc(h.id)}" data-active-btn="${esc(h.active_since)}" title="${esc(t("btn_stop_title", { since: String(h.active_since).slice(11, 16) }))}">■ ${esc(activeDurTxt)}</button>`
+        : `<button class="btn sm btn-session" data-act="toggle-active" data-id="${esc(h.id)}" title="${esc(t("btn_start_title", { m: h.block_minutes || 30 }))}">${esc(t("btn_start_session"))}</button>`
+      : "";
+
+  const primaryActionHtml = isMeasure
+    ? `<form class="hc-measure-form" data-measure-form="${esc(h.id)}">
+         <input type="text" inputmode="decimal" class="hc-measure-inp mono" data-measure-input="${esc(h.id)}" value="${h.last_value != null ? esc(String(h.last_value)) : ""}" placeholder="${esc(h.unit ? `${t("measure_input_ph")} ${h.unit}` : t("measure_input_ph"))}" aria-label="${esc(h.name)}" />
+         <button type="submit" class="btn sm btn-tap hc-measure-ok">${esc(t("measure_ok_btn"))}</button>
+       </form>`
+    : `${sessionBtnHtml}
+      <button class="btn sm btn-tap" data-act="tap" data-id="${esc(h.id)}">+${fmtNum(habitTapStep(h))}</button>`;
 
   return `
   <div class="habit-card status-${esc(h.status)} ${extraCls}" style="--card-accent:${esc(h.color)}" data-id="${esc(h.id)}" data-has-links="${hasLinks ? "1" : "0"}">
@@ -653,7 +713,7 @@ function renderHabitCardHtml(h, opts = {}) {
       <div class="row-inline hc-badges">${activePillHtml}${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
     </div>
     <div class="hc-metrics">
-      <span class="hc-val-wrap"><span class="hc-big">${fmtNum(heroVal)}</span>${denomHtml}</span>
+      <span class="hc-val-wrap"><span class="hc-big${isMeasure && !hasTodayMeasure ? " is-empty" : ""}">${heroDisplay}</span>${denomHtml}</span>
       <span class="hc-sub">${esc(subLine)}</span>
     </div>
     ${
@@ -663,8 +723,7 @@ function renderHabitCardHtml(h, opts = {}) {
     }
     ${flowRowsHtml ? `<div class="hc-routes">${flowRowsHtml}</div>` : ""}
     <div class="hc-actions">
-      ${sessionBtnHtml}
-      <button class="btn sm btn-tap" data-act="tap" data-id="${esc(h.id)}">+${fmtNum(habitTapStep(h))}</button>
+      ${primaryActionHtml}
       <button class="btn sm btn-subtle" data-act="custom" data-id="${esc(h.id)}" title="${esc(t("card_custom_title"))}">${esc(t("card_custom_btn"))}</button>
       <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">⇄</button>
     </div>
@@ -863,7 +922,7 @@ function renderToday(data) {
   const q = state.filterQuery.trim().toLowerCase();
   const visible = data.habits.filter((h) => {
     if (state.filterKind !== "all" && state.filterKind !== "focus" && h.kind !== state.filterKind) return false;
-    if (q && !h.name.toLowerCase().includes(q)) return false;
+    if (q && !h.name.toLowerCase().includes(q) && !String(h.group_name || "").toLowerCase().includes(q)) return false;
     return true;
   });
 
@@ -1328,13 +1387,19 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
     ? `<div class="ev-detail-note">${renderNoteWithTags(ev.note)}</div>`
     : "";
 
+  const isMeasureEv = ev.habit_kind === "measure" || srcHabit?.kind === "measure";
+  const evUnitSuffix = ev.habit_unit && ev.habit_unit !== "x" ? ` ${ev.habit_unit}` : "";
+  const evAmtHtml = isMeasureEv
+    ? `<span class="ev-amt measure-amt" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${fmtNum(ev.amount)}${esc(evUnitSuffix)}</span>`
+    : `<span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>`;
+
   return `
   <div class="ev-entry${isExpanded ? " expanded" : ""}" data-ev-entry="${ev.id}">
     <div class="ev-row" data-ev-toggle="${ev.id}">
       <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
       <span class="ev-time" data-ev-time="${ev.id}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
       <strong>${esc(ev.habit_name)}</strong>
-      <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
+      ${evAmtHtml}
       ${routeCueHtml}
       <span class="chip">${esc(srcTag)}</span>
       <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
@@ -1555,6 +1620,50 @@ async function quickTap(habitId) {
   }
 }
 
+async function logMeasureValue(habitId, rawStr) {
+  const cleaned = String(rawStr ?? "").trim().replace(",", ".");
+  if (!cleaned) {
+    toast(t("measure_invalid"));
+    return;
+  }
+  const val = Number(cleaned);
+  if (!Number.isFinite(val)) {
+    toast(t("measure_invalid"));
+    return;
+  }
+  const occurred_at = `${state.day}T${localTimeHHMM(new Date())}:00`;
+  const client_uuid = makeUuid();
+  const h = state.habits.find((x) => x.id === habitId);
+  const unitSuffix = h && h.unit ? ` ${h.unit}` : "";
+  const valTxt = `${fmtNum(val)}${unitSuffix}`;
+  try {
+    const created = await api("/api/events", {
+      method: "POST",
+      body: JSON.stringify({ habit_id: habitId, amount: val, occurred_at, source: "manual", client_uuid }),
+    });
+    toast(t("measure_logged", { v: valTxt, name: h ? h.name : "" }), { undoEventId: created.id });
+    state.analysisBoard = null;
+    await loadToday();
+  } catch (e) {
+    const q = loadOfflineQueue();
+    q.push({ habit_id: habitId, amount: val, occurred_at, source: "manual", client_uuid, note: "" });
+    saveOfflineQueue(q);
+    if (state.todayData && h) {
+      const prevCnt = Number(h.event_count || 0);
+      const prevAvg = prevCnt > 0 ? Number(h.direct || 0) : 0;
+      const nextAvg = Math.round(((prevAvg * prevCnt + val) / (prevCnt + 1)) * 100) / 100;
+      h.direct = nextAvg;
+      h.effective = nextAvg;
+      h.period_effective = nextAvg;
+      h.last_value = Math.round(val * 100) / 100;
+      h.event_count = prevCnt + 1;
+      localStorage.setItem(`daily_today_cache_${state.day}`, JSON.stringify(state.todayData));
+      renderToday(state.todayData);
+    }
+    toast(t("offline_measure", { v: valTxt, name: h ? h.name : "" }));
+  }
+}
+
 // ---- CUSTOM LOG MODAL ----
 function updateCustomLogDurationHint(recalcAmount = false) {
   const hint = $("#cl-duration-hint");
@@ -1581,10 +1690,17 @@ function openCustomLog(habitId) {
   const h = state.habits.find((x) => x.id === habitId);
   if (!h) return;
   const nowDt = new Date();
-  const hasBlock = !!(h.block_minutes && Number(h.block_minutes) > 0);
+  const isMeasure = h.kind === "measure";
+  const hasBlock = !isMeasure && !!(h.block_minutes && Number(h.block_minutes) > 0);
   $("#cl-habit-id").value = habitId;
   $("#cl-title").textContent = t("cl_title_habit", { name: h.name });
-  $("#cl-amount").value = hasBlock ? "1" : String(habitTapStep(h));
+  $("#cl-amount").value = isMeasure
+    ? h.last_value != null
+      ? String(h.last_value)
+      : ""
+    : hasBlock
+    ? "1"
+    : String(habitTapStep(h));
   $("#cl-time").value = localTimeHHMM(nowDt);
   const startWrap = $("#cl-start-wrap");
   const rangeRow = $("#cl-range-row");
@@ -1600,7 +1716,10 @@ function openCustomLog(habitId) {
   renderTagSuggestChips("#cl-tag-chips", "#cl-note");
   $("#custom-log-modal").classList.remove("hidden");
   if (hasBlock && $("#cl-start")) $("#cl-start").focus();
-  else $("#cl-amount").focus();
+  else {
+    $("#cl-amount").focus();
+    $("#cl-amount").select();
+  }
 }
 
 function closeCustomLog() {
@@ -2013,9 +2132,25 @@ function renderRetroRows() {
   } else {
     box.innerHTML = state.habits
       .map((h) => {
-        const val = state.retroAmounts[h.id] || 0;
+        const val = state.retroAmounts[h.id];
+        const hasVal = val !== undefined && val !== "" && Number(val) !== 0;
+        if (h.kind === "measure") {
+          const ph = h.last_value != null ? String(h.last_value) : h.unit || t("measure_input_ph");
+          return `
+          <div class="retro-row ${hasVal ? "has-val" : ""}">
+            <div class="row-inline">
+              <span class="ev-dot" style="background:${esc(h.color)}"></span>
+              <strong>${esc(h.name)}</strong>
+              <span class="muted mono sm-text">${esc(h.unit || "Ø")}</span>
+            </div>
+            <div class="stepper">
+              <input type="text" inputmode="decimal" class="retro-measure-inp mono" data-rmeas="${esc(h.id)}" value="${hasVal ? esc(String(val)) : ""}" placeholder="${esc(ph)}" />
+            </div>
+          </div>`;
+        }
+        const numVal = Number(val || 0);
         return `
-        <div class="retro-row ${val !== 0 ? "has-val" : ""}">
+        <div class="retro-row ${numVal !== 0 ? "has-val" : ""}">
           <div class="row-inline">
             <span class="ev-dot" style="background:${esc(h.color)}"></span>
             <strong>${esc(h.name)}</strong>
@@ -2023,19 +2158,20 @@ function renderRetroRows() {
           </div>
           <div class="stepper">
             <button type="button" class="btn ghost sm" data-rstep="${esc(h.id)}" data-d="-1">−</button>
-            <span class="stepper-val">${val > 0 ? "+" + fmtNum(val) : fmtNum(val)}</span>
+            <span class="stepper-val">${numVal > 0 ? "+" + fmtNum(numVal) : fmtNum(numVal)}</span>
             <button type="button" class="btn primary sm" data-rstep="${esc(h.id)}" data-d="1">+</button>
           </div>
         </div>`;
       })
       .join("");
   }
-  const chosen = Object.entries(state.retroAmounts).filter(([, v]) => v !== 0);
+  const chosen = Object.entries(state.retroAmounts).filter(([, v]) => v !== "" && v != null && Number.isFinite(Number(v)) && Number(v) !== 0);
   const sumText = chosen.length
     ? chosen
         .map(([id, v]) => {
           const h = state.habits.find((x) => x.id === id);
-          return `${v > 0 ? "+" : ""}${fmtNum(v)} ${h ? h.name : id}`;
+          if (h && h.kind === "measure") return `${fmtNum(v)}${h.unit ? ` ${h.unit}` : ""} ${h.name}`;
+          return `${Number(v) > 0 ? "+" : ""}${fmtNum(v)} ${h ? h.name : id}`;
         })
         .join(" · ")
     : t("retro_pick_hint");
@@ -2423,7 +2559,7 @@ function renderRollupList() {
   });
 
   const autoOpen = rollups.length <= 8;
-  const showTools = !focusId && (rollups.length > 8 || groups.length > 3 || !!q);
+  const showTools = !focusId && (rollups.length >= 4 || groups.length >= 2 || !!q);
   const allCurrentlyOpen =
     groups.length > 0 &&
     groups.every((g) =>
@@ -2446,7 +2582,10 @@ function renderRollupList() {
 
   const toolsHtml = showTools
     ? `<div class="route-tools-bar">
-        <input type="text" id="route-filter-input" class="filter-search" style="flex:1;width:auto;min-width:120px;" value="${esc(state.routeFilterQuery)}" placeholder="${esc(t("route_filter_ph"))}" />
+      <div class="ac-wrap" style="flex:1;min-width:120px;">
+        <input type="text" id="route-filter-input" class="filter-search" autocomplete="off" style="width:100%;" value="${esc(state.routeFilterQuery)}" placeholder="${esc(t("route_filter_ph"))}" />
+        <div id="route-filter-ac" class="ac-list hidden" role="listbox"></div>
+      </div>
         <button type="button" class="btn ghost sm" id="btn-toggle-all-routes">${esc(t(allCurrentlyOpen ? "route_collapse_all" : "route_expand_all"))}</button>
       </div>`
     : "";
@@ -2531,6 +2670,7 @@ function renderRollupList() {
     if (inp) {
       inp.focus();
       if (selStart != null) inp.setSelectionRange(selStart, selStart);
+      routeAcIdx = renderFilterAutocomplete("#route-filter-input", "#route-filter-ac", "routes", -1);
     }
   }
 }
@@ -2782,30 +2922,63 @@ function populateHypForm(edge) {
   $("#hyp-note").focus();
 }
 
+let hfMatchActiveIdx = -1;
+
 function clearHabitNameMatches() {
+  hfMatchActiveIdx = -1;
   const box = $("#hf-name-matches");
   if (!box) return;
   box.classList.add("hidden");
   box.innerHTML = "";
 }
 
-function renderHabitNameMatches() {
+async function selectHabitNameMatch(hid, isArch) {
+  clearHabitNameMatches();
+  if (isArch) {
+    try {
+      await api(`/api/habits/${encodeURIComponent(hid)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ archived: false }),
+      });
+      toast(t("habit_restored"));
+      await loadSetup();
+      populateHabitForm(hid);
+    } catch (err) {
+      toast(t("err_prefix", { msg: err.message }));
+    }
+  } else {
+    populateHabitForm(hid);
+  }
+}
+
+function syncHabitNameMatchActiveUI() {
+  const items = $$("#hf-name-matches .name-match-item");
+  items.forEach((el, i) => el.classList.toggle("is-active", i === hfMatchActiveIdx));
+  if (hfMatchActiveIdx >= 0 && items[hfMatchActiveIdx]) {
+    items[hfMatchActiveIdx].scrollIntoView({ block: "nearest" });
+  }
+}
+
+function renderHabitNameMatches(opts = {}) {
   const box = $("#hf-name-matches");
   const inp = $("#hf-name");
   if (!box || !inp) return;
-  if ($("#hf-id").value) {
+  const curId = $("#hf-id").value;
+  const q = inp.value.trim().toLowerCase();
+  // When currently editing a card and its name still matches itself verbatim, stay quiet unless user explicitly asks (ArrowDown)
+  const curEditing = curId ? (state.habits || []).find((h) => h.id === curId) : null;
+  if (!opts.forceAll && curEditing && String(curEditing.name || "").toLowerCase() === q) {
     clearHabitNameMatches();
     return;
   }
-  const q = inp.value.trim().toLowerCase();
-  if (!q) {
+  if (!q && !opts.forceAll) {
     clearHabitNameMatches();
     return;
   }
   const pool = [
     ...(state.habits || []).map((h, i) => ({ h, archived: false, order: i })),
     ...(state.archivedHabits || []).map((h, i) => ({ h, archived: true, order: 10000 + i })),
-  ].filter((x) => String(x.h.name || "").toLowerCase().includes(q));
+  ].filter((x) => x.h.id !== curId && (!q || String(x.h.name || "").toLowerCase().includes(q) || String(x.h.group_name || "").toLowerCase().includes(q)));
 
   if (!pool.length) {
     clearHabitNameMatches();
@@ -2815,17 +2988,20 @@ function renderHabitNameMatches() {
   pool.sort((a, b) => {
     const na = String(a.h.name || "").toLowerCase();
     const nb = String(b.h.name || "").toLowerCase();
-    const ea = na === q ? 0 : na.startsWith(q) ? 1 : 2;
-    const eb = nb === q ? 0 : nb.startsWith(q) ? 1 : 2;
+    const ea = q ? (na === q ? 0 : na.startsWith(q) ? 1 : 2) : 2;
+    const eb = q ? (nb === q ? 0 : nb.startsWith(q) ? 1 : 2) : 2;
     if (ea !== eb) return ea - eb;
     if (a.archived !== b.archived) return a.archived ? 1 : -1;
     return a.order - b.order;
   });
 
-  box.innerHTML = pool
-    .slice(0, 6)
-    .map(({ h, archived }) => {
-      const exact = String(h.name || "").toLowerCase() === q;
+  const shown = pool.slice(0, 8);
+  const exactIdx = q ? shown.findIndex((x) => String(x.h.name || "").toLowerCase() === q) : -1;
+  hfMatchActiveIdx = exactIdx >= 0 ? exactIdx : opts.autoSelectFirst ? 0 : -1;
+
+  box.innerHTML = shown
+    .map(({ h, archived }, idx) => {
+      const exact = q && String(h.name || "").toLowerCase() === q;
       const badge =
         h.kind !== "neutral"
           ? `<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span>`
@@ -2836,7 +3012,7 @@ function renderHabitNameMatches() {
           ? t("hf_match_exists")
           : "Edit →";
       return `
-      <button type="button" class="name-match-item${exact ? " is-exact" : ""}" data-match-habit="${esc(h.id)}" data-match-archived="${archived ? "1" : "0"}">
+      <button type="button" class="name-match-item${exact ? " is-exact" : ""}${idx === hfMatchActiveIdx ? " is-active" : ""}" data-match-habit="${esc(h.id)}" data-match-archived="${archived ? "1" : "0"}">
         <span class="row-inline" style="min-width:0;">
           <span class="ev-dot" style="background:${esc(h.color || "var(--muted)")};${archived ? "opacity:0.55;" : ""}"></span>
           <strong>${esc(h.name)}</strong>
@@ -2847,6 +3023,83 @@ function renderHabitNameMatches() {
     })
     .join("");
   box.classList.remove("hidden");
+}
+
+function buildFilterSuggestions(query, mode = "today") {
+  const q = String(query || "").trim().toLowerCase();
+  const list = state.habits || [];
+  const items = [];
+  const seen = new Set();
+  for (const h of list) {
+    if (!q || h.name.toLowerCase().includes(q)) {
+      const k = `h:${h.name.toLowerCase()}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        const rank = q ? (h.name.toLowerCase() === q ? 0 : h.name.toLowerCase().startsWith(q) ? 1 : 2) : 2;
+        items.push({ label: h.name, value: h.name, color: h.color, meta: kindBadgeText(h), rank });
+      }
+    }
+  }
+  if (mode === "today") {
+    for (const h of list) {
+      const grp = String(h.group_name || "").trim();
+      if (!grp) continue;
+      if (!q || grp.toLowerCase().includes(q)) {
+        const k = `g:${grp.toLowerCase()}`;
+        if (!seen.has(k)) {
+          seen.add(k);
+          const rank = q ? (grp.toLowerCase().startsWith(q) ? 1.5 : 2.5) : 3;
+          items.push({ label: grp, value: grp, color: "var(--muted)", meta: t("groups"), rank });
+        }
+      }
+    }
+  }
+  items.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
+  return items.slice(0, 7);
+}
+
+let todayAcIdx = -1;
+let routeAcIdx = -1;
+
+function renderFilterAutocomplete(inputSel, boxSel, mode, activeIdxRef, opts = {}) {
+  const inp = $(inputSel);
+  const box = $(boxSel);
+  if (!inp || !box) return -1;
+  const q = inp.value.trim();
+  if (!q && !opts.forceAll) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return -1;
+  }
+  const items = buildFilterSuggestions(q, mode);
+  // Hide if single exact match already equals current input value
+  if (!items.length || (items.length === 1 && items[0].value.toLowerCase() === q.toLowerCase())) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return -1;
+  }
+  const nextIdx = activeIdxRef >= 0 && activeIdxRef < items.length ? activeIdxRef : opts.autoSelectFirst ? 0 : -1;
+  box.innerHTML = items
+    .map(
+      (it, idx) => `
+      <button type="button" class="ac-item${idx === nextIdx ? " is-active" : ""}" data-ac-val="${esc(it.value)}">
+        <span class="row-inline" style="min-width:0;gap:7px;">
+          <span class="ev-dot" style="background:${esc(it.color)}"></span>
+          <span class="ac-label">${esc(it.label)}</span>
+        </span>
+        <span class="ac-meta mono">${esc(it.meta)}</span>
+      </button>`
+    )
+    .join("");
+  box.classList.remove("hidden");
+  return nextIdx;
+}
+
+function hideFilterAutocomplete(boxSel) {
+  const box = $(boxSel);
+  if (!box) return;
+  box.classList.add("hidden");
+  box.innerHTML = "";
 }
 
 function resetHabitForm() {
@@ -3979,15 +4232,75 @@ function bindEvents() {
   });
   $("#today-search").addEventListener("input", (e) => {
     state.filterQuery = e.target.value;
+    todayAcIdx = renderFilterAutocomplete("#today-search", "#today-search-ac", "today", -1);
+    if (state.todayData) renderToday(state.todayData);
+  });
+  $("#today-search").addEventListener("focus", () => {
+    if ($("#today-search").value.trim()) {
+      todayAcIdx = renderFilterAutocomplete("#today-search", "#today-search-ac", "today", -1);
+    }
+  });
+  $("#today-search").addEventListener("blur", () => {
+    setTimeout(() => hideFilterAutocomplete("#today-search-ac"), 120);
+  });
+  $("#today-search").addEventListener("keydown", (e) => {
+    const items = $$("#today-search-ac .ac-item");
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!items.length) {
+        todayAcIdx = renderFilterAutocomplete("#today-search", "#today-search-ac", "today", 0, { forceAll: true, autoSelectFirst: true });
+      } else {
+        todayAcIdx = (todayAcIdx + 1) % items.length;
+        items.forEach((el, i) => el.classList.toggle("is-active", i === todayAcIdx));
+      }
+      return;
+    }
+    if (e.key === "ArrowUp" && items.length) {
+      e.preventDefault();
+      todayAcIdx = todayAcIdx <= 0 ? items.length - 1 : todayAcIdx - 1;
+      items.forEach((el, i) => el.classList.toggle("is-active", i === todayAcIdx));
+      return;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && items.length && todayAcIdx >= 0 && items[todayAcIdx]) {
+      e.preventDefault();
+      const val = items[todayAcIdx].dataset.acVal || "";
+      $("#today-search").value = val;
+      state.filterQuery = val;
+      hideFilterAutocomplete("#today-search-ac");
+      if (state.todayData) renderToday(state.todayData);
+      return;
+    }
+    if (e.key === "Escape") {
+      if (items.length) {
+        hideFilterAutocomplete("#today-search-ac");
+      } else if ($("#today-search").value) {
+        $("#today-search").value = "";
+        state.filterQuery = "";
+        if (state.todayData) renderToday(state.todayData);
+      }
+    }
+  });
+  $("#today-search-ac").addEventListener("mousedown", (e) => {
+    const item = e.target.closest(".ac-item[data-ac-val]");
+    if (!item) return;
+    e.preventDefault();
+    const val = item.dataset.acVal || "";
+    $("#today-search").value = val;
+    state.filterQuery = val;
+    hideFilterAutocomplete("#today-search-ac");
     if (state.todayData) renderToday(state.todayData);
   });
 
-  // Quick-create habit on Today bar (show optional target/period only for Mehr/Weniger)
+  // Quick-create card on Today bar (target/period for Mehr/Weniger, unit for Messwert)
   const syncQuickCreateKindUI = () => {
-    const isNeutral = $("#qc-kind").value === "neutral";
-    $("#qc-target").classList.toggle("hidden", isNeutral);
-    $("#qc-period").classList.toggle("hidden", isNeutral);
-    if (isNeutral) $("#qc-target").value = "";
+    const kind = $("#qc-kind").value;
+    const isGoal = kind === "min" || kind === "max";
+    const isMeasure = kind === "measure";
+    $("#qc-target").classList.toggle("hidden", !isGoal);
+    $("#qc-period").classList.toggle("hidden", !isGoal);
+    if ($("#qc-unit")) $("#qc-unit").classList.toggle("hidden", !isMeasure);
+    if (!isGoal) $("#qc-target").value = "";
+    if (!isMeasure && $("#qc-unit")) $("#qc-unit").value = "";
   };
   $("#qc-kind").addEventListener("change", syncQuickCreateKindUI);
   syncQuickCreateKindUI();
@@ -4010,21 +4323,24 @@ function bindEvents() {
     e.preventDefault();
     const name = $("#qc-name").value.trim();
     const kind = $("#qc-kind").value;
+    const isGoal = kind === "min" || kind === "max";
     const rawT = $("#qc-target").value.trim();
-    const target = kind !== "neutral" && rawT !== "" ? Number(rawT) : null;
-    const target_period = kind !== "neutral" ? ($("#qc-period").value || "day") : "day";
+    const target = isGoal && rawT !== "" ? Number(rawT) : null;
+    const target_period = isGoal ? ($("#qc-period").value || "day") : "day";
+    const unit = kind === "measure" ? ($("#qc-unit")?.value.trim() || "") : "x";
     const color = normalizeHexColor($("#qc-color")?.value) || getDefaultHabitColor();
     if (!name) return;
     try {
       await api("/api/habits", {
         method: "POST",
-        body: JSON.stringify({ name, kind, target, target_period, color }),
+        body: JSON.stringify({ name, kind, target, target_period, unit, color }),
       });
       rememberHabitColor(color);
       qcColorDirty = false;
       syncQuickCreateColor(color);
       $("#qc-name").value = "";
       $("#qc-target").value = "";
+      if ($("#qc-unit")) $("#qc-unit").value = "";
       $("#qc-period").value = "day";
       syncQuickCreateKindUI();
       toast(t("habit_created", { name }));
@@ -4034,8 +4350,25 @@ function bindEvents() {
     }
   });
 
-  // Habit cards click delegation (actions + active-start adjust + multi-toggle focus clusters) & hover glow
+  // Habit cards click delegation (actions + inline measure form + active-start adjust + multi-toggle focus clusters)
+  const handleCardAreaSubmit = async (e) => {
+    const form = e.target.closest(".hc-measure-form[data-measure-form]");
+    if (!form) return;
+    e.preventDefault();
+    const id = form.dataset.measureForm;
+    const inp = form.querySelector(".hc-measure-inp");
+    if (!inp) return;
+    await logMeasureValue(id, inp.value);
+  };
+  const handleCardAreaFocusIn = (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains("hc-measure-inp")) {
+      setTimeout(() => {
+        try { e.target.select(); } catch {}
+      }, 0);
+    }
+  };
   const handleCardAreaClick = async (e) => {
+    if (e.target.closest(".hc-measure-form")) return;
     const activeChip = e.target.closest(".active-chip[data-active-id]");
     if (activeChip) {
       e.stopPropagation();
@@ -4088,9 +4421,15 @@ function bindEvents() {
     }
   };
   $("#habit-grid").addEventListener("click", handleCardAreaClick);
+  $("#habit-grid").addEventListener("submit", handleCardAreaSubmit);
+  $("#habit-grid").addEventListener("focusin", handleCardAreaFocusIn);
   $("#focus-clusters").addEventListener("click", handleCardAreaClick);
+  $("#focus-clusters").addEventListener("submit", handleCardAreaSubmit);
+  $("#focus-clusters").addEventListener("focusin", handleCardAreaFocusIn);
   const dormantWrap = $("#dormant-habits-wrap");
   if (dormantWrap) {
+    dormantWrap.addEventListener("submit", handleCardAreaSubmit);
+    dormantWrap.addEventListener("focusin", handleCardAreaFocusIn);
     dormantWrap.addEventListener("click", (e) => {
       if (e.target.closest("[data-toggle-dormant]")) {
         state.showDormantToday = !state.showDormantToday;
@@ -4357,6 +4696,27 @@ function bindEvents() {
       state.retroAmounts[id] = Math.max(0, Math.round(((state.retroAmounts[id] || 0) + d * step) * 1000) / 1000);
       renderRetroRows();
     }
+  });
+  $("#retro-modal").addEventListener("input", (e) => {
+    const inp = e.target.closest("[data-rmeas]");
+    if (!inp) return;
+    const id = inp.dataset.rmeas;
+    const raw = inp.value.trim().replace(",", ".");
+    const num = raw === "" ? 0 : Number(raw);
+    if (raw === "" || !Number.isFinite(num)) delete state.retroAmounts[id];
+    else state.retroAmounts[id] = num;
+    const row = inp.closest(".retro-row");
+    if (row) row.classList.toggle("has-val", raw !== "" && Number.isFinite(num) && num !== 0);
+    const chosen = Object.entries(state.retroAmounts).filter(([, v]) => v !== "" && v != null && Number.isFinite(Number(v)) && Number(v) !== 0);
+    $("#retro-summary").textContent = chosen.length
+      ? chosen
+          .map(([hid, v]) => {
+            const h = state.habits.find((x) => x.id === hid);
+            if (h && h.kind === "measure") return `${fmtNum(v)}${h.unit ? ` ${h.unit}` : ""} ${h.name}`;
+            return `${Number(v) > 0 ? "+" : ""}${fmtNum(v)} ${h ? h.name : hid}`;
+          })
+          .join(" · ")
+      : t("retro_pick_hint");
   });
   $("#retro-inline-add").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -4820,28 +5180,59 @@ function bindEvents() {
   });
   $("#hf-color").addEventListener("input", syncActiveColorSwatch);
   $("#hf-color").addEventListener("change", (e) => rememberHabitColor(e.target.value));
-  $("#hf-name").addEventListener("input", renderHabitNameMatches);
-  $("#hf-name").addEventListener("focus", renderHabitNameMatches);
-  $("#hf-name-matches").addEventListener("click", async (e) => {
+  $("#hf-name").addEventListener("input", () => renderHabitNameMatches());
+  $("#hf-name").addEventListener("focus", () => renderHabitNameMatches());
+  $("#hf-name").addEventListener("blur", () => {
+    setTimeout(() => clearHabitNameMatches(), 120);
+  });
+  $("#hf-name").addEventListener("keydown", async (e) => {
+    const items = $$("#hf-name-matches .name-match-item");
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!items.length) {
+        renderHabitNameMatches({ forceAll: true, autoSelectFirst: true });
+      } else {
+        hfMatchActiveIdx = (hfMatchActiveIdx + 1) % items.length;
+        syncHabitNameMatchActiveUI();
+      }
+      return;
+    }
+    if (e.key === "ArrowUp" && items.length) {
+      e.preventDefault();
+      hfMatchActiveIdx = hfMatchActiveIdx <= 0 ? items.length - 1 : hfMatchActiveIdx - 1;
+      syncHabitNameMatchActiveUI();
+      return;
+    }
+    if (e.key === "Escape" && items.length) {
+      e.preventDefault();
+      clearHabitNameMatches();
+      return;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && items.length) {
+      const pick =
+        hfMatchActiveIdx >= 0 && items[hfMatchActiveIdx]
+          ? items[hfMatchActiveIdx]
+          : e.key === "Enter"
+          ? items.find((el) => el.classList.contains("is-exact"))
+          : items[0];
+      if (pick) {
+        e.preventDefault();
+        await selectHabitNameMatch(pick.dataset.matchHabit, pick.dataset.matchArchived === "1");
+      }
+    }
+  });
+  $("#hf-name-matches").addEventListener("mousedown", async (e) => {
     const item = e.target.closest("[data-match-habit]");
     if (!item) return;
-    const hid = item.dataset.matchHabit;
-    const isArch = item.dataset.matchArchived === "1";
-    clearHabitNameMatches();
-    if (isArch) {
-      try {
-        await api(`/api/habits/${encodeURIComponent(hid)}`, {
-          method: "PATCH",
-          body: JSON.stringify({ archived: false }),
-        });
-        toast(t("habit_restored"));
-        await loadSetup();
-        populateHabitForm(hid);
-      } catch (err) {
-        toast(t("err_prefix", { msg: err.message }));
-      }
-    } else {
-      populateHabitForm(hid);
+    e.preventDefault();
+    await selectHabitNameMatch(item.dataset.matchHabit, item.dataset.matchArchived === "1");
+  });
+  $("#hf-kind").addEventListener("change", () => {
+    const kind = $("#hf-kind").value;
+    const unitInp = $("#hf-unit");
+    if (unitInp) {
+      if (kind === "measure" && unitInp.value.trim() === "x") unitInp.value = "";
+      else if (kind !== "measure" && unitInp.value.trim() === "") unitInp.value = "x";
     }
   });
   $("#hf-group").addEventListener("input", renderHabitGroupChips);
@@ -5422,17 +5813,33 @@ function bindEvents() {
   $("#habit-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const id = $("#hf-id").value;
+    const cleanName = $("#hf-name").value.trim();
+    // If user typed an exact existing card name while in "Create" mode and hit Enter, open it for editing instead of failing!
+    if (!id && cleanName) {
+      const exactAct = (state.habits || []).find((h) => String(h.name || "").toLowerCase() === cleanName.toLowerCase());
+      if (exactAct) {
+        populateHabitForm(exactAct.id);
+        return;
+      }
+      const exactArch = (state.archivedHabits || []).find((h) => String(h.name || "").toLowerCase() === cleanName.toLowerCase());
+      if (exactArch) {
+        await selectHabitNameMatch(exactArch.id, true);
+        return;
+      }
+    }
+    const kind = $("#hf-kind").value;
     const rawT = $("#hf-target").value.trim();
     const rawB = $("#hf-block-min").value.trim();
     const rawS = ($("#hf-step") ? $("#hf-step").value : "1").trim().replace(",", ".");
     const parsedStep = Number(rawS);
+    const rawUnit = $("#hf-unit").value.trim();
     const payload = {
-      name: $("#hf-name").value.trim(),
-      kind: $("#hf-kind").value,
-      target: rawT !== "" ? Number(rawT) : null,
+      name: cleanName,
+      kind,
+      target: kind !== "measure" && rawT !== "" ? Number(rawT) : null,
       target_period: $("#hf-period").value || "day",
-      clear_target: rawT === "",
-      unit: $("#hf-unit").value.trim() || "x",
+      clear_target: kind === "measure" || rawT === "",
+      unit: kind === "measure" ? rawUnit : rawUnit || "x",
       tap_step: Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 1,
       color: $("#hf-color").value,
       block_minutes: rawB !== "" ? Number(rawB) : null,
@@ -5610,6 +6017,60 @@ function bindEvents() {
         state.routeFilterQuery = e.target.value || "";
         renderRollupList();
       }
+    });
+    rollupListEl.addEventListener("focusin", (e) => {
+      if (e.target && e.target.id === "route-filter-input" && e.target.value.trim()) {
+        routeAcIdx = renderFilterAutocomplete("#route-filter-input", "#route-filter-ac", "routes", -1);
+      }
+    });
+    rollupListEl.addEventListener("focusout", (e) => {
+      if (e.target && e.target.id === "route-filter-input") {
+        setTimeout(() => hideFilterAutocomplete("#route-filter-ac"), 120);
+      }
+    });
+    rollupListEl.addEventListener("keydown", (e) => {
+      if (!e.target || e.target.id !== "route-filter-input") return;
+      const items = $$("#route-filter-ac .ac-item");
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (!items.length) {
+          routeAcIdx = renderFilterAutocomplete("#route-filter-input", "#route-filter-ac", "routes", 0, { forceAll: true, autoSelectFirst: true });
+        } else {
+          routeAcIdx = (routeAcIdx + 1) % items.length;
+          items.forEach((el, i) => el.classList.toggle("is-active", i === routeAcIdx));
+        }
+        return;
+      }
+      if (e.key === "ArrowUp" && items.length) {
+        e.preventDefault();
+        routeAcIdx = routeAcIdx <= 0 ? items.length - 1 : routeAcIdx - 1;
+        items.forEach((el, i) => el.classList.toggle("is-active", i === routeAcIdx));
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && items.length && routeAcIdx >= 0 && items[routeAcIdx]) {
+        e.preventDefault();
+        const val = items[routeAcIdx].dataset.acVal || "";
+        state.routeFilterQuery = val;
+        hideFilterAutocomplete("#route-filter-ac");
+        renderRollupList();
+        return;
+      }
+      if (e.key === "Escape") {
+        if (items.length) {
+          hideFilterAutocomplete("#route-filter-ac");
+        } else if (state.routeFilterQuery) {
+          state.routeFilterQuery = "";
+          renderRollupList();
+        }
+      }
+    });
+    rollupListEl.addEventListener("mousedown", (e) => {
+      const item = e.target.closest("#route-filter-ac .ac-item[data-ac-val]");
+      if (!item) return;
+      e.preventDefault();
+      state.routeFilterQuery = item.dataset.acVal || "";
+      hideFilterAutocomplete("#route-filter-ac");
+      renderRollupList();
     });
     rollupListEl.addEventListener("click", (e) => {
       if (e.target && e.target.id === "btn-clear-graph-focus") {
