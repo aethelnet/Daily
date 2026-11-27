@@ -2182,7 +2182,7 @@ async function openMoodModal(editSnap = null) {
   state.editingDimId = null;
   state.moodRatings = snap ? { ...(snap.ratings || {}) } : {};
   state.moodCauses = new Set(snap ? snap.causes || [] : []);
-  resetMoodGroupForm();
+  syncMoodGroupFormToActive();
   const titleEl = $("#mood-modal-title");
   if (titleEl) titleEl.textContent = t(snap ? "mood_title_edit" : "mood_title");
   const dateEl = $("#mood-date");
@@ -2340,15 +2340,28 @@ function resetMoodGroupForm() {
   renderMoodGroupManager();
 }
 
-function populateMoodGroupForm(grp) {
+function populateMoodGroupForm(grp, opts = {}) {
   if (!grp) return;
   $("#mg-edit-id").value = grp.id;
-  $("#mg-name").value = grp.name;
-  $("#btn-cancel-mg").classList.remove("hidden");
+  $("#mg-name").value = moodGroupLabel(grp);
+  const cancelEl = $("#btn-cancel-mg");
+  if (cancelEl) {
+    cancelEl.textContent = t("btn_cancel_edit");
+    cancelEl.classList.remove("hidden");
+  }
   $("#btn-save-mg").textContent = t("btn_save");
   state.mgDraftDims = new Set(grp.dim_ids || []);
   renderMoodGroupManager();
-  $("#mg-name").focus();
+  if (opts.focus !== false) $("#mg-name").focus();
+}
+
+function syncMoodGroupFormToActive() {
+  const activeGrp =
+    state.activeMoodGroup && state.activeMoodGroup !== "all"
+      ? state.moodGroups.find((g) => g.id === state.activeMoodGroup)
+      : null;
+  if (activeGrp) populateMoodGroupForm(activeGrp, { focus: false });
+  else resetMoodGroupForm();
 }
 
 function localIsoNow() {
@@ -5461,6 +5474,7 @@ function bindEvents() {
       const gid = mGroupBtn.dataset.mgroup;
       state.activeMoodGroup = gid;
       if (state.settings) state.settings.active_mood_group = gid;
+      syncMoodGroupFormToActive();
       renderMoodModal();
       if (state.lastStateCurves && state.lastStateCurves.length) {
         renderStateCurveSection(state.lastStateCurves);
@@ -5824,7 +5838,7 @@ function bindEvents() {
     }
     try {
       await saveMoodGroups(next, targetId);
-      resetMoodGroupForm();
+      syncMoodGroupFormToActive();
       toast(t("mg_saved", { name }));
     } catch (err) {
       toast(t("err_prefix", { msg: err.message }));
