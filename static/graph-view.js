@@ -388,14 +388,26 @@
         const isFocusEdge = !focusId || e.source.id === focusId || e.target.id === focusId;
         const g = edgeCurveGeom(e);
         const isHyp = e.type === "hypothesis";
-        const baseCol = isHyp || e.isAi ? theme.ai : e.weight >= 0 ? theme.pos : theme.neg;
+        const targetKind = (e.target && e.target.kind) || "neutral";
+        const valenceCol =
+          targetKind === "max"
+            ? e.weight < 0
+              ? theme.pos
+              : theme.neg
+            : targetKind === "min"
+              ? e.weight >= 0
+                ? theme.pos
+                : theme.neg
+              : theme.accent;
+        const baseCol = isHyp || e.isAi ? theme.ai : valenceCol;
         const lineAlpha = focusId ? (isFocusEdge ? 0.9 : 0.1) : isHyp ? 0.45 : 0.62;
         const lineW = clamp(1.1 + Math.abs(e.weight) * 1.4, 1.2, 3.2) / Math.sqrt(camZoom);
 
         ctx.save();
         ctx.strokeStyle = hexToRgba(baseCol, lineAlpha);
         ctx.lineWidth = isFocusEdge && focusId ? lineW * 1.25 : lineW;
-        if (isHyp) ctx.setLineDash([5 / camZoom, 4 / camZoom]);
+        if (isHyp) ctx.setLineDash([4 / camZoom, 4 / camZoom]);
+        else if (e.weight < 0) ctx.setLineDash([7 / camZoom, 3.5 / camZoom]);
         ctx.beginPath();
         ctx.moveTo(g.x0, g.y0);
         ctx.quadraticCurveTo(g.cx, g.cy, g.x1, g.y1);

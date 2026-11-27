@@ -583,6 +583,28 @@ function elapsedMinutesSince(iso) {
   return Number.isFinite(ms) && ms > 0 ? Math.max(1, Math.round(ms / 60000)) : 1;
 }
 
+function habitKindById(habitId) {
+  if (!habitId) return "neutral";
+  const hit =
+    (state.todayData && (state.todayData.habits || []).find((x) => x.id === habitId)) ||
+    (state.habits || []).find((x) => x.id === habitId) ||
+    (state.archivedHabits || []).find((x) => x.id === habitId);
+  return (hit && hit.kind) || "neutral";
+}
+
+// Goal-aligned valence for routing edges & contributions:
+//   - "min" (Mehr): + helps (green), - hurts (red)
+//   - "max" (Weniger): - helps (green, lowers the limit!), + hurts (red, drives limit up!)
+//   - "neutral" / "measure": descriptive without good/bad traffic light (teal/accent)
+function edgeValenceChipClass(weight, targetKind, isAi = false) {
+  if (isAi) return "ai-chip";
+  const w = Number(weight || 0);
+  if (Math.abs(w) < 1e-9) return "neu-chip";
+  if (targetKind === "max") return w < 0 ? "pos-chip" : "neg-chip";
+  if (targetKind === "min") return w > 0 ? "pos-chip" : "neg-chip";
+  return "neu-chip";
+}
+
 function renderHabitCardHtml(h, opts = {}) {
   const bar = barPercentAndColor(h);
   const neighbors = getConnectedNeighbors(h.id);
@@ -617,7 +639,7 @@ function renderHabitCardHtml(h, opts = {}) {
   const contribHtml = shownContribs.length
     ? shownContribs
         .map((c) => {
-          const cls = c.is_ai ? "ai-chip" : c.delta >= 0 ? "pos-chip" : "neg-chip";
+          const cls = edgeValenceChipClass(c.delta, h.kind, c.is_ai);
           const pfx = c.is_ai ? aiPrefix : "";
           const viaList = Array.isArray(c.via) && c.via.length ? c.via : [];
           const viaHtml = viaList.length
@@ -640,7 +662,7 @@ function renderHabitCardHtml(h, opts = {}) {
   const routesHtml = shownRoutes.length
     ? shownRoutes
         .map((r) => {
-          const cls = r.is_ai ? "ai-chip" : r.weight >= 0 ? "pos-chip" : "neg-chip";
+          const cls = edgeValenceChipClass(r.weight, habitKindById(r.target_id), r.is_ai);
           const pfx = r.is_ai ? aiPrefix : "";
           const tip =
             r.is_ai && r.prior_weight != null
@@ -1595,7 +1617,9 @@ function renderHabitCounterfactualHtml(habitId, habitName, dimsById) {
       const delta = Number(ef.delta || 0);
       const sign = delta >= 0 ? "+" : "";
       const isAi = ef.source_kind === "ai";
-      const chipCls = isAi ? "ai-chip" : delta >= 0 ? "pos-chip" : "neg-chip";
+      const chipCls = ef.is_state_target
+        ? isAi ? "ai-chip" : delta >= 0 ? "pos-chip" : "neg-chip"
+        : edgeValenceChipClass(delta, habitKindById(ef.target_id), isAi);
       const targetLabel = ef.is_state_target
         ? dimName(
             (dimsById && dimsById[String(ef.target_id || "").replace(/^state:/, "")]) || {
@@ -1702,7 +1726,8 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
   const detailImpactsHtml = activeImpacts.length
     ? activeImpacts
         .map(({ r, w, contrib, targetHabit }) => {
-          const cls = r.is_ai ? "ai-chip" : contrib >= 0 ? "pos-chip" : "neg-chip";
+          const tKind = (targetHabit && targetHabit.kind) || habitKindById(r.target_id);
+          const cls = edgeValenceChipClass(contrib, tKind, r.is_ai);
           const sign = contrib >= 0 ? "+" : "";
           const wSign = w >= 0 ? "+" : "";
           const mathStr = `${evAmt >= 0 ? "+" : ""}${fmtNum(evAmt)} × ${wSign}${fmtNum(w)} = ${sign}${fmtNum(contrib)}`;
@@ -2727,7 +2752,7 @@ function renderSetupHabitList() {
     const outs = (outMap[h.id] || [])
       .map(
         (r) =>
-          `<span class="chip ${r.weight >= 0 ? "pos-chip" : "neg-chip"}">→ ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`
+          `<span class="chip ${edgeValenceChipClass(r.weight, habitKindById(r.target_id))}">→ ${r.weight >= 0 ? "+" : ""}${fmtNum(r.weight)} ${esc(r.target_name)}</span>`
       )
       .join("");
     return `
@@ -2874,7 +2899,7 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
           <div class="row-inline">
             <strong>${esc(e.source_name)}</strong>
             <span class="chip">${esc(windowLabel(e.context_window))}</span>
-            <span class="chip ${e.weight >= 0 ? "pos-chip" : "neg-chip"}">${esc(e.weight >= 0 ? t("hyp_pos") : t("hyp_neg"))}</span>
+            <span class="chip ${edgeValenceChipClass(e.weight, habitKindById(e.target_id))}">${esc(e.weight >= 0 ? t("hyp_pos") : t("hyp_neg"))}</span>
             <span class="arrow">→</span>
             <strong>${esc(e.target_name)}</strong>
           </div>
@@ -3001,9 +3026,12 @@ function renderRollupList() {
               : "";
           const posCnt = g.edges.filter((e) => Number(e.weight) >= 0).length;
           const negCnt = g.edges.length - posCnt;
+          const tKind = (g.target && g.target.kind) || "neutral";
+          const posCls = tKind === "max" ? "neg" : tKind === "min" ? "pos" : "muted";
+          const negCls = tKind === "max" ? "pos" : tKind === "min" ? "neg" : "muted";
           const countSummary = [
-            posCnt ? `<span class="pos">+${posCnt}</span>` : "",
-            negCnt ? `<span class="neg">−${negCnt}</span>` : "",
+            posCnt ? `<span class="${posCls}">+${posCnt}</span>` : "",
+            negCnt ? `<span class="${negCls}">−${negCnt}</span>` : "",
           ]
             .filter(Boolean)
             .join(" · ");
@@ -3022,7 +3050,7 @@ function renderRollupList() {
             <div class="row-inline" style="min-width:0;">
               <span class="ev-dot" style="background:${esc(sColor)}"></span>
               <strong>${esc(e.source_name)}</strong>
-              <span class="chip ${e.weight >= 0 ? "pos-chip" : "neg-chip"}">${e.weight >= 0 ? "+" : ""}${fmtNum(e.weight)}</span>
+              <span class="chip ${edgeValenceChipClass(e.weight, tKind)}">${e.weight >= 0 ? "+" : ""}${fmtNum(e.weight)}</span>
             </div>
             <div class="row-inline">
               <button class="btn ghost sm" data-edit-rollup="${e.id}" title="${esc(t("edit_edge_title"))}">Edit</button>
@@ -3253,7 +3281,7 @@ function syncRollupExistingMatch({ autofill = false } = {}) {
       if ($("#rf-weight")) $("#rf-weight").value = String(Math.max(0.05, Math.round(Math.abs(w) * 100) / 100));
     }
     if (hint) {
-      hint.innerHTML = `<span class="chip ${w >= 0 ? "pos-chip" : "neg-chip"}">${w >= 0 ? "+" : ""}${fmtNum(w)}</span><span>${esc(t("rf_existing_edge"))}</span>`;
+      hint.innerHTML = `<span class="chip ${edgeValenceChipClass(w, habitKindById(dstId))}">${w >= 0 ? "+" : ""}${fmtNum(w)}</span><span>${esc(t("rf_existing_edge"))}</span>`;
       hint.classList.remove("hidden");
     }
     if (saveBtn) saveBtn.textContent = t("btn_update");
