@@ -444,6 +444,9 @@ async function loadToday() {
     state.habits = data.habits;
     state.edges = data.active_edges || meta.edges || [];
     state.settings = meta.settings || {};
+    state.moodGroups = parseMoodGroups(state.settings);
+    const savedMg = String(state.settings.active_mood_group || "alltag");
+    state.activeMoodGroup = savedMg === "all" || state.moodGroups.some((g) => g.id === savedMg) ? savedMg : (state.moodGroups[0] ? state.moodGroups[0].id : "all");
     state.tags = meta.tags || [];
     localStorage.setItem(`daily_today_cache_${state.day}`, JSON.stringify(data));
     syncRoutingModeUI(data.routing_mode || state.settings.routing_mode || "observed");
@@ -1975,6 +1978,9 @@ async function saveMoodGroups(nextGroups, nextActive = state.activeMoodGroup) {
   state.moodGroups = nextGroups;
   state.activeMoodGroup = nextActive;
   renderMoodModal();
+  if (state.lastStateCurves && state.lastStateCurves.length) {
+    renderStateCurveSection(state.lastStateCurves);
+  }
 }
 
 function renderMoodGroupManager() {
@@ -3274,14 +3280,45 @@ function renderStateCurveSection(curves, timelineMeta) {
     return;
   }
 
-  // Keep unrated example phase axes (e.g. Krämpfe when never logged) out of Analysis chart pills until used!
+  // Sync active Befinden group (from Befinden modal or Analysis group bar) and filter chart axes accordingly!
   const groupsNow = parseMoodGroups(state.settings);
-  const everydayGrp = groupsNow.find((g) => g.id === "alltag");
-  const everydaySet = new Set(everydayGrp ? everydayGrp.dim_ids : []);
-  const visibleCurves = curves.filter(
-    (c) => c.rated_count > 0 || CORE_EVERYDAY_DIMS.has(c.id) || everydaySet.has(c.id)
+  state.moodGroups = groupsNow;
+  const savedAct = String(
+    state.activeMoodGroup || (state.settings && state.settings.active_mood_group) || (groupsNow[0] && groupsNow[0].id) || "all"
   );
-  const shownCurves = visibleCurves.length ? visibleCurves : curves;
+  const activeGid =
+    savedAct === "all" || groupsNow.some((g) => g.id === savedAct)
+      ? savedAct
+      : groupsNow[0]
+      ? groupsNow[0].id
+      : "all";
+  state.activeMoodGroup = activeGid;
+  const activeGrp = activeGid !== "all" ? groupsNow.find((g) => g.id === activeGid) : null;
+
+  const grpPillsEl = $("#state-group-pills");
+  if (grpPillsEl) {
+    if (groupsNow.length) {
+      grpPillsEl.classList.remove("hidden");
+      grpPillsEl.innerHTML =
+        groupsNow
+          .map(
+            (g) =>
+              `<button type="button" class="pill ${activeGid === g.id ? "active" : ""}" data-sgroup="${esc(g.id)}">${esc(moodGroupLabel(g))}</button>`
+          )
+          .join("") +
+        `<button type="button" class="pill ${activeGid === "all" ? "active" : ""}" data-sgroup="all">${esc(t("mg_all"))}</button>`;
+    } else {
+      grpPillsEl.classList.add("hidden");
+      grpPillsEl.innerHTML = "";
+    }
+  }
+
+  let shownCurves = curves;
+  if (activeGrp && Array.isArray(activeGrp.dim_ids) && activeGrp.dim_ids.length) {
+    const byIdCurve = new Map(curves.map((c) => [c.id, c]));
+    const ordered = activeGrp.dim_ids.map((id) => byIdCurve.get(id)).filter(Boolean);
+    if (ordered.length) shownCurves = ordered;
+  }
 
   if (!state.selectedStateCurveId || !shownCurves.some((c) => c.id === state.selectedStateCurveId)) {
     const firstRated = shownCurves.find((c) => c.rated_count > 0);
@@ -3989,7 +4026,16 @@ function renderRhythmsPanel() {
 }
 
 async function loadAnalysis() {
-  const board = await ensureAnalysisBoard(true);
+  const [board, latestSettings] = await Promise.all([
+    ensureAnalysisBoard(true),
+    api("/api/settings").catch(() => null),
+  ]);
+  if (latestSettings && typeof latestSettings === "object") {
+    state.settings = { ...(state.settings || {}), ...latestSettings };
+    state.moodGroups = parseMoodGroups(state.settings);
+    const savedMg = String(state.settings.active_mood_group || state.activeMoodGroup || "alltag");
+    state.activeMoodGroup = savedMg === "all" || state.moodGroups.some((g) => g.id === savedMg) ? savedMg : (state.moodGroups[0] ? state.moodGroups[0].id : "all");
+  }
   const ai = board.ai || {};
   renderStateCurveSection(ai.state_curves || [], ai.timeline_meta || null);
 
@@ -4777,7 +4823,11 @@ function bindEvents() {
     if (mGroupBtn) {
       const gid = mGroupBtn.dataset.mgroup;
       state.activeMoodGroup = gid;
+      if (state.settings) state.settings.active_mood_group = gid;
       renderMoodModal();
+      if (state.lastStateCurves && state.lastStateCurves.length) {
+        renderStateCurveSection(state.lastStateCurves);
+      }
       api("/api/settings", { method: "PATCH", body: JSON.stringify({ active_mood_group: gid }) })
         .then((upd) => { state.settings = { ...state.settings, ...upd }; })
         .catch(() => {});
@@ -6206,6 +6256,20 @@ function bindEvents() {
   });
   $("#btn-matrix-now").addEventListener("click", () => loadWeekMatrix(null));
 
+  const stateGroupPills = $("#state-group-pills");
+  if (stateGroupPills) {
+    stateGroupPills.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-sgroup]");
+      if (!btn) return;
+      const gid = btn.dataset.sgroup;
+      state.activeMoodGroup = gid;
+      if (state.settings) state.settings.active_mood_group = gid;
+      renderStateCurveSection(state.lastStateCurves);
+      api("/api/settings", { method: "PATCH", body: JSON.stringify({ active_mood_group: gid }) })
+        .then((upd) => { state.settings = { ...(state.settings || {}), ...upd }; })
+        .catch(() => {});
+    });
+  }
   $("#state-axis-pills").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-scurve]");
     if (!btn) return;
