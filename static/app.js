@@ -948,7 +948,7 @@ function renderToday(data) {
   // Prune any toggled IDs that no longer exist
   state.toggledFocus = state.toggledFocus.filter((id) => !!byId[id]);
 
-  if (data.habits.length >= 2) {
+  if (data.habits.length >= 2 || (state.tasks || []).some((tk) => !tk.done_at)) {
     filterBar.classList.remove("hidden");
   } else {
     filterBar.classList.add("hidden");
@@ -1319,11 +1319,28 @@ function renderTasksPanel() {
     }
   }
 
-  const scoped = filterIsNone
+  const q = String(state.filterQuery || "").trim().toLowerCase();
+  const habGroupById = {};
+  for (const h of state.habits || []) {
+    if (h && h.id && h.group_name) habGroupById[h.id] = String(h.group_name).toLowerCase();
+  }
+  const matchesTaskQuery = (tk) => {
+    if (!q) return true;
+    return (
+      String(tk.title || "").toLowerCase().includes(q) ||
+      String(tk.habit_name || "").toLowerCase().includes(q) ||
+      String(habGroupById[tk.habit_id] || "").includes(q) ||
+      String(tk.notes || "").toLowerCase().includes(q) ||
+      String(tk.blocker_title || "").toLowerCase().includes(q)
+    );
+  };
+
+  const scopedBase = filterIsNone
     ? allTasks.filter((tk) => !tk.habit_id)
     : filterHab
     ? allTasks.filter((tk) => tk.habit_id === filterHab.id)
     : allTasks;
+  const scoped = q ? scopedBase.filter(matchesTaskQuery) : scopedBase;
   const actionable = scoped.filter((tk) => !tk.done_at && !tk.is_blocked);
   const blocked = scoped.filter((tk) => !tk.done_at && tk.is_blocked);
   const cutoffMs = Date.now() - 7 * 86400000;
@@ -1339,13 +1356,13 @@ function renderTasksPanel() {
   }
 
   const MAX_COMPACT = 5;
-  const visibleActionable = state.showAllTasks || actionable.length <= MAX_COMPACT ? actionable : actionable.slice(0, MAX_COMPACT);
+  const visibleActionable = state.showAllTasks || Boolean(q) || actionable.length <= MAX_COMPACT ? actionable : actionable.slice(0, MAX_COMPACT);
   const hiddenMoreN = actionable.length - visibleActionable.length;
 
   const actList = $("#tasks-actionable-list");
   if (actList) {
     if (!actionable.length && !blocked.length) {
-      actList.innerHTML = `<div class="muted sm-text tk-empty">${esc(t("tasks_empty"))}</div>`;
+      actList.innerHTML = `<div class="muted sm-text tk-empty">${esc(q ? t("tasks_no_match") : t("tasks_empty"))}</div>`;
     } else if (!actionable.length) {
       actList.innerHTML = "";
     } else {
@@ -1420,6 +1437,7 @@ function renderTasksPanel() {
   if (blkDet && blkList) {
     if (blocked.length) {
       blkDet.classList.remove("hidden");
+      if (q) blkDet.open = true;
       if (blkCnt) blkCnt.textContent = `(${blocked.length})`;
       blkList.innerHTML = blocked
         .map((tk) => {
@@ -3383,6 +3401,28 @@ function buildFilterSuggestions(query, mode = "today") {
           seen.add(k);
           const rank = q ? (grp.toLowerCase().startsWith(q) ? 1.5 : 2.5) : 3;
           items.push({ label: grp, value: grp, color: "var(--muted)", meta: t("groups"), rank });
+        }
+      }
+    }
+    if (q) {
+      for (const tk of state.tasks || []) {
+        if (tk.done_at) continue;
+        const title = String(tk.title || "").trim();
+        if (!title) continue;
+        const low = title.toLowerCase();
+        if (low.includes(q)) {
+          const k = `tk:${low}`;
+          if (!seen.has(k)) {
+            seen.add(k);
+            const rank = low === q ? 0.2 : low.startsWith(q) ? 1.2 : 2.2;
+            items.push({
+              label: title,
+              value: title,
+              color: tk.habit_color || "var(--accent)",
+              meta: t("ac_task_meta"),
+              rank,
+            });
+          }
         }
       }
     }
