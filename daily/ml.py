@@ -196,6 +196,7 @@ def _build_daily_tables(
 ) -> tuple[list[str], dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, dict[str, set[str]]]]:
     habits_by_id = {h["id"]: h for h in habits}
     by_day_direct: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    by_day_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     by_day_windows: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
 
     for ev in events:
@@ -206,11 +207,18 @@ def _build_daily_tables(
         d_str = dt.date().isoformat()
         amt = float(ev["amount"])
         by_day_direct[d_str][hid] += amt
+        by_day_counts[d_str][hid] += 1
         if amt > 0:
             by_day_windows[d_str][hid].add("any")
             by_day_windows[d_str][hid].add(classify_time_window(dt))
 
     observed_days = sorted(by_day_direct.keys())
+    for d_str in observed_days:
+        for hid, h in habits_by_id.items():
+            cnt = by_day_counts[d_str].get(hid, 0)
+            if cnt > 0 and h["kind"] == "measure":
+                by_day_direct[d_str][hid] = round(by_day_direct[d_str][hid] / cnt, 3)
+
     by_day_effective: dict[str, dict[str, float]] = {}
     for d_str in observed_days:
         direct = {hid: by_day_direct[d_str].get(hid, 0.0) for hid in habits_by_id}

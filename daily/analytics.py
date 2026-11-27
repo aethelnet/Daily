@@ -145,7 +145,7 @@ def compute_signed_rollups(
 def evaluate_goal_status(habit: dict[str, Any], effective: float) -> str:
     kind = habit["kind"]
     target = habit.get("target")
-    if target is None or kind == "neutral":
+    if target is None or kind in {"neutral", "measure"}:
         return "neutral"
     t = float(target)
     if kind == "min":
@@ -183,10 +183,13 @@ def compute_day_summary(
         if hid in direct:
             direct[hid] += float(ev["amount"])
             counts[hid] += 1
+    for hid, cnt in counts.items():
+        if cnt > 0 and habits_by_id[hid]["kind"] == "measure":
+            direct[hid] = round(direct[hid] / cnt, 2)
 
     routed, contributors = compute_signed_rollups(direct, habits_by_id, edges)
 
-    # Compute fast cadence & current time-of-day fit signals for Smart ("Jetzt") Today sorting
+    # Compute fast cadence, latest measured value & current time-of-day fit signals for Smart ("Jetzt") Today sorting
     active_ids = {h["id"] for h in active_habits}
     all_hist_events = list_events(db_path=db_path)
     target_d_obj = date.fromisoformat(target_day)
@@ -194,10 +197,14 @@ def compute_day_summary(
     hist_days_by_h: dict[str, set[str]] = defaultdict(set)
     hist_hours_by_h: dict[str, list[int]] = defaultdict(lambda: [0] * 24)
     hist_total_by_h: dict[str, int] = defaultdict(int)
+    last_val_by_h: dict[str, float] = {}
     for ev in all_hist_events:
-        if float(ev["amount"]) <= 0:
-            continue
         eh = ev["habit_id"]
+        amt_f = float(ev["amount"])
+        if eh in active_ids:
+            last_val_by_h[eh] = round(amt_f, 2)
+        if amt_f <= 0:
+            continue
         if eh not in active_ids:
             continue
         ts_str = str(ev.get("occurred_at") or "")
@@ -224,7 +231,9 @@ def compute_day_summary(
         month_end = (next_m - timedelta(days=1)).isoformat()
 
         week_direct: dict[str, float] = {h["id"]: 0.0 for h in all_habits}
+        week_counts: dict[str, int] = {h["id"]: 0 for h in all_habits}
         month_direct: dict[str, float] = {h["id"]: 0.0 for h in all_habits}
+        month_counts: dict[str, int] = {h["id"]: 0 for h in all_habits}
         for ev in all_hist_events:
             eh = ev["habit_id"]
             if eh not in week_direct:
@@ -233,8 +242,16 @@ def compute_day_summary(
             amt = float(ev["amount"])
             if week_start <= ed <= week_end:
                 week_direct[eh] += amt
+                week_counts[eh] += 1
             if month_start <= ed <= month_end:
                 month_direct[eh] += amt
+                month_counts[eh] += 1
+        for hid in habits_by_id:
+            if habits_by_id[hid]["kind"] == "measure":
+                if week_counts[hid] > 0:
+                    week_direct[hid] = round(week_direct[hid] / week_counts[hid], 2)
+                if month_counts[hid] > 0:
+                    month_direct[hid] = round(month_direct[hid] / month_counts[hid], 2)
         week_routed, _ = compute_signed_rollups(week_direct, habits_by_id, edges)
         month_routed, _ = compute_signed_rollups(month_direct, habits_by_id, edges)
         for h in active_habits:
@@ -322,6 +339,7 @@ def compute_day_summary(
                 "days_since_created": days_since_created,
                 "hour_fit": hour_fit,
                 "last_used_at": last_used.get(hid),
+                "last_value": last_val_by_h.get(hid),
                 "status": evaluate_goal_status(h, p_eff),
                 "contributors": contributors.get(hid, []),
                 "routes_to": outgoing_rollups.get(hid, []),
@@ -455,16 +473,22 @@ def compute_week_matrix(
     events = list_log_range(dates[0], dates[-1], db_path=db_path)["events"]
 
     by_day_direct: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    by_day_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for ev in events:
         hid = ev["habit_id"]
         if hid not in all_by_id:
             continue
         d_str = str(ev["occurred_at"])[:10]
         by_day_direct[d_str][hid] += float(ev["amount"])
+        by_day_counts[d_str][hid] += 1
 
     by_day_eff: dict[str, dict[str, float]] = {}
     for d_str in dates:
-        direct = {hid: by_day_direct[d_str].get(hid, 0.0) for hid in all_by_id}
+        direct = {}
+        for hid in all_by_id:
+            raw_v = by_day_direct[d_str].get(hid, 0.0)
+            cnt = by_day_counts[d_str].get(hid, 0)
+            direct[hid] = round(raw_v / cnt, 2) if (cnt > 0 and all_by_id[hid]["kind"] == "measure") else raw_v
         routed, _ = compute_signed_rollups(direct, all_by_id, edges)
         by_day_eff[d_str] = {hid: round(direct[hid] + routed.get(hid, 0.0), 2) for hid in all_by_id}
 
@@ -507,6 +531,7 @@ def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> d
 
     # Group events by local date (including archived children so parent goals preserve full history!)
     by_day_direct: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    by_day_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     by_day_windows: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for ev in events:
         hid = ev["habit_id"]
@@ -516,6 +541,7 @@ def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> d
         d_str = dt.date().isoformat()
         amt = float(ev["amount"])
         by_day_direct[d_str][hid] += amt
+        by_day_counts[d_str][hid] += 1
         if amt > 0:
             by_day_windows[d_str][hid].add("any")
             by_day_windows[d_str][hid].add(classify_time_window(dt))
@@ -524,7 +550,11 @@ def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> d
     observed_days = sorted(by_day_direct.keys())
     by_day_effective: dict[str, dict[str, float]] = {}
     for d_str in observed_days:
-        direct = {hid: by_day_direct[d_str].get(hid, 0.0) for hid in all_by_id}
+        direct = {}
+        for hid in all_by_id:
+            raw_v = by_day_direct[d_str].get(hid, 0.0)
+            cnt = by_day_counts[d_str].get(hid, 0)
+            direct[hid] = round(raw_v / cnt, 2) if (cnt > 0 and all_by_id[hid]["kind"] == "measure") else raw_v
         routed, _ = compute_signed_rollups(direct, all_by_id, edges)
         by_day_effective[d_str] = {hid: round(direct[hid] + routed.get(hid, 0.0), 2) for hid in all_by_id}
 
@@ -565,7 +595,10 @@ def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> d
     def eval_pair(src_id: str, dst_id: str, window: str, expected_sign: float | None, note: str = "", edge_id: int | None = None) -> dict[str, Any]:
         vals_with: list[float] = []
         vals_without: list[float] = []
+        dst_is_measure = habits_by_id[dst_id]["kind"] == "measure"
         for d_str in observed_days:
+            if dst_is_measure and by_day_counts[d_str].get(dst_id, 0) <= 0:
+                continue
             has_src = window in by_day_windows[d_str].get(src_id, set())
             dst_val = by_day_effective[d_str].get(dst_id, 0.0)
             if has_src:
@@ -753,6 +786,7 @@ def export_tabpfn_features_csv(db_path: Path = DEFAULT_DB_PATH) -> str:
     snaps = list_snapshots(db_path=db_path)
 
     by_day_direct: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    by_day_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     by_day_windows: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     by_day_tags: dict[str, set[str]] = defaultdict(set)
     for ev in events:
@@ -763,6 +797,7 @@ def export_tabpfn_features_csv(db_path: Path = DEFAULT_DB_PATH) -> str:
         d_str = dt.date().isoformat()
         amt = float(ev["amount"])
         by_day_direct[d_str][hid] += amt
+        by_day_counts[d_str][hid] += 1
         if amt > 0:
             by_day_windows[d_str][hid].add(classify_time_window(dt))
         by_day_tags[d_str].update(extract_note_tags(ev.get("note")))
@@ -800,16 +835,21 @@ def export_tabpfn_features_csv(db_path: Path = DEFAULT_DB_PATH) -> str:
     writer = csv.writer(buf)
     writer.writerow(cols)
     for d_str in days:
-        direct = {hid: by_day_direct[d_str].get(hid, 0.0) for hid in habits_by_id}
+        direct = {}
+        for hid in habits_by_id:
+            raw_v = by_day_direct[d_str].get(hid, 0.0)
+            cnt = by_day_counts[d_str].get(hid, 0)
+            direct[hid] = round(raw_v / cnt, 3) if (cnt > 0 and habits_by_id[hid]["kind"] == "measure") else raw_v
         routed, _ = compute_signed_rollups(direct, habits_by_id, edges)
         row: list[Any] = [d_str, date.fromisoformat(d_str).weekday()]
         for h in habits:
             hid = h["id"]
             wins = by_day_windows[d_str].get(hid, set())
+            is_unmeasured = h["kind"] == "measure" and by_day_counts[d_str].get(hid, 0) == 0
             row.extend(
                 [
-                    round(direct[hid], 3),
-                    round(direct[hid] + routed.get(hid, 0.0), 3),
+                    "" if is_unmeasured else round(direct[hid], 3),
+                    "" if is_unmeasured else round(direct[hid] + routed.get(hid, 0.0), 3),
                     1 if "morning" in wins else 0,
                     1 if "afternoon" in wins else 0,
                     1 if "evening" in wins else 0,

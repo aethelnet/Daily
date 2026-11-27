@@ -27,7 +27,7 @@ def _default_db_path() -> Path:
 
 DEFAULT_DB_PATH = _default_db_path()
 
-VALID_KINDS = {"min", "max", "neutral"}
+VALID_KINDS = {"min", "max", "neutral", "measure"}
 VALID_PERIODS = {"day", "week", "month"}
 VALID_RELATIONS = {"rollup", "hypothesis"}
 VALID_WINDOWS = {"any", "morning", "afternoon", "evening", "night"}
@@ -75,7 +75,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
             CREATE TABLE IF NOT EXISTS habits (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
-                kind TEXT NOT NULL DEFAULT 'neutral' CHECK(kind IN ('min', 'max', 'neutral')),
+                kind TEXT NOT NULL DEFAULT 'neutral' CHECK(kind IN ('min', 'max', 'neutral', 'measure')),
                 target REAL,
                 unit TEXT NOT NULL DEFAULT 'x',
                 color TEXT NOT NULL DEFAULT '#2563eb',
@@ -166,6 +166,64 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
         if "group_name" not in hab_cols:
             conn.execute("ALTER TABLE habits ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
         conn.execute("UPDATE habits SET updated_at = created_at WHERE updated_at IS NULL")
+
+        # Idempotent table rebuild for legacy SQLite DBs whose CHECK constraint predates kind='measure'
+        h_sql_row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'habits'").fetchone()
+        if h_sql_row and "'measure'" not in str(h_sql_row[0] or ""):
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys=OFF;")
+            try:
+                conn.execute("BEGIN")
+                conn.execute(
+                    """
+                    CREATE TABLE habits__new (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        kind TEXT NOT NULL DEFAULT 'neutral' CHECK(kind IN ('min', 'max', 'neutral', 'measure')),
+                        target REAL,
+                        unit TEXT NOT NULL DEFAULT 'x',
+                        color TEXT NOT NULL DEFAULT '#2563eb',
+                        nudge_enabled INTEGER NOT NULL DEFAULT 0,
+                        nudge_lead_min INTEGER NOT NULL DEFAULT 20,
+                        nudge_alternatives TEXT NOT NULL DEFAULT '',
+                        sort_order INTEGER NOT NULL DEFAULT 0,
+                        archived INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT,
+                        reminder_time TEXT NOT NULL DEFAULT '',
+                        reminder_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
+                        target_period TEXT NOT NULL DEFAULT 'day',
+                        block_minutes INTEGER,
+                        active_since TEXT,
+                        tap_step REAL NOT NULL DEFAULT 1.0,
+                        group_name TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO habits__new(
+                        id, name, kind, target, unit, color, nudge_enabled, nudge_lead_min,
+                        nudge_alternatives, sort_order, archived, created_at, updated_at,
+                        reminder_time, reminder_days, target_period, block_minutes, active_since,
+                        tap_step, group_name
+                    )
+                    SELECT
+                        id, name, kind, target, unit, color, nudge_enabled, nudge_lead_min,
+                        nudge_alternatives, sort_order, archived, created_at, updated_at,
+                        reminder_time, reminder_days, target_period, block_minutes, active_since,
+                        tap_step, group_name
+                    FROM habits
+                    """
+                )
+                conn.execute("DROP TABLE habits")
+                conn.execute("ALTER TABLE habits__new RENAME TO habits")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys=ON;")
 
         edge_cols = {r[1] for r in conn.execute("PRAGMA table_info(habit_edges)").fetchall()}
         if "updated_at" not in edge_cols:
@@ -393,7 +451,7 @@ def create_habit(
     kind: str = "neutral",
     target: float | None = None,
     target_period: str = "day",
-    unit: str = "x",
+    unit: str | None = None,
     color: str = "#2563eb",
     nudge_enabled: bool = False,
     nudge_lead_min: int = 20,
@@ -418,6 +476,8 @@ def create_habit(
     clean_block = max(1, min(720, int(block_minutes))) if block_minutes is not None and int(block_minutes) > 0 else None
     clean_step = round(max(0.01, min(1000.0, float(tap_step or 1.0))), 3)
     clean_group = str(group_name or "").strip()[:48]
+    raw_unit = "" if unit is None else str(unit).strip()
+    clean_unit = raw_unit if kind == "measure" else (raw_unit or "x")
     base_id = slugify(clean_name)
     with get_conn(db_path) as conn:
         hid = base_id
@@ -438,7 +498,7 @@ def create_habit(
                 kind,
                 target,
                 clean_period,
-                (unit.strip() or "x"),
+                clean_unit,
                 color.strip() or "#2563eb",
                 1 if nudge_enabled else 0,
                 max(5, min(180, int(nudge_lead_min))),
@@ -492,6 +552,8 @@ def update_habit(habit_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_
             v = str(v).strip()
             if not v:
                 raise ValueError("Habit name cannot be empty")
+        if k == "unit":
+            v = str(v or "").strip()
         if k in {"nudge_enabled", "archived"}:
             v = 1 if bool(v) else 0
         if k == "nudge_lead_min":

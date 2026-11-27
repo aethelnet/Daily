@@ -85,7 +85,7 @@ class HabitCreate(BaseModel):
     kind: str = "neutral"
     target: float | None = None
     target_period: str = "day"
-    unit: str = "x"
+    unit: str | None = None
     color: str = "#2563eb"
     nudge_enabled: bool = False
     nudge_lead_min: int = 20

@@ -1191,6 +1191,95 @@ class TestDailyCore(unittest.TestCase):
         self.assertGreaterEqual(by_id[laundry["id"]]["hour_fit"], 0.0)
         self.assertLessEqual(by_id[laundry["id"]]["hour_fit"], 1.0)
 
+    def test_measure_kind_mean_aggregation_legacy_migration_and_csv(self) -> None:
+        import csv
+        import io
+        import sqlite3
+
+        from daily.db import init_db, list_edges, list_events, list_habits
+        from daily.ml import _build_daily_tables
+
+        # 1. Legacy SQLite migration: old CHECK(kind IN ('min', 'max', 'neutral')) rebuilds cleanly & keeps existing rows
+        legacy_db = Path(self.tmp.name) / "legacy_measure.db"
+        conn = sqlite3.connect(legacy_db)
+        conn.executescript(
+            """
+            CREATE TABLE habits (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL DEFAULT 'neutral' CHECK(kind IN ('min', 'max', 'neutral')),
+                target REAL,
+                unit TEXT NOT NULL DEFAULT 'x',
+                color TEXT NOT NULL DEFAULT '#2563eb',
+                nudge_enabled INTEGER NOT NULL DEFAULT 0,
+                nudge_lead_min INTEGER NOT NULL DEFAULT 20,
+                nudge_alternatives TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO habits(id, name, kind, created_at) VALUES('kaffee', 'Kaffee', 'max', '2026-01-01T08:00:00');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        init_db(legacy_db)
+        app = create_app(db_path=legacy_db, enable_nudge_loop=False)
+        client = TestClient(app)
+        # Existing row intact!
+        existing_ids = [h["id"] for h in client.get("/api/habits").json()["habits"]]
+        self.assertIn("kaffee", existing_ids)
+
+        # 2. Create Messwert (kind='measure', unit='°C') and log two readings on the same day
+        temp = client.post(
+            "/api/habits",
+            json={"name": "Basaltemperatur", "kind": "measure", "unit": "°C"},
+        ).json()
+        self.assertEqual(temp["kind"], "measure")
+        self.assertEqual(temp["unit"], "°C")
+
+        today_iso = date.today().isoformat()
+        yest_iso = (date.today() - timedelta(days=1)).isoformat()
+        # Yesterday: only coffee (temperature unmeasured -> must be NaN/empty in CSV, not 0!)
+        client.post("/api/events", json={"habit_id": "kaffee", "amount": 1, "occurred_at": f"{yest_iso}T09:00:00"})
+        # Today: two temperature readings 36.4 and 36.7 -> mean 36.55 (NEVER 73.1!)
+        client.post("/api/events", json={"habit_id": temp["id"], "amount": 36.4, "occurred_at": f"{today_iso}T07:00:00", "source": "manual"})
+        client.post("/api/events", json={"habit_id": temp["id"], "amount": 36.7, "occurred_at": f"{today_iso}T07:30:00", "source": "manual"})
+
+        today_res = client.get(f"/api/today?day={today_iso}").json()
+        t_card = next(h for h in today_res["habits"] if h["id"] == temp["id"])
+        self.assertAlmostEqual(t_card["direct"], 36.55, places=2)
+        self.assertAlmostEqual(t_card["effective"], 36.55, places=2)
+        self.assertEqual(t_card["event_count"], 2)
+        self.assertAlmostEqual(t_card["last_value"], 36.7, places=2)
+        self.assertEqual(t_card["status"], "neutral")
+
+        # 3. 7-day Matrix & Analysis board both use daily mean (36.55)
+        mat = client.get(f"/api/matrix?end={today_iso}&days=7").json()
+        t_row = next(r for r in mat["week_matrix"] if r["habit_id"] == temp["id"])
+        self.assertAlmostEqual(t_row["days"][-1]["effective"], 36.55, places=2)
+        self.assertEqual(t_row["days"][-2]["effective"], 0.0)
+
+        an = client.get("/api/analysis?days=30&fast=1").json()
+        t_an_row = next(r for r in an["week_matrix"] if r["habit_id"] == temp["id"])
+        self.assertAlmostEqual(t_an_row["days"][-1]["effective"], 36.55, places=2)
+
+        # 4. TabPFN ML daily table uses mean (36.55), NOT sum (73.1)
+        _days, _dir, ml_eff, _wins = _build_daily_tables(
+            list_habits(include_archived=True, db_path=legacy_db),
+            list_edges(db_path=legacy_db),
+            list_events(db_path=legacy_db),
+        )
+        self.assertAlmostEqual(ml_eff[today_iso][temp["id"]], 36.55, places=2)
+
+        # 5. CSV export writes empty string (true missing/NaN) on unmeasured yesterday and 36.55 on today
+        csv_text = client.get("/api/export/features.csv").text
+        rows = list(csv.DictReader(io.StringIO(csv_text)))
+        by_date = {r["date"]: r for r in rows}
+        self.assertEqual(by_date[yest_iso][f"{temp['id']}__effective"], "")
+        self.assertAlmostEqual(float(by_date[today_iso][f"{temp['id']}__effective"]), 36.55, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
