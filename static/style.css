@@ -943,6 +943,7 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 }
 .chip.pos-chip { color: var(--pos); background: var(--pos-bg); }
 .chip.neg-chip { color: var(--neg); background: var(--neg-bg); }
+.chip.neu-chip { color: var(--accent); background: var(--accent-soft); }
 .chip.ai-chip { color: var(--ai); background: var(--ai-soft); }
 .chip.route-out-chip {
   background: transparent;
@@ -953,6 +954,9 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 }
 .chip.route-out-chip.neg-chip {
   border-color: color-mix(in srgb, var(--neg) 34%, var(--border));
+}
+.chip.route-out-chip.neu-chip {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
 }
 .chip.route-out-chip.ai-chip {
   border-color: color-mix(in srgb, var(--ai) 38%, var(--border));
