@@ -132,6 +132,7 @@ const state = {
   logEventsById: {},
   logSnapsById: {},
   expandedLogEventId: null,
+  selectedMatrixHabitId: null,
   analysisBoard: null,
   analysisBoardPromise: null,
   logRange: null, // null = single day (state.day); or { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
@@ -1114,28 +1115,14 @@ function fmtShortDay(iso) {
   return dt.toLocaleDateString(getLocale(), { day: "2-digit", month: "2-digit" });
 }
 
-function classifyEventWindow(iso) {
-  const m = String(iso || "").match(/T(\d{2})/);
-  if (!m) return "any";
-  const hr = Number(m[1]);
-  if (hr >= 5 && hr < 12) return "morning";
-  if (hr >= 12 && hr < 17) return "afternoon";
-  if (hr >= 17 && hr < 22) return "evening";
-  return "night";
-}
-
-async function ensureAnalysisBoard(force = false, fast = false) {
-  if (!force && state.analysisBoard && (fast || !state.analysisBoard.fast)) return state.analysisBoard;
+async function ensureAnalysisBoard(force = false) {
+  if (!force && state.analysisBoard) return state.analysisBoard;
   if (!force && state.analysisBoardPromise) return state.analysisBoardPromise;
-  const url = fast ? "/api/analysis?days=30&fast=1" : "/api/analysis?days=30";
-  const p = api(url)
+  const p = api("/api/analysis?days=30")
     .then((board) => {
-      // Never downgrade a full AI board with a fast empirical board
-      if (!fast || !state.analysisBoard || state.analysisBoard.fast) {
-        state.analysisBoard = board;
-      }
+      state.analysisBoard = board;
       if (state.analysisBoardPromise === p) state.analysisBoardPromise = null;
-      return state.analysisBoard;
+      return board;
     })
     .catch((err) => {
       if (state.analysisBoardPromise === p) state.analysisBoardPromise = null;
@@ -1145,21 +1132,17 @@ async function ensureAnalysisBoard(force = false, fast = false) {
   return p;
 }
 
-function renderEventCounterfactualHtml(ev, dimsById) {
-  if (!state.analysisBoard) {
-    return `<div class="muted sm-text">${esc(t("log_cf_loading"))}</div>`;
-  }
+function renderHabitCounterfactualHtml(habitId, habitName, dimsById) {
+  if (!state.analysisBoard) return "";
   const cfMap = state.analysisBoard.habit_counterfactuals || {};
-  const info = cfMap[ev.habit_id];
-  const evWin = classifyEventWindow(ev.occurred_at);
+  const info = cfMap[habitId];
   const wDays = info ? Number(info.days_with || 0) : 0;
   const woDays = info ? Number(info.days_without || 0) : 0;
 
   let effects = Array.isArray(info?.effects) ? [...info.effects] : [];
-  // Fallback if an older server lacks habit_counterfactuals: read ai.assumptions + discovered
   if (!info) {
-    const aiAssump = (state.analysisBoard.ai?.assumptions || []).filter((a) => a.source_id === ev.habit_id);
-    const disc = (state.analysisBoard.discovered || []).filter((d) => d.source_id === ev.habit_id);
+    const aiAssump = (state.analysisBoard.ai?.assumptions || []).filter((a) => a.source_id === habitId);
+    const disc = (state.analysisBoard.discovered || []).filter((d) => d.source_id === habitId);
     effects = [
       ...aiAssump.map((a) => ({
         target_id: a.target_id,
@@ -1188,13 +1171,10 @@ function renderEventCounterfactualHtml(ev, dimsById) {
     ];
   }
 
-  // Prefer effects matching this event's time window or "any", deduplicated by target
   const seen = new Set();
   effects.sort((a, b) => {
-    const aMatch = a.context_window === evWin ? 1.2 : a.context_window === "any" ? 1.0 : 0.75;
-    const bMatch = b.context_window === evWin ? 1.2 : b.context_window === "any" ? 1.0 : 0.75;
-    const aScore = Math.abs(Number(a.delta || 0)) * (a.is_state_target ? 1.3 : 1.0) * aMatch;
-    const bScore = Math.abs(Number(b.delta || 0)) * (b.is_state_target ? 1.3 : 1.0) * bMatch;
+    const aScore = Math.abs(Number(a.delta || 0)) * (a.is_state_target ? 1.3 : 1.0);
+    const bScore = Math.abs(Number(b.delta || 0)) * (b.is_state_target ? 1.3 : 1.0);
     return bScore - aScore;
   });
   const picked = [];
@@ -1203,14 +1183,14 @@ function renderEventCounterfactualHtml(ev, dimsById) {
     if (seen.has(key)) continue;
     seen.add(key);
     picked.push(ef);
-    if (picked.length >= 3) break;
+    if (picked.length >= 4) break;
   }
 
   if (!picked.length) {
     if (wDays < 2 || woDays < 2) {
-      return `<div class="muted sm-text">${esc(t("log_cf_collecting", { w: wDays, wo: woDays, name: ev.habit_name }))}</div>`;
+      return `<div class="muted sm-text">${esc(t("log_cf_collecting", { w: wDays, wo: woDays, name: habitName }))}</div>`;
     }
-    return `<div class="muted sm-text">${esc(t("log_cf_neutral", { w: wDays, wo: woDays, name: ev.habit_name }))}</div>`;
+    return `<div class="muted sm-text">${esc(t("log_cf_neutral", { w: wDays, wo: woDays, name: habitName }))}</div>`;
   }
 
   return picked
@@ -1348,8 +1328,6 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
     ? `<div class="ev-detail-note">${renderNoteWithTags(ev.note)}</div>`
     : "";
 
-  const cfDetailHtml = renderEventCounterfactualHtml(ev, dimsById);
-
   return `
   <div class="ev-entry${isExpanded ? " expanded" : ""}" data-ev-entry="${ev.id}">
     <div class="ev-row" data-ev-toggle="${ev.id}">
@@ -1366,10 +1344,6 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
       <div class="ev-detail-section">
         <div class="ev-detail-label">${esc(t("log_direct_impact"))}</div>
         <div class="ev-detail-routes">${detailImpactsHtml}</div>
-      </div>
-      <div class="ev-detail-section">
-        <div class="ev-detail-label">${esc(t("log_cf_heading"))}</div>
-        <div class="ev-detail-routes" data-ev-cf-box="${ev.id}">${cfDetailHtml}</div>
       </div>
       ${fullNoteDetailHtml}
       <div class="ev-detail-actions">
@@ -3603,22 +3577,35 @@ function renderWeekMatrix(dates, weekMatrix, endDay) {
   const inactiveRows = weekMatrix.filter((r) => !(r.days || []).some((c) => Number(c.effective || 0) !== 0));
   const shownRows = !activeRows.length || state.showInactiveMatrix ? weekMatrix : activeRows;
 
+  const dimsById = {};
+  (state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
+  const colSpan = 1 + (dates || []).length;
+
   const headerDays = (dates || [])
     .map((d) => `<th class="${d === todayIsoNow ? "col-today" : ""}">${d.slice(8, 10)}.${d.slice(5, 7)}.</th>`)
     .join("");
   const rows = shownRows
-    .map(
-      (r) => `
-    <tr>
-      <td><span class="ev-dot" style="background:${esc(r.color)};display:inline-block;margin-right:6px;"></span>${esc(r.name)}</td>
+    .map((r) => {
+      const isSelected = state.selectedMatrixHabitId === r.habit_id;
+      const cfRowHtml = isSelected
+        ? `<tr class="matrix-cf-row"><td colspan="${colSpan}">
+            <div class="matrix-cf-box">
+              <div class="ev-detail-label">${esc(t("matrix_cf_heading", { name: r.name }))}</div>
+              <div class="ev-detail-routes">${renderHabitCounterfactualHtml(r.habit_id, r.name, dimsById)}</div>
+            </div>
+          </td></tr>`
+        : "";
+      return `
+    <tr class="matrix-habit-row${isSelected ? " is-selected" : ""}" data-matrix-habit="${esc(r.habit_id)}" title="${esc(t("matrix_row_hint"))}">
+      <td><span class="ev-dot" style="background:${esc(r.color)};display:inline-block;margin-right:6px;"></span>${esc(r.name)}<span class="matrix-row-caret" aria-hidden="true">${isSelected ? "▾" : "▸"}</span></td>
       ${r.days
         .map(
           (c) =>
             `<td class="${c.day === todayIsoNow ? "col-today" : ""}"><span class="cell-val cell-${esc(c.status)}">${c.effective !== 0 ? fmtNum(c.effective) : "·"}</span></td>`
         )
         .join("")}
-    </tr>`
-    )
+    </tr>${cfRowHtml}`;
+    })
     .join("");
   const foldBar =
     activeRows.length && inactiveRows.length
@@ -4116,9 +4103,17 @@ function bindEvents() {
   const wmBox = $("#week-matrix");
   if (wmBox) {
     wmBox.addEventListener("click", (e) => {
-      if (!e.target.closest("[data-toggle-inactive-matrix]")) return;
-      state.showInactiveMatrix = !state.showInactiveMatrix;
-      if (state.lastMatrixData) {
+      if (e.target.closest("[data-toggle-inactive-matrix]")) {
+        state.showInactiveMatrix = !state.showInactiveMatrix;
+        if (state.lastMatrixData) {
+          renderWeekMatrix(state.lastMatrixData.dates, state.lastMatrixData.weekMatrix, state.lastMatrixData.endDay);
+        }
+        return;
+      }
+      const habitRow = e.target.closest("[data-matrix-habit]");
+      if (habitRow && state.lastMatrixData) {
+        const hid = habitRow.dataset.matrixHabit;
+        state.selectedMatrixHabitId = state.selectedMatrixHabitId === hid ? null : hid;
         renderWeekMatrix(state.lastMatrixData.dates, state.lastMatrixData.weekMatrix, state.lastMatrixData.endDay);
       }
     });
@@ -4206,19 +4201,6 @@ function bindEvents() {
         entryWrap.querySelector(".ev-detail")?.classList.remove("hidden");
         const ch = entryWrap.querySelector(".ev-chevron");
         if (ch) ch.textContent = "▾";
-        if (!state.analysisBoard) {
-          ensureAnalysisBoard(false, true)
-            .then(() => {
-              const evObj = state.logEventsById[Number(evId)] || state.logEventsById[evId];
-              const cfBox = entryWrap.querySelector(`[data-ev-cf-box="${evId}"]`);
-              if (evObj && cfBox) {
-                const dimsById = {};
-                (state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
-                cfBox.innerHTML = renderEventCounterfactualHtml(evObj, dimsById);
-              }
-            })
-            .catch(() => {});
-        }
       } else {
         state.expandedLogEventId = null;
       }
