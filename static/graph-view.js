@@ -81,6 +81,8 @@
     let selectedId = null;
     let dragNode = null;
     let dragMoved = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
     let isPanning = false;
     let panStartX = 0;
     let panStartY = 0;
@@ -257,10 +259,9 @@
           }
           const dist = Math.sqrt(dist2);
           const minSep = a.r + b.r + 24;
-          const rep = (repulseK / Math.max(dist2, minSep * minSep * 0.35)) * alpha;
-          const overlapPush = dist < minSep ? (minSep - dist) * 0.16 : 0;
-          const fx = (dx / dist) * (rep + overlapPush);
-          const fy = (dy / dist) * (rep + overlapPush);
+          const rep = (repulseK / Math.max(dist2, minSep * minSep)) * alpha;
+          const fx = (dx / dist) * rep;
+          const fy = (dy / dist) * rep;
           a.vx -= fx;
           a.vy -= fy;
           b.vx += fx;
@@ -286,7 +287,7 @@
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const strength = clamp(Math.abs(e.weight), 0.15, 1.5);
         const rest = springLenBase - Math.min(20, strength * 12);
-        const k = (e.type === "hypothesis" ? 0.018 : 0.036) * alpha;
+        const k = (e.type === "hypothesis" ? 0.018 : 0.034) * alpha;
         const f = (dist - rest) * k;
         const fx = (dx / dist) * f;
         const fy = (dy / dist) * f;
@@ -296,14 +297,14 @@
         b.vy -= fy;
       }
 
-      // Centering gravity + integrate velocity
-      const damp = 0.82;
+      // Centering gravity + viscous velocity integration
+      const damp = dragNode ? 0.72 : 0.78;
+      const speedCap = dragNode ? 5.5 : 11;
       let maxSpeed = 0;
       for (const nd of nodes) {
         if (dragNode && nd.id === dragNode.id) {
           nd.vx = 0;
           nd.vy = 0;
-          posCache.set(nd.id, { x: nd.x, y: nd.y, vx: 0, vy: 0 });
           continue;
         }
         // Isolated nodes orbit cleanly at gentle outer radius
@@ -313,18 +314,64 @@
         nd.vx *= damp;
         nd.vy *= damp;
         const sp = Math.hypot(nd.vx, nd.vy);
-        if (sp > 14) {
-          nd.vx = (nd.vx / sp) * 14;
-          nd.vy = (nd.vy / sp) * 14;
+        if (sp > speedCap) {
+          nd.vx = (nd.vx / sp) * speedCap;
+          nd.vy = (nd.vy / sp) * speedCap;
         }
         nd.x += nd.vx;
         nd.y += nd.vy;
         if (sp > maxSpeed) maxSpeed = sp;
+      }
+
+      // Overdamped position-based collision separation (prevents overlap without elastic bounce)
+      let maxCorr = 0;
+      for (let i = 0; i < n; i++) {
+        const a = nodes[i];
+        const aPinned = !!(dragNode && a.id === dragNode.id);
+        for (let j = i + 1; j < n; j++) {
+          const b = nodes[j];
+          const bPinned = !!(dragNode && b.id === dragNode.id);
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let dist2 = dx * dx + dy * dy;
+          const minSep = a.r + b.r + 22;
+          if (dist2 >= minSep * minSep) continue;
+          if (dist2 < 0.01) {
+            dx = (i % 2 ? 1 : -1) * 0.5;
+            dy = (j % 2 ? 1 : -1) * 0.5;
+            dist2 = dx * dx + dy * dy;
+          }
+          const dist = Math.sqrt(dist2);
+          const ux = dx / dist;
+          const uy = dy / dist;
+          const push = Math.min(2.8, (minSep - dist) * 0.16);
+          if (push > maxCorr) maxCorr = push;
+          if (aPinned && !bPinned) {
+            b.x += ux * push;
+            b.y += uy * push;
+            b.vx *= 0.65;
+            b.vy *= 0.65;
+          } else if (bPinned && !aPinned) {
+            a.x -= ux * push;
+            a.y -= uy * push;
+            a.vx *= 0.65;
+            a.vy *= 0.65;
+          } else if (!aPinned && !bPinned) {
+            const half = push * 0.5;
+            a.x -= ux * half;
+            a.y -= uy * half;
+            b.x += ux * half;
+            b.y += uy * half;
+          }
+        }
+      }
+
+      for (const nd of nodes) {
         posCache.set(nd.id, { x: nd.x, y: nd.y, vx: nd.vx, vy: nd.vy, r: nd.r });
       }
 
-      alpha *= 0.985;
-      if (alpha < 0.008 && maxSpeed < 0.06 && !dragNode) {
+      alpha *= alpha < 0.18 ? 0.965 : 0.985;
+      if (alpha < 0.008 && maxSpeed < 0.05 && maxCorr < 0.12) {
         alpha = 0;
       }
     }
@@ -534,7 +581,7 @@
           nd.r = nd.targetR;
         }
       }
-      if (alpha > 0 || dragNode || radiiMorphing) {
+      if (alpha > 0 || radiiMorphing) {
         if (radiiMorphing && alpha < 0.08) alpha = 0.08;
         stepPhysics();
       }
@@ -543,7 +590,7 @@
         animPhase = (animPhase + dt * 0.42) % 1;
       }
       draw();
-      if (alpha > 0 || dragNode || hasFlowAnim || radiiMorphing) {
+      if (alpha > 0 || hasFlowAnim || radiiMorphing) {
         rafId = requestAnimationFrame(tick);
       } else {
         lastFrameTs = 0;
@@ -638,7 +685,9 @@
       panStartY = sy;
       if (hit) {
         dragNode = hit;
-        alpha = Math.max(alpha, 0.35);
+        const w = screenToWorld(sx, sy);
+        dragOffsetX = hit.x - w.x;
+        dragOffsetY = hit.y - w.y;
         canvas.style.cursor = "grabbing";
         scheduleFrame();
       } else {
@@ -655,14 +704,17 @@
       const sy = e.clientY - rect.top;
 
       if (dragNode && e.pointerId === activePointerId) {
-        if (Math.hypot(sx - panStartX, sy - panStartY) > 4) dragMoved = true;
+        if (!dragMoved && Math.hypot(sx - panStartX, sy - panStartY) > 4) {
+          dragMoved = true;
+        }
+        if (!dragMoved) return;
         const w = screenToWorld(sx, sy);
-        dragNode.x = w.x;
-        dragNode.y = w.y;
+        dragNode.x = w.x + dragOffsetX;
+        dragNode.y = w.y + dragOffsetY;
         dragNode.vx = 0;
         dragNode.vy = 0;
-        posCache.set(dragNode.id, { x: w.x, y: w.y, vx: 0, vy: 0 });
-        alpha = Math.max(alpha, 0.25);
+        posCache.set(dragNode.id, { x: dragNode.x, y: dragNode.y, vx: 0, vy: 0, r: dragNode.r });
+        alpha = Math.max(alpha, 0.14);
         scheduleFrame();
         return;
       }
@@ -773,7 +825,15 @@
         rebuildGraph(0.45);
       },
       getNodesSnapshot() {
-        return nodes.map((nd) => ({ id: nd.id, r: Math.round(nd.r * 10) / 10, targetR: Math.round((nd.targetR ?? nd.r) * 10) / 10, mass: nd.mass, trend: nd.trend }));
+        return nodes.map((nd) => ({
+          id: nd.id,
+          x: Math.round(nd.x * 10) / 10,
+          y: Math.round(nd.y * 10) / 10,
+          r: Math.round(nd.r * 10) / 10,
+          targetR: Math.round((nd.targetR ?? nd.r) * 10) / 10,
+          mass: nd.mass,
+          trend: nd.trend,
+        }));
       },
       reheat() {
         posCache.clear();
