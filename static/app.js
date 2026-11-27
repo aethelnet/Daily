@@ -1156,12 +1156,29 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
       ? formatDurationMin(winMin)
       : ev.source;
   const hasNote = !!(ev.note && ev.note.trim());
+  const srcHabit = habitsById[ev.habit_id];
+  const directRoutes = Array.isArray(srcHabit?.routes_to) ? srcHabit.routes_to : [];
+  const evAmt = Number(ev.amount || 0);
+  const impactChipsHtml = directRoutes
+    .map((r) => {
+      const w = Number(r.weight || 0);
+      const contrib = Math.round(evAmt * w * 100) / 100;
+      if (!Number.isFinite(contrib) || Math.abs(contrib) < 0.001) return "";
+      const cls = r.is_ai ? "ai-chip" : contrib >= 0 ? "pos-chip" : "neg-chip";
+      const sign = contrib >= 0 ? "+" : "";
+      const wSign = w >= 0 ? "+" : "";
+      const tip = `${evAmt >= 0 ? "+" : ""}${fmtNum(evAmt)} × ${wSign}${fmtNum(w)} = ${sign}${fmtNum(contrib)} ${r.target_name}`;
+      return `<span class="chip route-out-chip ev-impact-chip ${cls}" title="${esc(tip)}">→ ${sign}${fmtNum(contrib)} ${esc(r.target_name)}</span>`;
+    })
+    .filter(Boolean)
+    .join("");
   return `
   <div class="ev-row">
     <span class="ev-dot" style="background:${esc(ev.habit_color)}"></span>
     <span class="ev-time" data-ev-time="${ev.id}" title="${esc(t("edit_time_title"))}">${esc(timeLabel)}</span>
     <strong>${esc(ev.habit_name)}</strong>
     <span class="ev-amt ${ev.amount >= 0 ? "pos" : "neg"}" data-ev-amt="${ev.id}" title="${esc(t("edit_amt_title"))}">${ev.amount >= 0 ? "+" : ""}${fmtNum(ev.amount)}</span>
+    ${impactChipsHtml ? `<span class="ev-impact-chips">${impactChipsHtml}</span>` : ""}
     <span class="chip">${esc(srcTag)}</span>
     <span class="ev-note ${hasNote ? "" : "empty-note"}" data-ev-note="${ev.id}" title="${esc(t("edit_note_title"))}">${hasNote ? renderNoteWithTags(ev.note) : esc(t("add_note_ph"))}</span>
     <button class="btn ghost sm" data-ev-edit="${ev.id}" title="${esc(t("edit_entry_title"))}">Edit</button>
@@ -1173,7 +1190,17 @@ function renderLogTimeline({ events, snapshots, state_dimensions, habits, single
   const dimsById = {};
   (state_dimensions || state.stateDims || []).forEach((d) => { dimsById[d.id] = d; });
   const habitsById = {};
-  (habits || state.habits || []).forEach((h) => { habitsById[h.id] = h; });
+  const todayRoutesById = {};
+  (state.todayData?.habits || []).forEach((th) => {
+    if (Array.isArray(th.routes_to) && th.routes_to.length) {
+      todayRoutesById[th.id] = th.routes_to;
+    }
+  });
+  (habits || state.habits || []).forEach((h) => {
+    habitsById[h.id] = Array.isArray(h.routes_to)
+      ? h
+      : { ...h, routes_to: todayRoutesById[h.id] || [] };
+  });
   state.logEventsById = {};
   (events || []).forEach((ev) => { state.logEventsById[ev.id] = ev; });
   state.logSnapsById = {};
