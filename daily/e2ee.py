@@ -15,7 +15,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+import random
 import secrets
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -615,61 +617,73 @@ def create_github_gist_vault(auth_token: str, key_b64u: str | None = None, db_pa
 
 
 def sync_e2ee_vault(db_path: Path = DEFAULT_DB_PATH, skip_pull: bool = False) -> dict[str, Any]:
-    """Full decentralized E2EE cycle: PULL -> DECRYPT -> CRDT MERGE -> RE-ENCRYPT (fresh IV) -> PUSH."""
+    """Full decentralized E2EE cycle: PULL -> DECRYPT -> CRDT MERGE -> RE-ENCRYPT (fresh IV) -> PUSH.
+    Automatically retries on HTTP 409 Conflict (concurrent GitHub Gist edits across devices) with re-pull & merge."""
     cfg = get_e2ee_config(db_path)
     if not cfg.get("key_b64u"):
         raise ValueError("Kein E2EE-Schlüssel konfiguriert")
 
     prov = cfg["provider"]
-    remote_envelope = None
+    max_attempts = 4 if prov == "gist" else 1
+    merged_stats = {"habits": 0, "edges": 0, "events": 0, "snapshots": 0, "dimensions": 0, "tasks": 0}
 
-    if not skip_pull:
+    for attempt in range(max_attempts):
+        remote_envelope = None
+        do_pull = (not skip_pull) or attempt > 0
+        if do_pull:
+            if prov == "gist":
+                if not cfg["gist_id"] or not cfg["auth_token"]:
+                    raise ValueError("Gist-ID oder Gist-Token fehlt")
+                headers = {"Authorization": f"Bearer {cfg['auth_token']}", "X-GitHub-Api-Version": "2022-11-28"}
+                _code, gist = _http_json(f"https://api.github.com/gists/{cfg['gist_id']}?_={int(time.time() * 1000)}", method="GET", headers=headers)
+                f_obj = (gist.get("files") or {}).get(VAULT_FILENAME)
+                if f_obj and f_obj.get("content"):
+                    remote_envelope = json.loads(f_obj["content"])
+            elif prov == "url":
+                if not cfg["endpoint_url"]:
+                    raise ValueError("Blind-Relay / WebDAV URL fehlt")
+                raw_tok = str(cfg.get("auth_token") or "").strip()
+                auth_val = raw_tok if raw_tok.lower().startswith(("bearer ", "basic ")) else (f"Bearer {raw_tok}" if raw_tok else "")
+                headers = {"Authorization": auth_val} if auth_val else {}
+                try:
+                    _code, body = _http_json(cfg["endpoint_url"], method="GET", headers=headers)
+                    if isinstance(body, dict) and body.get("alg") == "AES-256-GCM":
+                        remote_envelope = body
+                except RuntimeError as exc:
+                    if "HTTP 404" not in str(exc):
+                        raise
+            else:
+                raise ValueError(f"Unbekannter Provider: {prov}")
+
+        if remote_envelope is not None:
+            remote_state = decrypt_vault_payload(remote_envelope, cfg["key_b64u"])
+            merged_stats = merge_remote_state_into_db(remote_state, db_path=db_path)
+
+        # Re-export merged state, encrypt with fresh IV, and push back
+        fresh_payload = export_local_state_for_vault(db_path)
+        fresh_envelope = encrypt_vault_payload(fresh_payload, cfg["key_b64u"])
+
         if prov == "gist":
-            if not cfg["gist_id"] or not cfg["auth_token"]:
-                raise ValueError("Gist-ID oder Gist-Token fehlt")
             headers = {"Authorization": f"Bearer {cfg['auth_token']}", "X-GitHub-Api-Version": "2022-11-28"}
-            _code, gist = _http_json(f"https://api.github.com/gists/{cfg['gist_id']}", method="GET", headers=headers)
-            f_obj = (gist.get("files") or {}).get(VAULT_FILENAME)
-            if f_obj and f_obj.get("content"):
-                remote_envelope = json.loads(f_obj["content"])
+            try:
+                _http_json(
+                    f"https://api.github.com/gists/{cfg['gist_id']}",
+                    method="PATCH",
+                    headers=headers,
+                    body={"files": {VAULT_FILENAME: {"content": json.dumps(fresh_envelope)}}},
+                )
+                break
+            except RuntimeError as exc:
+                if any(code in str(exc) for code in ("HTTP 409", "HTTP 422", "HTTP 502", "HTTP 503")) and attempt + 1 < max_attempts:
+                    time.sleep(0.45 * (attempt + 1) + random.uniform(0.05, 0.35))
+                    continue
+                raise
         elif prov == "url":
-            if not cfg["endpoint_url"]:
-                raise ValueError("Blind-Relay / WebDAV URL fehlt")
             raw_tok = str(cfg.get("auth_token") or "").strip()
             auth_val = raw_tok if raw_tok.lower().startswith(("bearer ", "basic ")) else (f"Bearer {raw_tok}" if raw_tok else "")
             headers = {"Authorization": auth_val} if auth_val else {}
-            try:
-                _code, body = _http_json(cfg["endpoint_url"], method="GET", headers=headers)
-                if isinstance(body, dict) and body.get("alg") == "AES-256-GCM":
-                    remote_envelope = body
-            except RuntimeError as exc:
-                if "HTTP 404" not in str(exc):
-                    raise
-        else:
-            raise ValueError(f"Unbekannter Provider: {prov}")
-
-    merged_stats = {"habits": 0, "edges": 0, "events": 0, "snapshots": 0, "dimensions": 0}
-    if remote_envelope is not None:
-        remote_state = decrypt_vault_payload(remote_envelope, cfg["key_b64u"])
-        merged_stats = merge_remote_state_into_db(remote_state, db_path=db_path)
-
-    # Re-export merged state, encrypt with fresh IV, and push back
-    fresh_payload = export_local_state_for_vault(db_path)
-    fresh_envelope = encrypt_vault_payload(fresh_payload, cfg["key_b64u"])
-
-    if prov == "gist":
-        headers = {"Authorization": f"Bearer {cfg['auth_token']}", "X-GitHub-Api-Version": "2022-11-28"}
-        _http_json(
-            f"https://api.github.com/gists/{cfg['gist_id']}",
-            method="PATCH",
-            headers=headers,
-            body={"files": {VAULT_FILENAME: {"content": json.dumps(fresh_envelope)}}},
-        )
-    elif prov == "url":
-        raw_tok = str(cfg.get("auth_token") or "").strip()
-        auth_val = raw_tok if raw_tok.lower().startswith(("bearer ", "basic ")) else (f"Bearer {raw_tok}" if raw_tok else "")
-        headers = {"Authorization": auth_val} if auth_val else {}
-        _http_json(cfg["endpoint_url"], method="PUT", headers=headers, body=fresh_envelope)
+            _http_json(cfg["endpoint_url"], method="PUT", headers=headers, body=fresh_envelope)
+            break
 
     ts = now_iso()
     update_settings({"e2ee_last_sync_at": ts}, db_path=db_path)
