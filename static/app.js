@@ -1203,7 +1203,7 @@ function renderToday(data) {
   // Habit-coupled one-off notes ("Offene Zettel")
   renderTasksPanel();
 
-  // Day log (events + Momentaufnahmen interleaved chronologically!)
+  // Day log (events + Momentaufnahmen interleaved chronologically — respects active text search!)
   if (!state.logRange) {
     renderLogTimeline({
       events: data.events || [],
@@ -1211,6 +1211,15 @@ function renderToday(data) {
       state_dimensions: data.state_dimensions || state.stateDims || [],
       habits: data.habits || [],
       singleDay: data.day,
+    });
+  } else if (state.logRangeData) {
+    renderLogTimeline({
+      events: state.logRangeData.events || [],
+      snapshots: state.logRangeData.snapshots || [],
+      state_dimensions: state.logRangeData.state_dimensions || state.stateDims || [],
+      habits: state.logRangeData.habits || data.habits || [],
+      rangeStart: state.logRangeData.start,
+      rangeEnd: state.logRangeData.end,
     });
   }
 }
@@ -1769,15 +1778,43 @@ function renderLogTimeline({ events, snapshots, state_dimensions, habits, single
   state.logSnapsById = {};
   (snapshots || []).forEach((sn) => { state.logSnapsById[sn.id] = sn; });
 
-  const timeline = [
+  const rawTimeline = [
     ...(events || []).map((ev) => ({ kind: "event", at: ev.occurred_at, day: String(ev.occurred_at || "").slice(0, 10), item: ev })),
     ...(snapshots || []).map((sn) => ({ kind: "snap", at: sn.occurred_at, day: String(sn.occurred_at || "").slice(0, 10), item: sn })),
   ].sort((a, b) => b.at.localeCompare(a.at));
 
+  const q = String(state.filterQuery || "").trim().toLowerCase();
+  const entryMatchesQuery = (entry) => {
+    if (!q) return true;
+    if (entry.kind === "event") {
+      const ev = entry.item;
+      const h = habitsById[ev.habit_id] || {};
+      const routeNames = Array.isArray(h.routes_to) ? h.routes_to.map((r) => r.target_name || r.name || "").join(" ") : "";
+      const hay = `${h.name || ""} ${h.group_name || ""} ${h.unit || ""} ${ev.note || ""} ${routeNames}`.toLowerCase();
+      return hay.includes(q);
+    }
+    const sn = entry.item;
+    const dimNames = Object.keys(sn.values || {}).map((did) => (dimsById[did] && dimsById[did].name) || "").join(" ");
+    const hay = `momentaufnahme snapshot ${sn.note || ""} ${dimNames}`.toLowerCase();
+    return hay.includes(q);
+  };
+  const timeline = q ? rawTimeline.filter(entryMatchesQuery) : rawTimeline;
+
+  const logChip = $("#log-filter-chip");
+  if (logChip) {
+    if (q) {
+      logChip.classList.remove("hidden");
+      logChip.innerHTML = `${esc(t("log_filter_prefix"))}: „${esc(state.filterQuery.trim().slice(0, 24))}“ <button type="button" class="tk-chip-x" id="btn-clear-log-filter" title="${esc(t("tk_filter_clear"))}">×</button>`;
+    } else {
+      logChip.classList.add("hidden");
+      logChip.innerHTML = "";
+    }
+  }
+
   const isMulti = !!(rangeStart && rangeEnd && rangeStart !== rangeEnd);
   $("#log-count").textContent = isMulti
-    ? `(${timeline.length} · ${fmtShortDay(rangeStart)}–${fmtShortDay(rangeEnd)})`
-    : `(${timeline.length})`;
+    ? `(${timeline.length}${q ? `/${rawTimeline.length}` : ""} · ${fmtShortDay(rangeStart)}–${fmtShortDay(rangeEnd)})`
+    : `(${timeline.length}${q ? `/${rawTimeline.length}` : ""})`;
 
   const resetBtn = $("#btn-log-reset");
   if (resetBtn) resetBtn.classList.toggle("hidden", !state.logRange);
@@ -1786,7 +1823,9 @@ function renderLogTimeline({ events, snapshots, state_dimensions, habits, single
 
   const evList = $("#event-list");
   if (!timeline.length) {
-    evList.innerHTML = isMulti
+    evList.innerHTML = q
+      ? `<div class="muted sm-text">${esc(t("log_no_filter_match"))}</div>`
+      : isMulti
       ? `<div class="muted sm-text">${esc(t("no_events_for_range", { start: rangeStart, end: rangeEnd }))}</div>`
       : `<div class="muted sm-text">${esc(t("no_events_for_day", { day: singleDay || state.day }))}</div>`;
     return;
@@ -3475,6 +3514,171 @@ function hideFilterAutocomplete(boxSel) {
   box.innerHTML = "";
 }
 
+// Expandable Unit Combobox Catalog (common symbols like °C / µg / mmHg + user's own previously used units!)
+const COMMON_UNITS_CATALOG = [
+  { sym: "°C", de: "Temperatur", en: "Temperature", aliases: ["c", "grad", "deg", "celsius", "temp", "temperatur"] },
+  { sym: "µg", de: "Mikrogramm", en: "Microgram", aliases: ["ug", "mcg", "u", "mikro", "micro", "mikrogramm", "microgram"] },
+  { sym: "mg", de: "Milligramm", en: "Milligram", aliases: ["milligram", "milligramm", "dosis"] },
+  { sym: "g", de: "Gramm", en: "Gram", aliases: ["gramm", "gram"] },
+  { sym: "kg", de: "Kilogramm", en: "Kilogram", aliases: ["kilo", "gewicht", "weight"] },
+  { sym: "µl", de: "Mikroliter", en: "Microliter", aliases: ["ul", "mcl", "u", "mikroliter", "microliter"] },
+  { sym: "ml", de: "Milliliter", en: "Milliliter", aliases: ["milliliter", "wasser", "water"] },
+  { sym: "L", de: "Liter", en: "Liter", aliases: ["l", "liter", "litre"] },
+  { sym: "min", de: "Minuten", en: "Minutes", aliases: ["m", "minuten", "minutes", "zeit"] },
+  { sym: "h", de: "Stunden", en: "Hours", aliases: ["std", "stunden", "hours", "zeit"] },
+  { sym: "km", de: "Kilometer", en: "Kilometer", aliases: ["kilometer", "distanz", "distance"] },
+  { sym: "m", de: "Meter", en: "Meter", aliases: ["meter", "metre"] },
+  { sym: "bpm", de: "Puls", en: "Heart rate", aliases: ["puls", "herz", "heart", "hr"] },
+  { sym: "mmHg", de: "Blutdruck", en: "Blood pressure", aliases: ["blutdruck", "bp", "pressure", "druck"] },
+  { sym: "kcal", de: "Kalorien", en: "Calories", aliases: ["cal", "kalorien", "calories"] },
+  { sym: "%", de: "Prozent", en: "Percent", aliases: ["pct", "prozent", "percent"] },
+  { sym: "€", de: "Euro", en: "Euro", aliases: ["eur", "euro", "geld"] },
+  { sym: "°F", de: "Fahrenheit", en: "Fahrenheit", aliases: ["f", "deg", "fahrenheit", "grad"] },
+  { sym: "x", de: "Anzahl", en: "Count", aliases: ["mal", "times", "count", "anzahl"] },
+];
+
+function buildUnitSuggestions(query) {
+  const q = String(query || "").trim().toLowerCase();
+  const isEn = window.DailyI18n && window.DailyI18n.getLang() === "en";
+  const baseSet = new Set(COMMON_UNITS_CATALOG.map((u) => u.sym.toLowerCase()));
+  const items = [];
+  const seen = new Set();
+
+  // 1. User's own previously used custom units float cleanly to the top!
+  for (const h of state.habits || []) {
+    const raw = String(h.unit || "").trim();
+    if (!raw || raw.toLowerCase() === "x" || baseSet.has(raw.toLowerCase()) || seen.has(raw.toLowerCase())) continue;
+    if (!q || raw.toLowerCase().includes(q)) {
+      seen.add(raw.toLowerCase());
+      const rank = q ? (raw.toLowerCase() === q ? 0 : raw.toLowerCase().startsWith(q) ? 0.5 : 1.5) : 0.1;
+      items.push({ sym: raw, meta: t("unit_custom_meta"), rank });
+    }
+  }
+
+  // 2. Built-in scientific & everyday symbols with smart alias matching (e.g. 'ug' -> 'µg', 'grad' -> '°C')
+  for (let i = 0; i < COMMON_UNITS_CATALOG.length; i++) {
+    const u = COMMON_UNITS_CATALOG[i];
+    const low = u.sym.toLowerCase();
+    const meta = isEn ? u.en : u.de;
+    if (!q) {
+      items.push({ sym: u.sym, meta, rank: 1 + i * 0.01 });
+      continue;
+    }
+    const exactAlias = u.aliases.includes(q);
+    const prefixAlias = u.aliases.some((a) => a.startsWith(q));
+    const subAlias = u.aliases.some((a) => a.includes(q));
+    const metaHit = meta.toLowerCase().includes(q);
+    if (low === q) items.push({ sym: u.sym, meta, rank: 0.2 + i * 0.001 });
+    else if (exactAlias) items.push({ sym: u.sym, meta, rank: 0.4 + i * 0.001 });
+    else if (low.startsWith(q)) items.push({ sym: u.sym, meta, rank: 0.8 + i * 0.001 });
+    else if (prefixAlias) items.push({ sym: u.sym, meta, rank: 1.1 + i * 0.001 });
+    else if (low.includes(q) || subAlias || metaHit) items.push({ sym: u.sym, meta, rank: 2.0 + i * 0.001 });
+  }
+
+  items.sort((a, b) => a.rank - b.rank);
+  return items.slice(0, 14);
+}
+
+function bindUnitAutocomplete(inputSel, boxSel) {
+  const inp = $(inputSel);
+  const box = $(boxSel);
+  if (!inp || !box) return;
+  let activeIdx = -1;
+
+  const render = (forceAll = false) => {
+    const rawQ = forceAll ? "" : inp.value.trim();
+    const items = buildUnitSuggestions(rawQ);
+    if (!items.length) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      activeIdx = -1;
+      return;
+    }
+    if (activeIdx >= items.length) activeIdx = 0;
+    box.innerHTML = items
+      .map(
+        (it, idx) => `
+      <button type="button" class="ac-item${idx === activeIdx ? " is-active" : ""}" data-unit-val="${esc(it.sym)}" role="option">
+        <span class="unit-ac-sym">${esc(it.sym)}</span>
+        <span class="ac-meta">${esc(it.meta)}</span>
+      </button>`
+      )
+      .join("");
+    box.classList.remove("hidden");
+  };
+
+  const close = () => {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    activeIdx = -1;
+  };
+
+  inp.addEventListener("focus", () => {
+    activeIdx = -1;
+    const v = inp.value.trim();
+    // Opening on empty or default 'x' immediately reveals the full symbol list (°C, µg, …)
+    render(!v || v === "x");
+  });
+  inp.addEventListener("click", () => {
+    if (box.classList.contains("hidden")) {
+      const v = inp.value.trim();
+      render(!v || v === "x");
+    }
+  });
+  inp.addEventListener("input", () => {
+    activeIdx = 0;
+    render(false);
+  });
+  inp.addEventListener("blur", () => {
+    setTimeout(close, 130);
+  });
+  inp.addEventListener("keydown", (e) => {
+    const items = Array.from(box.querySelectorAll(".ac-item[data-unit-val]"));
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!items.length) {
+        activeIdx = 0;
+        render(true);
+      } else {
+        activeIdx = (activeIdx + 1) % items.length;
+        items.forEach((el, i) => el.classList.toggle("is-active", i === activeIdx));
+        items[activeIdx]?.scrollIntoView({ block: "nearest" });
+      }
+      return;
+    }
+    if (e.key === "ArrowUp" && items.length) {
+      e.preventDefault();
+      activeIdx = activeIdx <= 0 ? items.length - 1 : activeIdx - 1;
+      items.forEach((el, i) => el.classList.toggle("is-active", i === activeIdx));
+      items[activeIdx]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && items.length && activeIdx >= 0 && items[activeIdx]) {
+      const chosen = items[activeIdx].dataset.unitVal || "";
+      if (chosen && chosen !== inp.value) {
+        if (e.key === "Enter") e.preventDefault();
+        inp.value = chosen;
+        close();
+      } else {
+        close();
+      }
+      return;
+    }
+    if (e.key === "Escape" && !box.classList.contains("hidden")) {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  });
+  box.addEventListener("mousedown", (e) => {
+    const item = e.target.closest(".ac-item[data-unit-val]");
+    if (!item) return;
+    e.preventDefault();
+    inp.value = item.dataset.unitVal || "";
+    close();
+  });
+}
+
 function resetHabitForm() {
   $("#habit-form-title").textContent = t("hf_title_new");
   $("#hf-id").value = "";
@@ -4719,12 +4923,25 @@ function bindEvents() {
     const isMeasure = kind === "measure";
     $("#qc-target").classList.toggle("hidden", !isGoal);
     $("#qc-period").classList.toggle("hidden", !isGoal);
-    if ($("#qc-unit")) $("#qc-unit").classList.toggle("hidden", !isMeasure);
+    if ($("#qc-unit-wrap")) $("#qc-unit-wrap").classList.toggle("hidden", !isMeasure);
+    else if ($("#qc-unit")) $("#qc-unit").classList.toggle("hidden", !isMeasure);
     if (!isGoal) $("#qc-target").value = "";
     if (!isMeasure && $("#qc-unit")) $("#qc-unit").value = "";
   };
   $("#qc-kind").addEventListener("change", syncQuickCreateKindUI);
   syncQuickCreateKindUI();
+
+  bindUnitAutocomplete("#qc-unit", "#qc-unit-ac");
+  bindUnitAutocomplete("#hf-unit", "#hf-unit-ac");
+
+  $("#log-filter-chip")?.addEventListener("click", (e) => {
+    if (!e.target.closest("#btn-clear-log-filter")) return;
+    const inp = $("#today-search");
+    if (inp) inp.value = "";
+    state.filterQuery = "";
+    hideFilterAutocomplete("#today-search-ac");
+    if (state.todayData) renderToday(state.todayData);
+  });
 
   const qcColorInp = $("#qc-color");
   if (qcColorInp) {
