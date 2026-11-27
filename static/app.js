@@ -4694,8 +4694,10 @@ async function loadAnalysis() {
 
   const renderHypCard = (h) => {
     const [vLbl, vCls] = verdictMeta[h.verdict] || [h.verdict, ""];
-    const expStr =
-      h.expected_weight == null ? "" : h.expected_weight > 0 ? " (+)" : " (−)";
+    const expChipHtml =
+      h.expected_weight == null
+        ? ""
+        : ` <span class="chip ${edgeValenceChipClass(h.expected_weight, habitKindById(h.target_id))}">${esc(h.expected_weight >= 0 ? t("hyp_pos") : t("hyp_neg"))}</span>`;
     const stats =
       h.avg_with != null && h.avg_without != null
         ? t("hyp_stats", {
@@ -4707,7 +4709,7 @@ async function loadAnalysis() {
     return `
       <div class="hyp-card">
         <div class="hyp-head">
-          <span><strong>${esc(h.source_name)}</strong> <span class="muted">(${esc(windowLabel(h.context_window))})</span> → <strong>${esc(h.target_name)}</strong><span class="muted sm-text">${expStr}</span></span>
+          <span><strong>${esc(h.source_name)}</strong> <span class="muted">(${esc(windowLabel(h.context_window))})</span>${expChipHtml} → <strong>${esc(h.target_name)}</strong></span>
           <span class="chip ${vCls}">${esc(vLbl)}</span>
         </div>
         <div class="mono sm-text muted">${esc(stats)}</div>
@@ -4724,7 +4726,9 @@ async function loadAnalysis() {
   ail.innerHTML = aiItems.length
     ? aiItems
         .map((a) => {
-          const dirCls = a.direction > 0 ? "pos-chip" : "neg-chip";
+          const dirCls = a.is_state_target
+            ? a.direction > 0 ? "pos-chip" : "neg-chip"
+            : edgeValenceChipClass(a.predicted_delta, habitKindById(a.target_id));
           const dirTxt = a.direction > 0 ? `+${fmtNum(a.predicted_delta)}` : `${fmtNum(a.predicted_delta)}`;
           const tgtLabel = a.is_state_target
             ? dimName({ id: String(a.target_id || "").replace(/^state:/, ""), name: a.target_name })

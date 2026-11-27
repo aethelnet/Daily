@@ -415,15 +415,15 @@
                 ? theme.pos
                 : theme.neg
               : theme.accent;
-        const baseCol = isHyp || e.isAi ? theme.ai : valenceCol;
-        const lineAlpha = focusId ? (isFocusEdge ? 0.9 : 0.1) : isHyp ? 0.45 : 0.62;
+        const baseCol = valenceCol;
+        const lineAlpha = focusId ? (isFocusEdge ? 0.92 : 0.1) : isHyp ? 0.58 : 0.65;
         const lineW = clamp(1.1 + Math.abs(e.weight) * 1.4, 1.2, 3.2) / Math.sqrt(camZoom);
 
         ctx.save();
         ctx.strokeStyle = hexToRgba(baseCol, lineAlpha);
         ctx.lineWidth = isFocusEdge && focusId ? lineW * 1.25 : lineW;
-        if (isHyp) ctx.setLineDash([4 / camZoom, 4 / camZoom]);
-        else if (e.weight < 0) ctx.setLineDash([7 / camZoom, 3.5 / camZoom]);
+        if (isHyp) ctx.setLineDash([2.5 / camZoom, 4 / camZoom]);
+        else if (e.weight < 0) ctx.setLineDash([8 / camZoom, 3.5 / camZoom]);
         ctx.beginPath();
         ctx.moveTo(g.x0, g.y0);
         ctx.quadraticCurveTo(g.cx, g.cy, g.x1, g.y1);
@@ -449,8 +449,9 @@
           ctx.arc(pt.x, pt.y, 2.7 / Math.sqrt(camZoom), 0, Math.PI * 2);
           ctx.fill();
 
-          // Crisp weight label pill on focused edges
-          const wLbl = `${e.weight >= 0 ? "+" : ""}${fmtW(e.weight)}`;
+          // Crisp weight label pill on focused edges (? prefix for hypotheses, KI for TabPFN edges)
+          const pfx = isHyp ? "? " : e.isAi ? "KI " : "";
+          const wLbl = `${pfx}${e.weight >= 0 ? "+" : ""}${fmtW(e.weight)}`;
           ctx.font = `600 ${Math.round(10 / Math.sqrt(camZoom))}px ui-monospace, SFMono-Regular, monospace`;
           const tw = ctx.measureText(wLbl).width;
           const padX = 4 / Math.sqrt(camZoom);
