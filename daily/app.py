@@ -790,8 +790,14 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
             raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/analysis")
-    def api_analysis(days: int = Query(default=30, ge=7, le=365)) -> dict[str, Any]:
+    def api_analysis(
+        days: int = Query(default=30, ge=7, le=365),
+        fast: bool = Query(default=False),
+    ) -> dict[str, Any]:
         board = compute_analysis_board(days=days, db_path=resolved_db)
+        if fast:
+            board["fast"] = True
+            return board
         settings = get_settings(db_path=resolved_db)
         all_habits = list_habits(include_archived=True, db_path=resolved_db)
         active_ids = {h["id"] for h in all_habits if not h.get("archived")}
@@ -808,6 +814,49 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         # Include archived children & sparse Momentaufnahme snapshots (true NaNs!)
         insights = compute_ai_insights(all_habits, edges, events_ai, snapshots=snaps_ai, state_dims=dims)
         ai_nudges = predict_contextual_nudges(all_habits, events_ai, threshold=threshold, snapshots=snaps_ai, state_dims=dims)
+        # Enrich per-habit counterfactuals with AI-adjusted counterfactual deltas (X_on vs. X_off) when available
+        cf_map = board.get("habit_counterfactuals") or {}
+        ai_cf_by_h = insights.get("counterfactuals_by_habit") or {}
+        for src_id, ai_items in ai_cf_by_h.items():
+            if src_id not in active_ids:
+                continue
+            entry = cf_map.setdefault(src_id, {"days_with": 0, "days_without": 0, "effects": []})
+            merged: dict[str, dict[str, Any]] = {}
+            for a in ai_items:
+                tid = a["target_id"]
+                if not a.get("is_state_target") and tid not in active_ids:
+                    continue
+                if tid not in merged:
+                    merged[tid] = {
+                        "source_id": src_id,
+                        "source_name": a["source_name"],
+                        "target_id": tid,
+                        "target_name": a["target_name"],
+                        "is_state_target": bool(a.get("is_state_target")),
+                        "context_window": a.get("context_window", "any"),
+                        "avg_with": a.get("avg_with"),
+                        "avg_without": a.get("avg_without"),
+                        "delta": a.get("predicted_delta"),
+                        "empirical_delta": a.get("empirical_delta"),
+                        "days_with": a.get("days_with", entry["days_with"]),
+                        "days_without": a.get("days_without", entry["days_without"]),
+                        "confidence_pct": a.get("confidence_pct"),
+                        "source_kind": "ai",
+                    }
+            for emp in entry.get("effects") or []:
+                tid = emp["target_id"]
+                if tid not in merged:
+                    merged[tid] = emp
+            ranked = sorted(
+                merged.values(),
+                key=lambda x: abs(x.get("delta") or 0.0)
+                * (1.3 if x.get("is_state_target") else 1.0)
+                * (1.15 if x.get("source_kind") == "ai" else 1.0),
+                reverse=True,
+            )
+            entry["effects"] = ranked[:4]
+        board["habit_counterfactuals"] = cf_map
+
         board["ai"] = {
             "engine": insights["engine"],
             "engine_label": insights["engine_label"],

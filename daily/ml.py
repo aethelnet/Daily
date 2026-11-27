@@ -877,6 +877,8 @@ def compute_ai_insights(
                             "direction": direction,
                             "predicted_delta": round(cf_delta, 2),
                             "empirical_delta": round(emp_delta, 2),
+                            "avg_with": round(emp_with, 2),
+                            "avg_without": round(emp_without, 2),
                             "days_with": n_with,
                             "days_without": n_without,
                             "confidence": confidence,
@@ -967,6 +969,8 @@ def compute_ai_insights(
                             "direction": 1.0 if cf_d > 0 else -1.0,
                             "predicted_delta": round(cf_d, 2),
                             "empirical_delta": round(emp_d, 2),
+                            "avg_with": round(float(np.mean(y_s[has_m])), 2),
+                            "avg_without": round(float(np.mean(y_s[~has_m])), 2),
                             "days_with": nw,
                             "days_without": nwo,
                             "confidence": round(min(0.9, abs(cf_d) / max(0.5, y_s_std) * 0.5), 2),
@@ -980,6 +984,11 @@ def compute_ai_insights(
 
     candidates.sort(key=lambda c: c["_score"], reverse=True)
     final_assumptions = [{k: v for k, v in c.items() if not k.startswith("_")} for c in candidates[:max_suggestions]]
+    cf_by_habit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for c in candidates:
+        sid = c["source_id"]
+        if len(cf_by_habit[sid]) < 4:
+            cf_by_habit[sid].append({k: v for k, v in c.items() if not k.startswith("_")})
     overall_mae = round(float(np.mean(all_errors)), 2) if all_errors else None
 
     # 4. Multi-Scale Befinden Curves (24h Today + 14 Days + 8 Weeks)
@@ -1427,6 +1436,7 @@ def compute_ai_insights(
         "calibration": calibration,
         "overall_mae": overall_mae,
         "assumptions": final_assumptions,
+        "counterfactuals_by_habit": dict(cf_by_habit),
         "state_curves": state_curves,
         "timeline_meta": timeline_meta,
         "feature_audit": feature_audit,

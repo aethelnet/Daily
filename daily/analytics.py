@@ -634,6 +634,102 @@ def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> d
         discovered.sort(key=lambda x: abs(x["delta"] or 0.0), reverse=True)
         discovered = discovered[:5]
 
+    # 5. Per-habit empirical counterfactuals ("With vs. Without" on Mood dimensions + non-rollup habits)
+    dims = [d for d in list_state_dimensions(db_path=db_path) if not d.get("archived")]
+    snaps = list_snapshots(days_back=days, db_path=db_path)
+    snap_acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for sn in snaps:
+        d_str = datetime.fromisoformat(sn["occurred_at"]).date().isoformat()
+        for did, val in (sn.get("ratings") or {}).items():
+            if val is not None:
+                snap_acc[d_str][str(did)].append(float(val))
+    snap_means: dict[str, dict[str, float]] = {
+        d_str: {did: sum(vals) / len(vals) for did, vals in dmap.items() if vals}
+        for d_str, dmap in snap_acc.items()
+    }
+
+    habit_counterfactuals: dict[str, dict[str, Any]] = {}
+    for s_id in habits_by_id:
+        n_with_any = sum(1 for d_str in observed_days if "any" in by_day_windows[d_str].get(s_id, set()))
+        n_without_any = len(observed_days) - n_with_any
+        effects: list[dict[str, Any]] = []
+
+        # 5a. Habit -> Mood/State dimensions (comparing rated days with vs. without s_id)
+        for dim in dims:
+            did = dim["id"]
+            w_vals: list[float] = []
+            wo_vals: list[float] = []
+            for d_str in observed_days:
+                sv = snap_means.get(d_str, {}).get(did)
+                if sv is None:
+                    continue
+                if "any" in by_day_windows[d_str].get(s_id, set()):
+                    w_vals.append(sv)
+                else:
+                    wo_vals.append(sv)
+            if len(w_vals) >= 2 and len(wo_vals) >= 2:
+                avg_w = round(sum(w_vals) / len(w_vals), 2)
+                avg_wo = round(sum(wo_vals) / len(wo_vals), 2)
+                delta = round(avg_w - avg_wo, 2)
+                if abs(delta) >= 0.25:
+                    effects.append(
+                        {
+                            "source_id": s_id,
+                            "source_name": habits_by_id[s_id]["name"],
+                            "target_id": f"state:{did}",
+                            "target_name": dim["name"],
+                            "is_state_target": True,
+                            "context_window": "any",
+                            "avg_with": avg_w,
+                            "avg_without": avg_wo,
+                            "delta": delta,
+                            "days_with": len(w_vals),
+                            "days_without": len(wo_vals),
+                            "source_kind": "empirical",
+                        }
+                    )
+
+        # 5b. Habit -> Non-rollup Habits (best window or "any" per target)
+        if len(observed_days) >= 4:
+            for t_id in habits_by_id:
+                if t_id == s_id or (s_id, t_id) in rollup_pairs:
+                    continue
+                best_eff: dict[str, Any] | None = None
+                for win in ("morning", "afternoon", "evening", "night", "any"):
+                    res = eval_pair(s_id, t_id, win, None)
+                    if res["verdict"] not in {"positive", "negative"}:
+                        continue
+                    d_val = abs(res["delta"] or 0.0)
+                    if d_val < 0.30:
+                        continue
+                    score = d_val * (1.1 if win != "any" else 1.0)
+                    if best_eff is None or score > best_eff["_score"]:
+                        best_eff = {
+                            "source_id": s_id,
+                            "source_name": res["source_name"],
+                            "target_id": t_id,
+                            "target_name": res["target_name"],
+                            "is_state_target": False,
+                            "context_window": win,
+                            "avg_with": res["avg_with"],
+                            "avg_without": res["avg_without"],
+                            "delta": res["delta"],
+                            "days_with": res["days_with"],
+                            "days_without": res["days_without"],
+                            "source_kind": "empirical",
+                            "_score": score,
+                        }
+                if best_eff is not None:
+                    best_eff.pop("_score", None)
+                    effects.append(best_eff)
+
+        effects.sort(key=lambda e: abs(e["delta"]) * (1.3 if e["is_state_target"] else 1.0), reverse=True)
+        habit_counterfactuals[s_id] = {
+            "days_with": n_with_any,
+            "days_without": n_without_any,
+            "effects": effects[:4],
+        }
+
     return {
         "observed_days": len(observed_days),
         "ml_target_days": 14,
@@ -643,6 +739,7 @@ def compute_analysis_board(days: int = 30, db_path: Path = DEFAULT_DB_PATH) -> d
         "rhythms": list(rhythms.values()),
         "hypotheses": hypotheses_eval,
         "discovered": discovered,
+        "habit_counterfactuals": habit_counterfactuals,
     }
 
 
