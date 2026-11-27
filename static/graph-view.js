@@ -488,30 +488,11 @@
           ctx.fill();
         }
 
-        // Main circular liquid balloon node
+        // Main circular flat node (crisp, rich solid fill — liquid feel comes from motion & radius, not 3D gloss)
         ctx.fillStyle = nd.color;
         ctx.beginPath();
         ctx.arc(nd.x, nd.y, nd.r, 0, Math.PI * 2);
         ctx.fill();
-
-        // Subtle organic liquid highlight on inflated balloons
-        if (nd.r >= 11.5) {
-          const gSpec = ctx.createRadialGradient(
-            nd.x - nd.r * 0.32,
-            nd.y - nd.r * 0.32,
-            nd.r * 0.08,
-            nd.x,
-            nd.y,
-            nd.r
-          );
-          gSpec.addColorStop(0, "rgba(255, 255, 255, 0.28)");
-          gSpec.addColorStop(0.65, "rgba(255, 255, 255, 0.04)");
-          gSpec.addColorStop(1, "rgba(0, 0, 0, 0.08)");
-          ctx.fillStyle = gSpec;
-          ctx.beginPath();
-          ctx.arc(nd.x, nd.y, nd.r, 0, Math.PI * 2);
-          ctx.fill();
-        }
 
         // Crisp rim
         ctx.strokeStyle = isFocus ? theme.text : hexToRgba(theme.bg, 0.85);
