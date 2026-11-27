@@ -1865,8 +1865,41 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 }
 .mood-scale {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
+  grid-template-columns: repeat(var(--scale-n, 5), 1fr);
+  gap: 5px;
+}
+.dim-high-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.scale-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.scale-stepper .btn.sm {
+  padding: 2px 7px;
+  min-width: 24px;
+  min-height: 24px;
+  line-height: 1;
+}
+.scale-stepper span {
+  min-width: 28px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.dim-rescale-hint {
+  font-size: 11px;
+  color: var(--accent);
+  margin-top: -2px;
 }
 .mood-btn {
   border: 1px solid var(--border);

@@ -5,12 +5,12 @@
 (function () {
   const DB_KEY = "daily_standalone_db_v1";
   const DEFAULT_DIMS = [
-    { id: "stimmung", name: "Stimmung", low_label: "melancholisch", high_label: "leicht / gut", color: "#368470", sort_order: 0, archived: 0 },
-    { id: "mental-fit", name: "Mental fit", low_label: "leer / neblig", high_label: "wach / klar", color: "#3d6b7d", sort_order: 1, archived: 0 },
-    { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck", color: "#c85a44", sort_order: 2, archived: 0 },
-    { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt", color: "#b4783c", sort_order: 3, archived: 0 },
-    { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit", color: "#6e68a8", sort_order: 4, archived: 0 },
-    { id: "kraempfe", name: "Krämpfe", low_label: "keine", high_label: "stark", color: "#a85d73", sort_order: 5, archived: 0 },
+    { id: "stimmung", name: "Stimmung", low_label: "melancholisch", high_label: "leicht / gut", color: "#368470", scale_max: 5, sort_order: 0, archived: 0 },
+    { id: "mental-fit", name: "Mental fit", low_label: "leer / neblig", high_label: "wach / klar", color: "#3d6b7d", scale_max: 5, sort_order: 1, archived: 0 },
+    { id: "stress", name: "Stress", low_label: "entspannt", high_label: "unter Druck", color: "#c85a44", scale_max: 5, sort_order: 2, archived: 0 },
+    { id: "anspannung", name: "Anspannung", low_label: "locker", high_label: "angespannt", color: "#b4783c", scale_max: 5, sort_order: 3, archived: 0 },
+    { id: "antrieb", name: "Antrieb / Offenheit", low_label: "blockiert", high_label: "offen / bereit", color: "#6e68a8", scale_max: 5, sort_order: 4, archived: 0 },
+    { id: "kraempfe", name: "Krämpfe", low_label: "keine", high_label: "stark", color: "#a85d73", scale_max: 5, sort_order: 5, archived: 0 },
   ];
   const DEFAULT_DIM_COLOR_MAP = Object.fromEntries(DEFAULT_DIMS.map((d) => [d.id, d.color]));
   function makeDefaultMoodGroups(dims) {
@@ -129,6 +129,10 @@
         for (const dm of parsed.state_dimensions || []) {
           if (!dm.color) {
             dm.color = DEFAULT_DIM_COLOR_MAP[dm.id] || "#3d6b7d";
+            migrated = true;
+          }
+          if (!dm.scale_max || Number(dm.scale_max) < 2) {
+            dm.scale_max = 5;
             migrated = true;
           }
           if (!dm.updated_at) {
@@ -862,12 +866,12 @@
       return { tau: bestTau, theta: bestTheta };
     }
 
-    function evalOdeJS(qHours, tauH, theta) {
+    function evalOdeJS(qHours, tauH, theta, scaleMax = 5) {
       const Phi = buildPhiJS(qHours, tauH);
       return Phi.map((row) => {
         let v = 0;
         for (let i = 0; i < theta.length; i++) v += row[i] * theta[i];
-        return Math.round(Math.max(1, Math.min(5, v)) * 100) / 100;
+        return Math.round(Math.max(1, Math.min(scaleMax, v)) * 100) / 100;
       });
     }
 
@@ -943,6 +947,7 @@
     const stateCurves = db.state_dimensions
       .filter((d) => !d.archived)
       .map((dim) => {
+        const sMax = Math.max(2, Math.min(10, Math.round(Number(dim.scale_max || 5))));
         const dimSnaps = (snapsByDim[dim.id] || []).sort((a, b) => a.tHr - b.tHr);
         const actual14 = curveDates.map((dStr) => {
           const vals = snapAcc[dStr] && snapAcc[dStr][dim.id];
@@ -962,7 +967,7 @@
               num += w * rv;
               den += w;
             }
-            return Math.round(Math.max(1, Math.min(5, num / den)) * 100) / 100;
+            return Math.round(Math.max(1, Math.min(sMax, num / den)) * 100) / 100;
           });
         } else if (dimSnaps.length) {
           const meanAll = Math.round((dimSnaps.reduce((a, s) => a + s.val, 0) / dimSnaps.length) * 100) / 100;
@@ -970,8 +975,8 @@
         }
 
         const { tau: tauH, theta } = fitLiquidOdeJS(dimSnaps);
-        const ode24 = dimSnaps.length ? evalOdeJS(h24TimesHr, tauH, theta) : [];
-        const ode14 = dimSnaps.length ? evalOdeJS(d14EvalHours, tauH, theta) : new Array(curveDates.length).fill(null);
+        const ode24 = dimSnaps.length ? evalOdeJS(h24TimesHr, tauH, theta, sMax) : [];
+        const ode14 = dimSnaps.length ? evalOdeJS(d14EvalHours, tauH, theta, sMax) : new Array(curveDates.length).fill(null);
         const actual24 = dimSnaps
           .filter((s) => s.iso.slice(0, 10) === todayIsoLocal)
           .map((s) => ({
@@ -992,7 +997,7 @@
               num += w * p.value;
               den += w;
             }
-            return Math.round(Math.max(1, Math.min(5, num / den)) * 100) / 100;
+            return Math.round(Math.max(1, Math.min(sMax, num / den)) * 100) / 100;
           });
         } else if (todayTp != null) {
           tabpfn24 = new Array(h24Offsets.length).fill(todayTp);
@@ -1013,7 +1018,7 @@
           }
           w8Actual.push(wVals.length ? Math.round((wVals.reduce((a, b) => a + b, 0) / wVals.length) * 100) / 100 : null);
           if (dimSnaps.length) {
-            const ov = evalOdeJS(wHrs, tauH, theta);
+            const ov = evalOdeJS(wHrs, tauH, theta, sMax);
             w8Ode.push(Math.round((ov.reduce((a, b) => a + b, 0) / ov.length) * 100) / 100);
             w8Tabpfn.push(wVals.length ? w8Actual[w8Actual.length - 1] : todayTp);
           } else {
@@ -1033,10 +1038,10 @@
           .filter((s) => s.t >= -60 * 24 && s.t <= 24);
         let odeTimelineJS = [];
         if (dimSnaps.length) {
-          const fitVals = evalOdeJS(dimSnaps.map((s) => s.tHr), tauH, theta);
+          const fitVals = evalOdeJS(dimSnaps.map((s) => s.tHr), tauH, theta, sMax);
           const meanRes = dimSnaps.reduce((acc, s, i) => acc + Math.abs(s.val - fitVals[i]), 0) / dimSnaps.length;
           const odeErr = Math.max(0.22, Math.min(1.2, meanRes * 1.25));
-          const odeTlVals = evalOdeJS(tlAbsHrsJS, tauH, theta);
+          const odeTlVals = evalOdeJS(tlAbsHrsJS, tauH, theta, sMax);
           const decayH = Math.max(18, tauH * 2.2);
           odeTimelineJS = tlRelHrsJS.map((relH, idx) => {
             if (relH <= nowRelHrJS) return [Math.round(relH * 100) / 100, odeTlVals[idx], 1, 0];
@@ -1063,7 +1068,7 @@
               num += w * rv;
               den += w;
             }
-            const pv = Math.round(Math.max(1, Math.min(5, num / den)) * 100) / 100;
+            const pv = Math.round(Math.max(1, Math.min(sMax, num / den)) * 100) / 100;
             const relH = dOff * 24 + 18;
             if (relH <= nowRelHrJS) return [relH, pv, 1, 0];
             const dh = relH - nowRelHrJS;
@@ -1079,6 +1084,7 @@
           low_label: dim.low_label || "",
           high_label: dim.high_label || "",
           color: dim.color || DEFAULT_DIM_COLOR_MAP[dim.id] || "#3d6b7d",
+          scale_max: sMax,
           rated_count: dimSnaps.length,
           ode_tau_hours: tauH,
           dates: curveDates,
@@ -1859,6 +1865,7 @@
         low_label: (body.low_label || "").trim(),
         high_label: (body.high_label || "").trim(),
         color: cleanCol || DEFAULT_DIM_COLOR_MAP[did] || "#3d6b7d",
+        scale_max: Math.max(2, Math.min(10, Math.round(Number(body.scale_max || 5)))),
         sort_order: db.state_dimensions.length,
         archived: 0,
         created_at: nowIso(),
@@ -1873,6 +1880,9 @@
       const did = decodeURIComponent(mDim[1]);
       const d = db.state_dimensions.find((x) => x.id === did);
       if (!d) throw new Error("Achse nicht gefunden");
+      const tsNow = nowIso();
+      const oldScale = Math.max(2, Math.min(10, Math.round(Number(d.scale_max || 5))));
+      let rescaledCount = 0;
       if (body.archived !== undefined) d.archived = body.archived ? 1 : 0;
       if (typeof body.color === "string" && /^#[0-9a-fA-F]{6}$/.test(body.color.trim())) {
         d.color = body.color.trim().toLowerCase();
@@ -1880,9 +1890,25 @@
       if (body.name !== undefined && String(body.name).trim()) d.name = String(body.name).trim();
       if (body.low_label !== undefined) d.low_label = String(body.low_label).trim();
       if (body.high_label !== undefined) d.high_label = String(body.high_label).trim();
-      d.updated_at = nowIso();
+      if (body.scale_max !== undefined) {
+        const nextScale = Math.max(2, Math.min(10, Math.round(Number(body.scale_max || 5))));
+        d.scale_max = nextScale;
+        if (nextScale !== oldScale) {
+          for (const sn of db.snapshots || []) {
+            if (sn.deleted_at || !sn.ratings || sn.ratings[did] == null) continue;
+            const oldV = Number(sn.ratings[did]);
+            if (!Number.isFinite(oldV)) continue;
+            const norm = Math.max(0, Math.min(1, (oldV - 1) / Math.max(1, oldScale - 1)));
+            const newV = Math.round((1 + norm * (nextScale - 1)) * 100) / 100;
+            sn.ratings[did] = Math.max(1, Math.min(nextScale, newV));
+            sn.updated_at = tsNow;
+            rescaledCount += 1;
+          }
+        }
+      }
+      d.updated_at = tsNow;
       saveDB(db);
-      return d;
+      return rescaledCount ? { ...d, rescaled_snapshots: rescaledCount } : d;
     }
     if (path === "/api/snapshots" && method === "POST") {
       const sn = {

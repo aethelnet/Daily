@@ -40,18 +40,26 @@ function moodGroupLabel(g) {
   return g.name;
 }
 
-// Anti-muddy composite mood color: pick the 1-2 most salient rated axes (ignoring low 1/5 "none" values)
+function dimScaleMax(dim) {
+  const v = Math.round(Number((dim && dim.scale_max) || 5));
+  return Number.isFinite(v) ? Math.max(2, Math.min(10, v)) : 5;
+}
+
+// Anti-muddy composite mood color: pick the 1-2 most salient rated axes (normalized cleanly across 1..N scales!)
 // and build a crisp two-tone orb + whisper-soft row wash instead of averaging 5 colors into brown!
 function computeMoodComposite(ratings, dimsById) {
   const entries = Object.entries(ratings || {})
     .filter(([, v]) => v != null && !Number.isNaN(Number(v)))
     .map(([did, v]) => {
-      const dim = dimsById[did] || { id: did, sort_order: 99 };
+      const dim = dimsById[did] || { id: did, sort_order: 99, scale_max: 5 };
       const val = Number(v);
+      const sMax = dimScaleMax(dim);
+      const norm = Math.max(0, Math.min(1, (val - 1) / Math.max(1, sMax - 1)));
       return {
         did,
         val,
-        salience: Math.max(0, val - 1.5),
+        norm,
+        salience: Math.max(0, norm - 0.125) * 4,
         color: dimColor(dim),
         order: Number(dim.sort_order ?? 99),
       };
@@ -59,7 +67,7 @@ function computeMoodComposite(ratings, dimsById) {
   if (!entries.length) {
     return { c1: "var(--ai)", c2: "var(--ai)", orbBg: "var(--ai)", orbOpacity: 0.7 };
   }
-  entries.sort((a, b) => b.salience - a.salience || b.val - a.val || a.order - b.order);
+  entries.sort((a, b) => b.salience - a.salience || b.norm - a.norm || a.order - b.order);
   const salient = entries.filter((x) => x.salience > 0.05);
   if (!salient.length) {
     // All rated axes are low (1/5): show calm muted tint of the first rated axis
@@ -1328,7 +1336,8 @@ function renderLogEntryHtml(entry, dimsById, habitsById) {
         const dObj = dimsById[did] || { id: did, name: did };
         const dname = dimName(dObj);
         const col = dimColor(dObj);
-        return `<span class="chip"><span class="chip-dot" style="background:${esc(col)}"></span>${esc(dname)} ${fmtNum(val)}/5</span>`;
+        const sMax = dimScaleMax(dObj);
+        return `<span class="chip"><span class="chip-dot" style="background:${esc(col)}"></span>${esc(dname)} ${fmtNum(val)}/${sMax}</span>`;
       })
       .join("");
     const causeTxt = (sn.causes || [])
@@ -2080,31 +2089,47 @@ function renderMoodModal() {
           const col = dimColor(d);
           const cur = state.moodRatings[d.id];
           const isEditing = state.editingDimId === d.id;
-          const btns = [1, 2, 3, 4, 5]
+          const origScale = dimScaleMax(d);
+          const sMax = isEditing && state.editingDimDraft ? state.editingDimDraft.scale_max : origScale;
+          const stepsArr = Array.from({ length: sMax }, (_, i) => i + 1);
+          const btns = stepsArr
             .map(
               (v) =>
-                `<button type="button" class="mood-btn ${cur === v ? "selected" : ""}" data-mdim="${esc(d.id)}" data-mval="${v}">${v}</button>`
+                `<button type="button" class="mood-btn ${cur != null && Math.round(Number(cur)) === v ? "selected" : ""}" data-mdim="${esc(d.id)}" data-mval="${v}">${v}</button>`
             )
             .join("");
-          const lo = dimLow(d);
-          const hi = dimHigh(d);
+          const lo = isEditing && state.editingDimDraft ? state.editingDimDraft.low_label : dimLow(d);
+          const hi = isEditing && state.editingDimDraft ? state.editingDimDraft.high_label : dimHigh(d);
+          const nameVal = isEditing && state.editingDimDraft ? state.editingDimDraft.name : dimName(d);
           const dotPicker = `<label class="dim-dot-picker" style="background:${esc(col)}" title="${esc(t("dim_pick_color_title"))}"><input type="color" data-dim-color="${esc(d.id)}" value="${esc(col)}" /></label>`;
           if (isEditing) {
+            const rescaleHint =
+              sMax !== origScale
+                ? `<div class="muted sm-text dim-rescale-hint">${esc(t("dim_scale_rescale_hint", { max: sMax }))}</div>`
+                : "";
             return `
       <div class="mood-axis is-editing" data-dim-id="${esc(d.id)}" style="--axis-c:${esc(col)}">
         <form class="dim-inline-edit" data-dim-edit-form="${esc(d.id)}">
           <div class="row-inline" style="gap:6px;">
             ${dotPicker}
-            <input type="text" id="dim-edit-name" value="${esc(dimName(d))}" required style="flex:1;" />
+            <input type="text" id="dim-edit-name" value="${esc(nameVal)}" required style="flex:1;" />
             <button type="submit" class="btn primary sm">${esc(t("btn_save"))}</button>
             <button type="button" class="btn ghost sm" data-dim-edit-cancel="1" title="${esc(t("btn_cancel"))}">✕</button>
           </div>
           <div class="row-2" style="gap:6px;">
             <input type="text" id="dim-edit-low" value="${esc(lo)}" placeholder="${esc(t("ma_low_ph"))}" />
-            <input type="text" id="dim-edit-high" value="${esc(hi)}" placeholder="${esc(t("ma_high_ph"))}" />
+            <div class="dim-high-scale-row">
+              <input type="text" id="dim-edit-high" value="${esc(hi)}" placeholder="${esc(t("ma_high_ph_n", { max: sMax }))}" style="flex:1;min-width:0;" />
+              <div class="scale-stepper" title="${esc(t("dim_scale_title"))}">
+                <button type="button" class="btn ghost sm" data-dim-scale-step="-1" ${sMax <= 2 ? "disabled" : ""}>−</button>
+                <span class="mono sm-text" id="dim-edit-scale-lbl">1–${sMax}</span>
+                <button type="button" class="btn ghost sm" data-dim-scale-step="1" ${sMax >= 7 ? "disabled" : ""}>+</button>
+              </div>
+            </div>
           </div>
+          ${rescaleHint}
         </form>
-        <div class="mood-scale">${btns}</div>
+        <div class="mood-scale" style="--scale-n:${sMax}">${btns}</div>
       </div>`;
           }
           const anchors =
@@ -2120,7 +2145,7 @@ function renderMoodModal() {
           </span>
           <button type="button" class="btn ghost sm" data-hide-dim="${esc(d.id)}" title="${esc(t("mood_hide_title"))}" style="padding:1px 6px;font-size:11px;">✕</button>
         </div>
-        <div class="mood-scale">${btns}</div>
+        <div class="mood-scale" style="--scale-n:${sMax}">${btns}</div>
         ${anchors}
       </div>`;
         })
@@ -3403,8 +3428,9 @@ function renderStateCurveSection(curves, timelineMeta) {
   const vStart = state.chartView.startHr;
   const vEnd = state.chartView.endHr;
   const span = Math.max(1, vEnd - vStart);
+  const scaleMax = dimScaleMax(cur);
   const xOf = (hr) => padL + ((hr - vStart) / span) * plotW;
-  const yOf = (v) => padT + ((5 - Math.max(1, Math.min(5, v))) / 4) * plotH;
+  const yOf = (v) => padT + ((scaleMax - Math.max(1, Math.min(scaleMax, v))) / Math.max(1, scaleMax - 1)) * plotH;
 
   const fmtRelTime = (hr) => {
     const dt = new Date(originMs + hr * 3600000);
@@ -3412,15 +3438,22 @@ function renderStateCurveSection(curves, timelineMeta) {
     return `${dt.toLocaleDateString(getLocale(), { weekday: "short", day: "2-digit", month: "2-digit" })} ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
   };
 
-  // Horizontal 1..5 guide hairlines (clean, spacious, subtle 3-midline)
-  const guides = [1, 2, 3, 4, 5]
-    .map((lv) => {
-      const y = yOf(lv).toFixed(1);
-      const isMid = lv === 3;
-      return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1" ${isMid ? 'stroke-dasharray="3 4"' : ""} opacity="${isMid ? "0.95" : "0.55"}" />
-              <text x="${padL - 10}" y="${(yOf(lv) + 3.5).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="11" font-family="var(--mono)">${lv}</text>`;
-    })
-    .join("");
+  // Horizontal 1..scaleMax guide hairlines (+ subtle dashed midline for both odd & even scales!)
+  const midVal = (1 + scaleMax) / 2;
+  const intLevels = Array.from({ length: scaleMax }, (_, i) => i + 1);
+  const evenMidLine =
+    !Number.isInteger(midVal)
+      ? `<line x1="${padL}" y1="${yOf(midVal).toFixed(1)}" x2="${W - padR}" y2="${yOf(midVal).toFixed(1)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4" opacity="0.7" />`
+      : "";
+  const guides =
+    intLevels
+      .map((lv) => {
+        const y = yOf(lv).toFixed(1);
+        const isMid = lv === midVal;
+        return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1" ${isMid ? 'stroke-dasharray="3 4"' : ""} opacity="${isMid ? "0.95" : "0.55"}" />
+                <text x="${padL - 10}" y="${(yOf(lv) + 3.5).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="11" font-family="var(--mono)">${lv}</text>`;
+      })
+      .join("") + evenMidLine;
 
   // Subtle vertical midnight day-grid hairlines when zoomed into multi-day view (<= 16 days)
   let dayGridLayer = "";
@@ -3754,7 +3787,7 @@ function renderStateCurveSection(curves, timelineMeta) {
     .map((pt) => {
       const cx = xOf(pt.t).toFixed(1);
       const cy = yOf(pt.v).toFixed(1);
-      const tip = `${fmtRelTime(pt.t)}: ${fmtNum(pt.v)}/5${pt.note ? ` · ${pt.note}` : ""}`;
+      const tip = `${fmtRelTime(pt.t)}: ${fmtNum(pt.v)}/${scaleMax}${pt.note ? ` · ${pt.note}` : ""}`;
       return `<circle cx="${cx}" cy="${cy}" r="4.8" fill="${esc(axisColor)}" stroke="var(--surface)" stroke-width="2.2"><title>${esc(tip)}</title></circle>`;
     })
     .join("");
@@ -3810,10 +3843,10 @@ function renderStateCurveSection(curves, timelineMeta) {
   const curLow = dimLow(cur);
   const curHigh = dimHigh(cur);
   const anchorTxt =
-    curLow || curHigh ? `1 = ${curLow || t("an_anchor_low")} · 5 = ${curHigh || t("an_anchor_high")}` : "";
+    curLow || curHigh ? `1 = ${curLow || t("an_anchor_low")} · ${scaleMax} = ${curHigh || t("an_anchor_high")}` : "";
 
   // Store geometry snapshot for zero-latency live hover crosshair + habit pin identification
-  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, axisColor, visActual, renderedPins, pinHitPx, anchorTxt, rightSummary };
+  state._chartGeom = { W, H, padL, padR, padT, padB, plotW, plotH, vStart, vEnd, span, originMs, nowHr, cur, scaleMax, axisColor, visActual, renderedPins, pinHitPx, anchorTxt, rightSummary };
 
   const pinLegendHtml = pinLegendItems.length
     ? `<div class="state-pin-legend" id="state-pin-legend">
@@ -4891,15 +4924,54 @@ function bindEvents() {
     const inlineEditBtn = e.target.closest("[data-dim-inline-edit]");
     if (inlineEditBtn) {
       if (state._justDraggedMoodAxis) return;
-      state.editingDimId = inlineEditBtn.dataset.dimInlineEdit;
+      const did = inlineEditBtn.dataset.dimInlineEdit;
+      const dObj = state.stateDims.find((x) => x.id === did);
+      state.editingDimId = did;
+      state.editingDimDraft = dObj
+        ? { name: dimName(dObj), low_label: dimLow(dObj), high_label: dimHigh(dObj), scale_max: dimScaleMax(dObj) }
+        : null;
       const focusTarget = inlineEditBtn.dataset.focus === "low" ? "#dim-edit-low" : "#dim-edit-name";
       renderMoodModal();
       const inp = $(focusTarget);
       if (inp) setTimeout(() => { inp.focus(); inp.select(); }, 15);
       return;
     }
+    const scaleStepBtn = e.target.closest("[data-dim-scale-step]");
+    if (scaleStepBtn && state.editingDimId) {
+      const delta = Number(scaleStepBtn.dataset.dimScaleStep || 0);
+      const dObj = state.stateDims.find((x) => x.id === state.editingDimId);
+      const curDraft = state.editingDimDraft || {
+        name: dObj ? dimName(dObj) : "",
+        low_label: dObj ? dimLow(dObj) : "",
+        high_label: dObj ? dimHigh(dObj) : "",
+        scale_max: dimScaleMax(dObj),
+      };
+      curDraft.name = $("#dim-edit-name") ? $("#dim-edit-name").value : curDraft.name;
+      curDraft.low_label = $("#dim-edit-low") ? $("#dim-edit-low").value : curDraft.low_label;
+      curDraft.high_label = $("#dim-edit-high") ? $("#dim-edit-high").value : curDraft.high_label;
+      curDraft.scale_max = Math.max(2, Math.min(7, (curDraft.scale_max || 5) + delta));
+      state.editingDimDraft = curDraft;
+      renderMoodModal();
+      return;
+    }
+    if (e.target.closest("#ma-scale-dec") || e.target.closest("#ma-scale-inc")) {
+      const delta = e.target.closest("#ma-scale-inc") ? 1 : -1;
+      const hid = $("#ma-scale-max");
+      const lbl = $("#ma-scale-lbl");
+      const hiInp = $("#ma-high");
+      const decBtn = $("#ma-scale-dec");
+      const incBtn = $("#ma-scale-inc");
+      const next = Math.max(2, Math.min(7, Number((hid && hid.value) || 5) + delta));
+      if (hid) hid.value = String(next);
+      if (lbl) lbl.textContent = `1–${next}`;
+      if (hiInp) hiInp.placeholder = t("ma_high_ph_n", { max: next });
+      if (decBtn) decBtn.disabled = next <= 2;
+      if (incBtn) incBtn.disabled = next >= 7;
+      return;
+    }
     if (e.target.closest("[data-dim-edit-cancel]")) {
       state.editingDimId = null;
+      state.editingDimDraft = null;
       renderMoodModal();
       return;
     }
@@ -5104,7 +5176,7 @@ function bindEvents() {
       toast(t("err_prefix", { msg: err.message }));
     }
   });
-  // Save inline axis rename / 1-5 anchor labels on Enter or Save click
+  // Save inline axis rename, 1..N scale & anchor labels on Enter or Save click
   $("#mood-axes-list").addEventListener("submit", async (e) => {
     const form = e.target.closest("[data-dim-edit-form]");
     if (!form) return;
@@ -5113,21 +5185,33 @@ function bindEvents() {
     const name = ($("#dim-edit-name").value || "").trim();
     const low_label = ($("#dim-edit-low").value || "").trim();
     const high_label = ($("#dim-edit-high").value || "").trim();
+    const local = state.stateDims.find((d) => d.id === dimId);
+    const oldScale = dimScaleMax(local);
+    const scale_max = state.editingDimDraft ? state.editingDimDraft.scale_max : oldScale;
     if (!name) return;
     try {
       const updated = await api(`/api/state/dimensions/${encodeURIComponent(dimId)}`, {
         method: "PATCH",
-        body: JSON.stringify({ name, low_label, high_label }),
+        body: JSON.stringify({ name, low_label, high_label, scale_max }),
       });
-      const local = state.stateDims.find((d) => d.id === dimId);
       if (local) {
         local.name = updated.name;
         local.low_label = updated.low_label;
         local.high_label = updated.high_label;
+        local.scale_max = dimScaleMax(updated);
+      }
+      if (state.moodRatings[dimId] != null && scale_max !== oldScale) {
+        const norm = Math.max(0, Math.min(1, (Number(state.moodRatings[dimId]) - 1) / Math.max(1, oldScale - 1)));
+        state.moodRatings[dimId] = Math.max(1, Math.min(scale_max, Math.round(1 + norm * (scale_max - 1))));
       }
       state.editingDimId = null;
+      state.editingDimDraft = null;
       renderMoodModal();
-      toast(t("axis_updated", { name: updated.name }));
+      if (updated.rescaled_snapshots) {
+        toast(t("axis_updated_rescaled", { name: updated.name, max: dimScaleMax(updated), n: updated.rescaled_snapshots }));
+      } else {
+        toast(t("axis_updated", { name: updated.name }));
+      }
       if (state.tab === "today") await refreshAfterLogMutation();
       if (state.tab === "analysis") await loadAnalysis();
     } catch (err) {
@@ -5170,6 +5254,7 @@ function bindEvents() {
     const name = $("#ma-name").value.trim();
     if (!name) return;
     try {
+      const scale_max = Math.max(2, Math.min(7, Number(($("#ma-scale-max") && $("#ma-scale-max").value) || 5)));
       const created = await api("/api/state/dimensions", {
         method: "POST",
         body: JSON.stringify({
@@ -5177,6 +5262,7 @@ function bindEvents() {
           low_label: $("#ma-low").value.trim(),
           high_label: $("#ma-high").value.trim(),
           color: ($("#ma-color") && $("#ma-color").value) || "",
+          scale_max,
         }),
       });
       // Automatically include the newly created axis in the currently active group so it shows up immediately
@@ -5192,6 +5278,11 @@ function bindEvents() {
       $("#ma-name").value = "";
       $("#ma-low").value = "";
       $("#ma-high").value = "";
+      if ($("#ma-scale-max")) $("#ma-scale-max").value = "5";
+      if ($("#ma-scale-lbl")) $("#ma-scale-lbl").textContent = "1–5";
+      if ($("#ma-high")) $("#ma-high").placeholder = t("ma_high_ph");
+      if ($("#ma-scale-dec")) $("#ma-scale-dec").disabled = false;
+      if ($("#ma-scale-inc")) $("#ma-scale-inc").disabled = false;
       toast(t("axis_added", { name }));
       await openMoodModal();
     } catch (err) {
@@ -6491,8 +6582,9 @@ function bindEvents() {
       return;
     }
     let hr = g.vStart + ((svgX - g.padL) / g.plotW) * g.span;
+    const sMax = g.scaleMax || dimScaleMax(g.cur);
     const xOf = (tHr) => g.padL + ((tHr - g.vStart) / g.span) * g.plotW;
-    const yOf = (v) => g.padT + ((5 - Math.max(1, Math.min(5, v))) / 4) * g.plotH;
+    const yOf = (v) => g.padT + ((sMax - Math.max(1, Math.min(sMax, v))) / Math.max(1, sMax - 1)) * g.plotH;
 
     // Snap softly to a nearby observed snapshot dot (within 14px)
     let snappedDot = null;
@@ -6546,7 +6638,7 @@ function bindEvents() {
     const isFut = hr > g.nowHr + 0.1;
     const pills = [`<span class="ro-pill"><strong>${esc(tsStr)}</strong></span>`];
     if (snappedDot) {
-      pills.push(`<span class="ro-pill"><span class="dot-obs" style="background:${esc(ac)}"></span>${fmtNum(snappedDot.v)}/5${snappedDot.note ? ` <span class="muted">${esc(snappedDot.note.slice(0, 32))}</span>` : ""}</span>`);
+      pills.push(`<span class="ro-pill"><span class="dot-obs" style="background:${esc(ac)}"></span>${fmtNum(snappedDot.v)}/${sMax}${snappedDot.note ? ` <span class="muted">${esc(snappedDot.note.slice(0, 32))}</span>` : ""}</span>`);
     }
     if (odePt) {
       const cTxt = isFut ? ` <span class="muted">(${Math.round(odePt.conf * 100)}%)</span>` : "";

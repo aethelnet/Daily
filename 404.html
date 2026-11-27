@@ -688,7 +688,15 @@
           </div>
           <div class="row-2">
             <input type="text" id="ma-low" data-i18n-placeholder="ma_low_ph" placeholder="1 = niedrig (optional)" />
-            <input type="text" id="ma-high" data-i18n-placeholder="ma_high_ph" placeholder="5 = hoch (optional)" />
+            <div class="dim-high-scale-row">
+              <input type="text" id="ma-high" data-i18n-placeholder="ma_high_ph" placeholder="5 = hoch (optional)" style="flex:1;min-width:0;" />
+              <div class="scale-stepper" data-i18n-title="dim_scale_title" title="Skala anpassen (1–2 bis 1–7)">
+                <input type="hidden" id="ma-scale-max" value="5" />
+                <button type="button" class="btn ghost sm" id="ma-scale-dec" aria-label="Stufe weniger">−</button>
+                <span class="mono sm-text" id="ma-scale-lbl">1–5</span>
+                <button type="button" class="btn ghost sm" id="ma-scale-inc" aria-label="Stufe mehr">+</button>
+              </div>
+            </div>
           </div>
           <div class="row-end">
             <button type="submit" class="btn sm" data-i18n="btn_add_axis">+ Achse anlegen</button>
