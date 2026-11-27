@@ -1414,7 +1414,70 @@
       const habits = [...db.habits]
         .filter((h) => inc || !h.archived)
         .sort((a, b) => (a.archived - b.archived) || ((a.sort_order ?? 0) - (b.sort_order ?? 0)));
-      return { habits, edges: enrichEdges(db), settings: db.settings, tags: computeTagStats(db) };
+      const edges = enrichEdges(db);
+      const habitsById = Object.fromEntries(habits.map((h) => [h.id, h]));
+      const rollupsBySrc = {};
+      for (const e of edges) {
+        if (e.relation_type === "rollup") {
+          (rollupsBySrc[e.source_id] ||= []).push([e.target_id, Number(e.weight || 0)]);
+        }
+      }
+      const todayMs = new Date(`${localDateISO(new Date())}T12:00:00`).getTime();
+      const directByDay = {};
+      for (const ev of db.events || []) {
+        if (ev.deleted_at || !habitsById[ev.habit_id]) continue;
+        const occ = String(ev.occurred_at || "").slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(occ)) continue;
+        const ageD = Math.round((todayMs - new Date(`${occ}T12:00:00`).getTime()) / 86400000);
+        if (ageD < 0 || ageD > 60) continue;
+        const dm = (directByDay[occ] ||= { ageD, map: {} }).map;
+        const h = habitsById[ev.habit_id];
+        if (h.kind === "measure") dm[ev.habit_id] = Math.max(dm[ev.habit_id] || 0, 1);
+        else {
+          const amt = Number(ev.amount || 0);
+          if (amt > 0) dm[ev.habit_id] = (dm[ev.habit_id] || 0) + amt;
+        }
+      }
+      const dailyScale = (h) => {
+        if (h.kind === "measure") return 1;
+        if (h.target != null && Number(h.target) > 0) {
+          const div = h.target_period === "week" ? 7 : h.target_period === "month" ? 30 : 1;
+          return Math.max(0.25, Number(h.target) / div);
+        }
+        return Math.max(0.25, Number(h.tap_step || 1));
+      };
+      const massAcc = {};
+      const recAcc = {};
+      const prvAcc = {};
+      for (const h of habits) { massAcc[h.id] = 0; recAcc[h.id] = 0; prvAcc[h.id] = 0; }
+      for (const rec of Object.values(directByDay)) {
+        const decay = Math.pow(0.5, rec.ageD / 14);
+        const effDay = { ...rec.map };
+        for (const [srcId, amt] of Object.entries(rec.map)) {
+          for (const [dstId, w] of rollupsBySrc[srcId] || []) {
+            if (habitsById[dstId]) effDay[dstId] = (effDay[dstId] || 0) + amt * w;
+          }
+        }
+        for (const [hid, rawEff] of Object.entries(effDay)) {
+          if (rawEff <= 0 || !habitsById[hid]) continue;
+          const norm = Math.min(4, rawEff / dailyScale(habitsById[hid]));
+          massAcc[hid] += norm * decay;
+          if (rec.ageD < 14) recAcc[hid] += norm;
+          else if (rec.ageD < 28) prvAcc[hid] += norm;
+        }
+      }
+      const liquid = {};
+      for (const h of habits) {
+        const rec = recAcc[h.id] / 14;
+        const prv = prvAcc[h.id] / 14;
+        liquid[h.id] = {
+          mass: Math.round(massAcc[h.id] * 1000) / 1000,
+          recent: Math.round(rec * 1000) / 1000,
+          prev: Math.round(prv * 1000) / 1000,
+          trend: Math.round((rec - prv) * 1000) / 1000,
+        };
+      }
+      return { habits, edges, liquid, settings: db.settings, tags: computeTagStats(db) };
     }
     if (path === "/api/habits" && method === "POST") {
       const name = (body.name || "").trim();

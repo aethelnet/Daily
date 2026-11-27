@@ -67,10 +67,12 @@
     let rawHabits = [];
     let rawEdges = [];
     let todayById = new Map();
+    let liquidById = {};
 
     // View options & camera
     let showHyps = false;
     let onlyConnected = false;
+    let sizeMode = "trend"; // "trend" (exponentially decaying 30-60d mass) | "today" (live today inflation)
     let camX = 0;
     let camY = 0;
     let camZoom = 1;
@@ -155,14 +157,43 @@
       const N = visibleHabits.length;
       const initR = Math.max(75, Math.min(180, 42 + N * 6));
 
+      // Compute organic Liquid Balloon target radii (sublinear log1p scaling so 8x water never crushes 1x sport!)
+      const masses = visibleHabits.map((h) => Number((liquidById[h.id] && liquidById[h.id].mass) || 0));
+      const refMass = Math.max(2.6, ...masses);
+      const calcTargetRadius = (h, tInfo, deg) => {
+        if (sizeMode === "today") {
+          const eff = tInfo ? Math.max(0, Number(tInfo.effective || 0)) : 0;
+          const dir = tInfo ? Math.max(0, Number(tInfo.direct || 0)) : 0;
+          let norm = 0;
+          if (h.kind === "measure") {
+            norm = dir > 0 ? 1.2 : 0;
+          } else if (eff > 0) {
+            const per = h.target_period || "day";
+            const div = per === "week" ? 7 : per === "month" ? 30 : 1;
+            const scale = h.target != null && Number(h.target) > 0
+              ? Math.max(0.25, Number(h.target) / div)
+              : Math.max(0.25, Number(h.tap_step || 1));
+            norm = Math.min(4, eff / scale);
+          }
+          const frac = Math.min(1, Math.log1p(norm * 1.7) / Math.log1p(3.5));
+          return clamp(7.5 + frac * 17.5 + Math.min(1.5, deg * 0.25), 7.5, 25.5);
+        }
+        // "trend": exponentially decaying 14d half-life mass -> unwanted balloons visibly deflate week by week!
+        const m = Number((liquidById[h.id] && liquidById[h.id].mass) || 0);
+        const frac = m > 0 ? Math.min(1, Math.log1p(m * 1.35) / Math.log1p(refMass * 1.35)) : 0;
+        return clamp(7.5 + frac * 17.5 + Math.min(1.5, deg * 0.25), 7.5, 25.5);
+      };
+
       nodes = visibleHabits.map((h, idx) => {
         const cached = posCache.get(h.id);
         const angle = (idx / Math.max(1, N)) * Math.PI * 2 - Math.PI / 2;
         const tInfo = todayById.get(h.id);
+        const liq = liquidById[h.id] || { mass: 0, trend: 0 };
         const inCnt = degIn.get(h.id) || 0;
         const outCnt = degOut.get(h.id) || 0;
         const deg = inCnt + outCnt;
-        const radius = clamp(7.5 + Math.sqrt(deg) * 2.5, 7.5, 15.5);
+        const targetR = calcTargetRadius(h, tInfo, deg);
+        const startR = cached && typeof cached.r === "number" ? cached.r : targetR;
         return {
           id: h.id,
           name: h.name,
@@ -172,7 +203,10 @@
           inCnt,
           outCnt,
           deg,
-          r: radius,
+          r: startR,
+          targetR,
+          mass: Number(liq.mass || 0),
+          trend: Number(liq.trend || 0),
           direct: tInfo ? Number(tInfo.direct || 0) : 0,
           routed: tInfo ? Number(tInfo.routed || 0) : 0,
           effective: tInfo ? Number(tInfo.effective || 0) : 0,
@@ -241,10 +275,11 @@
             dist2 = dx * dx + dy * dy;
           }
           const dist = Math.sqrt(dist2);
-          const minSep = a.r + b.r + 22;
+          const minSep = a.r + b.r + 24;
           const rep = (repulseK / Math.max(dist2, minSep * minSep * 0.35)) * alpha;
-          const fx = (dx / dist) * rep;
-          const fy = (dy / dist) * rep;
+          const overlapPush = dist < minSep ? (minSep - dist) * 0.16 : 0;
+          const fx = (dx / dist) * (rep + overlapPush);
+          const fy = (dy / dist) * (rep + overlapPush);
           a.vx -= fx;
           a.vy -= fy;
           b.vx += fx;
@@ -304,7 +339,7 @@
         nd.x += nd.vx;
         nd.y += nd.vy;
         if (sp > maxSpeed) maxSpeed = sp;
-        posCache.set(nd.id, { x: nd.x, y: nd.y, vx: nd.vx, vy: nd.vy });
+        posCache.set(nd.id, { x: nd.x, y: nd.y, vx: nd.vx, vy: nd.vy, r: nd.r });
       }
 
       alpha *= 0.985;
@@ -472,11 +507,30 @@
           ctx.fill();
         }
 
-        // Main circular node
+        // Main circular liquid balloon node
         ctx.fillStyle = nd.color;
         ctx.beginPath();
         ctx.arc(nd.x, nd.y, nd.r, 0, Math.PI * 2);
         ctx.fill();
+
+        // Subtle organic liquid highlight on inflated balloons
+        if (nd.r >= 11.5) {
+          const gSpec = ctx.createRadialGradient(
+            nd.x - nd.r * 0.32,
+            nd.y - nd.r * 0.32,
+            nd.r * 0.08,
+            nd.x,
+            nd.y,
+            nd.r
+          );
+          gSpec.addColorStop(0, "rgba(255, 255, 255, 0.28)");
+          gSpec.addColorStop(0.65, "rgba(255, 255, 255, 0.04)");
+          gSpec.addColorStop(1, "rgba(0, 0, 0, 0.08)");
+          ctx.fillStyle = gSpec;
+          ctx.beginPath();
+          ctx.arc(nd.x, nd.y, nd.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
 
         // Crisp rim
         ctx.strokeStyle = isFocus ? theme.text : hexToRgba(theme.bg, 0.85);
@@ -505,7 +559,20 @@
       rafId = null;
       const dt = lastFrameTs ? Math.min(0.05, (ts - lastFrameTs) / 1000) : 0.016;
       lastFrameTs = ts;
-      if (alpha > 0 || dragNode) {
+      let radiiMorphing = false;
+      for (const nd of nodes) {
+        const diff = (nd.targetR ?? nd.r) - nd.r;
+        if (Math.abs(diff) > 0.06) {
+          nd.r += diff * 0.14;
+          radiiMorphing = true;
+          const prev = posCache.get(nd.id);
+          if (prev) prev.r = nd.r;
+        } else if (nd.targetR != null) {
+          nd.r = nd.targetR;
+        }
+      }
+      if (alpha > 0 || dragNode || radiiMorphing) {
+        if (radiiMorphing && alpha < 0.08) alpha = 0.08;
         stepPhysics();
       }
       const hasFlowAnim = !!(hoveredId || selectedId || nodes.some((nd) => nd.active));
@@ -513,7 +580,7 @@
         animPhase = (animPhase + dt * 0.42) % 1;
       }
       draw();
-      if (alpha > 0 || dragNode || hasFlowAnim) {
+      if (alpha > 0 || dragNode || hasFlowAnim || radiiMorphing) {
         rafId = requestAnimationFrame(tick);
       } else {
         lastFrameTs = 0;
@@ -552,6 +619,10 @@
         nd.effective !== 0 || nd.direct !== 0
           ? ` · ${tr("today")}: ${fmtW(nd.effective)}`
           : "";
+      const trendTxt =
+        sizeMode === "trend" && Math.abs(nd.trend || 0) >= 0.08
+          ? ` · ${nd.trend > 0 ? tr("graph_trend_up") : tr("graph_trend_down")}`
+          : "";
       const actionsHtml = selectedId
         ? `<div class="row-inline" style="gap:5px;margin-left:auto;">
             <button type="button" class="btn ghost sm" data-gact="src" data-gid="${nd.id}">${tr("graph_set_src")}</button>
@@ -568,7 +639,7 @@
         <div class="row-inline" style="gap:7px;min-width:0;flex-wrap:wrap;">
           <span class="ev-dot" style="background:${nd.color}"></span>
           <strong>${safeName}</strong>
-          <span class="muted mono sm-text">${tr("graph_node_stats", { ins: nd.inCnt, outs: nd.outCnt })}${todayTxt}</span>
+          <span class="muted mono sm-text">${tr("graph_node_stats", { ins: nd.inCnt, outs: nd.outCnt })}${todayTxt}${trendTxt}</span>
         </div>
         ${actionsHtml}`;
     }
@@ -725,17 +796,23 @@
     }
 
     return {
-      update({ habits, edges: edgeList, todayHabits, reheat = 0.55 }) {
+      update({ habits, edges: edgeList, todayHabits, liquidByHabit, sizeMode: nextSizeMode, reheat = 0.55 }) {
         rawHabits = Array.isArray(habits) ? habits : [];
         rawEdges = Array.isArray(edgeList) ? edgeList : [];
         todayById = new Map((Array.isArray(todayHabits) ? todayHabits : []).map((h) => [h.id, h]));
+        if (liquidByHabit && typeof liquidByHabit === "object") liquidById = liquidByHabit;
+        if (nextSizeMode === "trend" || nextSizeMode === "today") sizeMode = nextSizeMode;
         resize();
         rebuildGraph(reheat);
       },
       setOptions(next = {}) {
         if (typeof next.showHyps === "boolean") showHyps = next.showHyps;
         if (typeof next.onlyConnected === "boolean") onlyConnected = next.onlyConnected;
+        if (next.sizeMode === "trend" || next.sizeMode === "today") sizeMode = next.sizeMode;
         rebuildGraph(0.45);
+      },
+      getNodesSnapshot() {
+        return nodes.map((nd) => ({ id: nd.id, r: Math.round(nd.r * 10) / 10, targetR: Math.round((nd.targetR ?? nd.r) * 10) / 10, mass: nd.mass, trend: nd.trend }));
       },
       reheat() {
         posCache.clear();

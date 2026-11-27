@@ -9,7 +9,7 @@ import sys
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -375,14 +375,108 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    def _compute_liquid_habit_masses(
+        habits_list: list[dict[str, Any]],
+        edges_list: list[dict[str, Any]],
+        events_list: list[dict[str, Any]],
+    ) -> dict[str, dict[str, float]]:
+        """Exponentially decaying habit mass (14d half-life over 60d) including 1-hop signed rollups."""
+        today_d = date.today()
+        cutoff_d = today_d - timedelta(days=60)
+        habits_by_id = {h["id"]: h for h in habits_list}
+        rollups_by_src: dict[str, list[tuple[str, float]]] = defaultdict(list)
+        for e in edges_list:
+            if e.get("relation_type") == "rollup":
+                rollups_by_src[e["source_id"]].append((e["target_id"], float(e.get("weight") or 0.0)))
+
+        # Direct daily totals per habit (measure habits count 1.0 per logged day so °C/kg don't explode radius)
+        direct_by_day: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for ev in events_list:
+            hid = ev.get("habit_id")
+            if hid not in habits_by_id:
+                continue
+            occ = str(ev.get("occurred_at") or "")[:10]
+            try:
+                ev_d = date.fromisoformat(occ)
+            except Exception:
+                continue
+            if ev_d < cutoff_d or ev_d > today_d:
+                continue
+            h = habits_by_id[hid]
+            if h.get("kind") == "measure":
+                direct_by_day[occ][hid] = max(direct_by_day[occ][hid], 1.0)
+            else:
+                amt = float(ev.get("amount") or 0.0)
+                if amt > 0:
+                    direct_by_day[occ][hid] += amt
+
+        def daily_scale(h: dict[str, Any]) -> float:
+            if h.get("kind") == "measure":
+                return 1.0
+            tgt = h.get("target")
+            if tgt is not None and float(tgt) > 0:
+                per = h.get("target_period") or "day"
+                div = 7.0 if per == "week" else 30.0 if per == "month" else 1.0
+                return max(0.25, float(tgt) / div)
+            return max(0.25, float(h.get("tap_step") or 1.0))
+
+        mass_acc: dict[str, float] = {h["id"]: 0.0 for h in habits_list}
+        recent_acc: dict[str, float] = {h["id"]: 0.0 for h in habits_list}
+        prev_acc: dict[str, float] = {h["id"]: 0.0 for h in habits_list}
+
+        for day_iso, d_map in direct_by_day.items():
+            ev_d = date.fromisoformat(day_iso)
+            age_d = max(0, (today_d - ev_d).days)
+            decay = 0.5 ** (age_d / 14.0)
+            eff_day: dict[str, float] = dict(d_map)
+            for src_id, amt in d_map.items():
+                for dst_id, w in rollups_by_src.get(src_id, ()):
+                    if dst_id in habits_by_id:
+                        eff_day[dst_id] = eff_day.get(dst_id, 0.0) + amt * w
+            for hid, raw_eff in eff_day.items():
+                if raw_eff <= 0 or hid not in habits_by_id:
+                    continue
+                norm = min(4.0, raw_eff / daily_scale(habits_by_id[hid]))
+                mass_acc[hid] += norm * decay
+                if age_d < 14:
+                    recent_acc[hid] += norm
+                elif age_d < 28:
+                    prev_acc[hid] += norm
+
+        out: dict[str, dict[str, float]] = {}
+        for hid in habits_by_id:
+            rec = recent_acc[hid] / 14.0
+            prv = prev_acc[hid] / 14.0
+            out[hid] = {
+                "mass": round(mass_acc[hid], 3),
+                "recent": round(rec, 3),
+                "prev": round(prv, 3),
+                "trend": round(rec - prv, 3),
+            }
+        return out
+
     @app.get("/api/habits")
     def api_list_habits(include_archived: bool = False) -> dict[str, Any]:
+        habits_list = list_habits(include_archived=include_archived, db_path=resolved_db)
+        edges_list = list_edges(db_path=resolved_db)
+        events_list = list_events(db_path=resolved_db)
+        settings = get_settings(db_path=resolved_db)
+        routing_mode = settings.get("routing_mode", "observed")
+        effective_edges = edges_list
+        if routing_mode == "tabpfn":
+            active_habits = [h for h in habits_list if not h.get("archived")]
+            events_60d = list_events(days_back=60, db_path=resolved_db)
+            today_events = list_events(day=date.today().isoformat(), db_path=resolved_db)
+            effective_edges = compute_ai_routing_edges(active_habits, edges_list, events_60d, today_events)
         return {
-            "habits": list_habits(include_archived=include_archived, db_path=resolved_db),
-            "edges": list_edges(db_path=resolved_db),
-            "settings": get_settings(db_path=resolved_db),
+            "habits": habits_list,
+            "edges": edges_list,
+            "active_graph_edges": effective_edges,
+            "routing_mode": routing_mode,
+            "liquid": _compute_liquid_habit_masses(habits_list, effective_edges, events_list),
+            "settings": settings,
             "tags": compute_note_tag_stats(
-                list_events(db_path=resolved_db),
+                events_list,
                 list_snapshots(db_path=resolved_db),
             ),
         }
@@ -428,7 +522,7 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
 
     @app.post("/api/habits/{habit_id}/toggle-active")
     def api_toggle_habit_active(habit_id: str, payload: HabitToggleActive | None = None) -> dict[str, Any]:
-        from datetime import datetime, timedelta
+        from datetime import date, datetime, timedelta, timedelta
         from .db import now_iso
 
         p = payload or HabitToggleActive()

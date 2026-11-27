@@ -2616,6 +2616,8 @@ async function loadSetup(editId = null) {
   state.habits = all.filter((h) => !h.archived);
   state.archivedHabits = all.filter((h) => !!h.archived);
   state.edges = data.edges;
+  state.graphEdges = data.active_graph_edges || data.edges;
+  state.liquidByHabit = data.liquid || {};
   state.settings = data.settings || {};
   renderSetup(pairInfo, e2eeInfo);
   if (editId) populateHabitForm(editId);
@@ -3099,6 +3101,7 @@ let qcColorDirty = false;
 let routingGraph = null;
 let graphShowHyps = false;
 let graphOnlyLinked = false;
+let graphSizeMode = localStorage.getItem("daily_graph_size_mode") === "today" ? "today" : "trend";
 let graphOpenInitialized = false;
 
 function ensureRoutingGraph() {
@@ -3159,10 +3162,13 @@ function renderRoutingGraph(reheat = 0.5) {
   if (!panel.open) return;
   const g = ensureRoutingGraph();
   if (!g) return;
+  $$("#graph-size-switch [data-gsize]").forEach((b) => b.classList.toggle("active", b.dataset.gsize === graphSizeMode));
   g.update({
     habits: state.habits || [],
-    edges: state.edges || [],
+    edges: state.graphEdges || state.edges || [],
     todayHabits: (state.todayData && state.todayData.habits) || [],
+    liquidByHabit: state.liquidByHabit || {},
+    sizeMode: graphSizeMode,
     reheat,
   });
   if (!g._didFirstFit) {
@@ -6667,6 +6673,17 @@ function bindEvents() {
       }
     });
   }
+  const graphSizeSw = $("#graph-size-switch");
+  if (graphSizeSw) {
+    graphSizeSw.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-gsize]");
+      if (!btn) return;
+      graphSizeMode = btn.dataset.gsize === "today" ? "today" : "trend";
+      localStorage.setItem("daily_graph_size_mode", graphSizeMode);
+      $$("#graph-size-switch [data-gsize]").forEach((b) => b.classList.toggle("active", b.dataset.gsize === graphSizeMode));
+      if (routingGraph) routingGraph.setOptions({ sizeMode: graphSizeMode });
+    });
+  }
   const btnGraphHyps = $("#btn-graph-hyps");
   if (btnGraphHyps) {
     btnGraphHyps.addEventListener("click", () => {
@@ -6909,7 +6926,18 @@ function bindEvents() {
           body: JSON.stringify({ routing_mode: mode }),
         });
         toast(mode === "tabpfn" ? t("routing_ai_toast") : t("routing_manual_toast"));
-        if (state.tab === "today") await loadToday();
+        if (state.tab === "today") {
+          await loadToday();
+        } else if (state.tab === "setup") {
+          const [todayRes, setupRes] = await Promise.all([
+            api(`/api/today?day=${encodeURIComponent(state.day)}`),
+            api("/api/habits?include_archived=true"),
+          ]);
+          state.todayData = todayRes;
+          state.liquidByHabit = setupRes.liquid || {};
+          state.graphEdges = setupRes.active_graph_edges || setupRes.edges || state.edges;
+          renderRoutingGraph(0.35);
+        }
       } catch (err) {
         toast(t("err_prefix", { msg: err.message }));
       }
