@@ -147,6 +147,7 @@
       edges: [...(localDb.edges || [])],
       events: [...(localDb.events || [])],
       snapshots: [...(localDb.snapshots || [])],
+      tasks: [...(localDb.tasks || [])],
       state_dimensions: [...(localDb.state_dimensions || [])],
       settings: { ...(localDb.settings || {}) },
     };
@@ -254,6 +255,25 @@
       }
     }
 
+    // 5b. Tasks ("Offene Zettel" — LWW by task id + tombstones)
+    const tkById = Object.fromEntries(out.tasks.map((tk) => [tk.id, tk]));
+    for (const rtk of remote.tasks || []) {
+      if (!rtk || !rtk.id || !rtk.title) continue;
+      const rUpd = rtk.updated_at || rtk.created_at || "";
+      const ltk = tkById[rtk.id];
+      const safeHid = rtk.habit_id && habById[rtk.habit_id] ? rtk.habit_id : null;
+      if (!ltk) {
+        const copy = { ...rtk, habit_id: safeHid };
+        out.tasks.push(copy);
+        tkById[copy.id] = copy;
+      } else {
+        const lUpd = ltk.updated_at || ltk.created_at || "";
+        if (rUpd > lUpd || (rUpd === lUpd && rtk.deleted_at && !ltk.deleted_at)) {
+          Object.assign(ltk, { ...rtk, habit_id: safeHid });
+        }
+      }
+    }
+
     // 6. Synced settings (mood_groups timezone-safe LWW)
     const tsEpoch = (s) => {
       const t = String(s || "").trim();
@@ -272,6 +292,9 @@
           out.settings.active_mood_group = String(rSet.active_mood_group);
         }
       }
+    }
+    if (rSet.task_nudges_enabled !== undefined) {
+      out.settings.task_nudges_enabled = String(rSet.task_nudges_enabled) === "0" ? "0" : "1";
     }
 
     out.next_id = maxId + 1;

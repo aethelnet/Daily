@@ -28,13 +28,16 @@ from .analytics import (
 )
 from .db import (
     DEFAULT_DB_PATH,
+    complete_task,
     create_habit,
     create_snapshot,
     create_state_dimension,
+    create_task,
     delete_edge,
     delete_event,
     delete_habit,
     delete_snapshot,
+    delete_task,
     get_settings,
     init_db,
     list_edges,
@@ -43,17 +46,20 @@ from .db import (
     list_log_range,
     list_snapshots,
     list_state_dimensions,
+    list_tasks,
     log_event,
     log_retro_batch,
     merge_habit,
     reorder_habits,
     reorder_state_dimensions,
+    reopen_task,
     update_edge,
     update_event,
     update_habit,
     update_settings,
     update_snapshot,
     update_state_dimension,
+    update_task,
     upsert_edge,
 )
 from .e2ee import (
@@ -233,6 +239,7 @@ class SettingsUpdate(BaseModel):
     routing_mode: str | None = None
     tabpfn_threshold: float | None = None
     followup_enabled: int | None = None
+    task_nudges_enabled: int | None = None
     mood_groups: str | None = None
     mood_groups_updated_at: str | None = None
     active_mood_group: str | None = None
@@ -250,6 +257,27 @@ class StateDimensionReorder(BaseModel):
 class HabitMerge(BaseModel):
     target_id: str
     tag_notes: bool = True
+
+
+class TaskCreate(BaseModel):
+    title: str
+    habit_id: str | None = None
+    priority: int = 0
+    due_date: str = ""
+    blocked_by_task_id: str | None = None
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = None
+    habit_id: str | None = None
+    priority: int | None = None
+    due_date: str | None = None
+    blocked_by_task_id: str | None = None
+
+
+class TaskComplete(BaseModel):
+    log_habit: bool = True
+    occurred_at: str | None = None
 
 
 def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> FastAPI:
@@ -893,6 +921,66 @@ def create_app(db_path: Path | None = None, enable_nudge_loop: bool = True) -> F
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="daily_features.csv"'},
         )
+
+    @app.get("/api/tasks")
+    def api_list_tasks(include_done: bool = True) -> dict[str, Any]:
+        return {"tasks": list_tasks(include_done=include_done, db_path=resolved_db)}
+
+    @app.post("/api/tasks")
+    def api_create_task(payload: TaskCreate) -> dict[str, Any]:
+        try:
+            return create_task(
+                title=payload.title,
+                habit_id=payload.habit_id,
+                priority=payload.priority,
+                due_date=payload.due_date,
+                blocked_by_task_id=payload.blocked_by_task_id,
+                db_path=resolved_db,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.patch("/api/tasks/{task_id}")
+    def api_update_task(task_id: str, payload: TaskUpdate) -> dict[str, Any]:
+        try:
+            return update_task(task_id, payload.model_dump(exclude_unset=True), db_path=resolved_db)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/tasks/{task_id}/complete")
+    def api_complete_task(task_id: str, payload: TaskComplete | None = None) -> dict[str, Any]:
+        body = payload or TaskComplete()
+        try:
+            res = complete_task(
+                task_id,
+                log_habit=body.log_habit,
+                occurred_at=body.occurred_at,
+                db_path=resolved_db,
+            )
+            if res.get("event"):
+                invalidate_ml_caches()
+            return res
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/tasks/{task_id}/reopen")
+    def api_reopen_task(task_id: str) -> dict[str, Any]:
+        try:
+            return reopen_task(task_id, db_path=resolved_db)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.delete("/api/tasks/{task_id}")
+    def api_delete_task(task_id: str) -> dict[str, Any]:
+        try:
+            delete_task(task_id, db_path=resolved_db)
+            return {"ok": True}
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
     @app.get("/api/settings")
     def api_get_settings() -> dict[str, str]:

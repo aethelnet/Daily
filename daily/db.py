@@ -136,7 +136,8 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
                 ('quiet_hours_end', '8'),
                 ('nudge_mode', 'observed'),
                 ('tabpfn_threshold', '0.55'),
-                ('followup_enabled', '1');
+                ('followup_enabled', '1'),
+                ('task_nudges_enabled', '1');
             """
         )
 
@@ -268,6 +269,23 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
             );
 
             CREATE INDEX IF NOT EXISTS idx_snapshots_occurred ON snapshots(occurred_at);
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                habit_id TEXT REFERENCES habits(id) ON DELETE SET NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                due_date TEXT NOT NULL DEFAULT '',
+                blocked_by_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                done_at TEXT,
+                done_event_uuid TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tasks_habit ON tasks(habit_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_blocker ON tasks(blocked_by_task_id);
             """
         )
 
@@ -384,6 +402,7 @@ def update_settings(updates: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) ->
         "routing_mode",
         "tabpfn_threshold",
         "followup_enabled",
+        "task_nudges_enabled",
         "mood_groups",
         "mood_groups_updated_at",
         "active_mood_group",
@@ -1441,3 +1460,259 @@ def list_log_range(
         "state_dimensions": list_state_dimensions(include_archived=True, db_path=db_path),
         "habits": list_habits(include_archived=True, db_path=db_path),
     }
+
+
+# ---- Habit-Coupled One-Off Tasks ("Offene Zettel") with Optional Single-Step Blocker ----
+
+def _clean_due_date(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        raise ValueError(f"Ungültige Frist: {s} (Format YYYY-MM-DD)")
+    date.fromisoformat(s)
+    return s
+
+
+def _check_task_cycle(conn: sqlite3.Connection, task_id: str | None, blocker_id: str | None) -> None:
+    if not blocker_id:
+        return
+    if task_id and blocker_id == task_id:
+        raise ValueError("Ein Zettel kann nicht auf sich selbst warten.")
+    row = conn.execute("SELECT id, blocked_by_task_id, deleted_at FROM tasks WHERE id = ?", (blocker_id,)).fetchone()
+    if not row or row["deleted_at"]:
+        raise ValueError("Vorher-Zettel wurde nicht gefunden.")
+    if not task_id:
+        return
+    seen: set[str] = {task_id}
+    cur: str | None = blocker_id
+    for _ in range(64):
+        if not cur:
+            break
+        if cur in seen:
+            raise ValueError("Zyklus erkannt: Dieser Zettel kann nicht indirekt auf sich selbst warten.")
+        seen.add(cur)
+        r = conn.execute("SELECT blocked_by_task_id, deleted_at FROM tasks WHERE id = ?", (cur,)).fetchone()
+        if not r or r["deleted_at"]:
+            break
+        cur = r["blocked_by_task_id"]
+
+
+def _enrich_tasks(rows: list[sqlite3.Row], conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    raw_list = [dict(r) for r in rows]
+    by_id = {t["id"]: t for t in raw_list}
+    habits_map = {
+        r["id"]: dict(r)
+        for r in conn.execute("SELECT id, name, color, unit, tap_step, archived FROM habits").fetchall()
+    }
+    blocks_counts: dict[str, int] = {}
+    for t in raw_list:
+        if t.get("deleted_at") or t.get("done_at"):
+            continue
+        bid = t.get("blocked_by_task_id")
+        if bid and bid in by_id and not by_id[bid].get("deleted_at") and not by_id[bid].get("done_at"):
+            blocks_counts[bid] = blocks_counts.get(bid, 0) + 1
+
+    out: list[dict[str, Any]] = []
+    for t in raw_list:
+        bid = t.get("blocked_by_task_id")
+        blocker = by_id.get(bid) if bid else None
+        is_blocked = bool(
+            not t.get("done_at")
+            and blocker
+            and not blocker.get("deleted_at")
+            and not blocker.get("done_at")
+        )
+        h = habits_map.get(t.get("habit_id") or "")
+        t["is_blocked"] = is_blocked
+        t["blocker_title"] = blocker["title"] if (blocker and not blocker.get("deleted_at")) else ""
+        t["blocks_count"] = blocks_counts.get(t["id"], 0)
+        t["habit_name"] = h["name"] if h else ""
+        t["habit_color"] = h["color"] if h else ""
+        t["habit_unit"] = h["unit"] if h else "x"
+        out.append(t)
+    return out
+
+
+def list_tasks(
+    include_done: bool = True,
+    include_deleted: bool = False,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        if include_deleted:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY created_at ASC").fetchall()
+        enriched = _enrich_tasks(rows, conn)
+    if not include_done:
+        enriched = [t for t in enriched if not t.get("done_at")]
+    # Sort actionable first: due_date soonest -> priority ("Bald") desc -> created_at asc
+    enriched.sort(
+        key=lambda t: (
+            1 if t.get("done_at") else 0,
+            1 if t.get("is_blocked") else 0,
+            0 if t.get("due_date") else 1,
+            t.get("due_date") or "9999-99-99",
+            -int(t.get("priority") or 0),
+            t.get("created_at") or "",
+        )
+    )
+    return enriched
+
+
+def create_task(
+    title: str,
+    habit_id: str | None = None,
+    priority: int = 0,
+    due_date: str = "",
+    blocked_by_task_id: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    clean_title = str(title or "").strip()[:180]
+    if not clean_title:
+        raise ValueError("Titel darf nicht leer sein")
+    clean_due = _clean_due_date(due_date)
+    clean_prio = 1 if int(priority or 0) > 0 else 0
+    clean_hid = str(habit_id or "").strip() or None
+    clean_bid = str(blocked_by_task_id or "").strip() or None
+    tid = f"t-{uuid.uuid4().hex[:12]}"
+    ts = now_iso()
+    with get_conn(db_path) as conn:
+        if clean_hid:
+            if not conn.execute("SELECT 1 FROM habits WHERE id = ?", (clean_hid,)).fetchone():
+                raise ValueError(f"Unbekanntes Habit: {clean_hid}")
+        _check_task_cycle(conn, tid, clean_bid)
+        conn.execute(
+            """
+            INSERT INTO tasks(id, title, habit_id, priority, due_date, blocked_by_task_id, done_at, done_event_uuid, created_at, updated_at, deleted_at)
+            VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)
+            """,
+            (tid, clean_title, clean_hid, clean_prio, clean_due, clean_bid, ts, ts),
+        )
+        rows = conn.execute("SELECT * FROM tasks WHERE deleted_at IS NULL").fetchall()
+        enriched = _enrich_tasks(rows, conn)
+    return next(t for t in enriched if t["id"] == tid)
+
+
+def update_task(task_id: str, fields: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    ts = now_iso()
+    with get_conn(db_path) as conn:
+        cur_row = conn.execute("SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL", (task_id,)).fetchone()
+        if not cur_row:
+            raise KeyError(f"Task not found: {task_id}")
+        sets: list[str] = []
+        vals: list[Any] = []
+        if "title" in fields and fields["title"] is not None:
+            clean_title = str(fields["title"]).strip()[:180]
+            if not clean_title:
+                raise ValueError("Titel darf nicht leer sein")
+            sets.append("title = ?")
+            vals.append(clean_title)
+        if "habit_id" in fields:
+            clean_hid = str(fields["habit_id"] or "").strip() or None
+            if clean_hid and not conn.execute("SELECT 1 FROM habits WHERE id = ?", (clean_hid,)).fetchone():
+                raise ValueError(f"Unbekanntes Habit: {clean_hid}")
+            sets.append("habit_id = ?")
+            vals.append(clean_hid)
+        if "priority" in fields and fields["priority"] is not None:
+            sets.append("priority = ?")
+            vals.append(1 if int(fields["priority"]) > 0 else 0)
+        if "due_date" in fields and fields["due_date"] is not None:
+            sets.append("due_date = ?")
+            vals.append(_clean_due_date(fields["due_date"]))
+        if "blocked_by_task_id" in fields:
+            clean_bid = str(fields["blocked_by_task_id"] or "").strip() or None
+            _check_task_cycle(conn, task_id, clean_bid)
+            sets.append("blocked_by_task_id = ?")
+            vals.append(clean_bid)
+        if not sets:
+            raise ValueError("Keine gültigen Felder zum Aktualisieren")
+        sets.append("updated_at = ?")
+        vals.append(ts)
+        vals.append(task_id)
+        conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals)
+        rows = conn.execute("SELECT * FROM tasks WHERE deleted_at IS NULL").fetchall()
+        enriched = _enrich_tasks(rows, conn)
+    return next(t for t in enriched if t["id"] == task_id)
+
+
+def complete_task(
+    task_id: str,
+    log_habit: bool = True,
+    occurred_at: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    ts = now_iso()
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL", (task_id,)).fetchone()
+        if not row:
+            raise KeyError(f"Task not found: {task_id}")
+        t_dict = dict(row)
+        already_done = bool(t_dict.get("done_at"))
+        h_row = (
+            conn.execute("SELECT * FROM habits WHERE id = ? AND archived = 0", (t_dict["habit_id"],)).fetchone()
+            if t_dict.get("habit_id")
+            else None
+        )
+
+    logged_event: dict[str, Any] | None = None
+    ev_uuid = t_dict.get("done_event_uuid")
+    if not already_done and log_habit and h_row is not None:
+        step = float(h_row["tap_step"] or 1.0)
+        logged_event = log_event(
+            habit_id=h_row["id"],
+            amount=step,
+            occurred_at=occurred_at or ts,
+            source="tap",
+            note=t_dict["title"],
+            db_path=db_path,
+        )
+        ev_uuid = logged_event.get("client_uuid")
+
+    with get_conn(db_path) as conn:
+        if not already_done:
+            conn.execute(
+                "UPDATE tasks SET done_at = ?, done_event_uuid = ?, updated_at = ? WHERE id = ?",
+                (ts, ev_uuid, ts, task_id),
+            )
+        rows = conn.execute("SELECT * FROM tasks WHERE deleted_at IS NULL").fetchall()
+        enriched = _enrich_tasks(rows, conn)
+
+    done_task = next(t for t in enriched if t["id"] == task_id)
+    unlocked = [
+        t
+        for t in enriched
+        if t.get("blocked_by_task_id") == task_id and not t.get("done_at") and not t.get("is_blocked")
+    ]
+    return {"task": done_task, "event": logged_event, "unlocked": unlocked}
+
+
+def reopen_task(task_id: str, db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    ts = now_iso()
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE tasks SET done_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (ts, task_id),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"Task not found: {task_id}")
+        rows = conn.execute("SELECT * FROM tasks WHERE deleted_at IS NULL").fetchall()
+        enriched = _enrich_tasks(rows, conn)
+    return next(t for t in enriched if t["id"] == task_id)
+
+
+def delete_task(task_id: str, db_path: Path = DEFAULT_DB_PATH) -> None:
+    ts = now_iso()
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (ts, ts, task_id),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"Task not found: {task_id}")
+        # Unblock any children pointing to this deleted task cleanly
+        conn.execute(
+            "UPDATE tasks SET blocked_by_task_id = NULL, updated_at = ? WHERE blocked_by_task_id = ? AND deleted_at IS NULL",
+            (ts, task_id),
+        )

@@ -101,8 +101,10 @@
         const parsed = JSON.parse(raw);
         if (!parsed.state_dimensions) parsed.state_dimensions = DEFAULT_DIMS.map((d) => ({ ...d, created_at: nowIso() }));
         if (!parsed.snapshots) parsed.snapshots = [];
-        if (!parsed.settings) parsed.settings = { checkin_interval_hours: "3", notifications_enabled: "1", quiet_hours_start: "23", quiet_hours_end: "8", nudge_mode: "observed", followup_enabled: "1" };
+        if (!Array.isArray(parsed.tasks)) parsed.tasks = [];
+        if (!parsed.settings) parsed.settings = { checkin_interval_hours: "3", notifications_enabled: "1", quiet_hours_start: "23", quiet_hours_end: "8", nudge_mode: "observed", followup_enabled: "1", task_nudges_enabled: "1" };
         if (parsed.settings.followup_enabled === undefined) parsed.settings.followup_enabled = "1";
+        if (parsed.settings.task_nudges_enabled === undefined) parsed.settings.task_nudges_enabled = "1";
         if (!parsed.next_id) parsed.next_id = 100;
         // Backfill client_uuid & updated_at on any legacy local records so E2EE CRDT merge NEVER skips them
         let migrated = false;
@@ -169,6 +171,7 @@
       edges: [],
       events: [],
       snapshots: [],
+      tasks: [],
       state_dimensions: freshDims,
       settings: {
         checkin_interval_hours: "3",
@@ -178,6 +181,7 @@
         nudge_mode: "observed",
         routing_mode: "observed",
         followup_enabled: "1",
+        task_nudges_enabled: "1",
         mood_groups: JSON.stringify(makeDefaultMoodGroups(freshDims)),
         active_mood_group: "alltag",
         mood_groups_updated_at: tsFresh,
@@ -1978,6 +1982,192 @@
       }
       saveDB(db);
       return { deleted: true, id: sid };
+    }
+
+    // ---- Habit-Coupled One-Off Tasks ("Offene Zettel") ----
+    const cleanDue = (raw) => {
+      const s = String(raw || "").trim();
+      if (!s) return "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`Ungültige Frist: ${s}`);
+      return s;
+    };
+    const checkTaskCycle = (taskId, blockerId) => {
+      if (!blockerId) return;
+      if (taskId && blockerId === taskId) throw new Error("Ein Zettel kann nicht auf sich selbst warten.");
+      const tasksArr = db.tasks || [];
+      const bObj = tasksArr.find((x) => x.id === blockerId && !x.deleted_at);
+      if (!bObj) throw new Error("Vorher-Zettel wurde nicht gefunden.");
+      if (!taskId) return;
+      const seen = new Set([taskId]);
+      let cur = blockerId;
+      for (let i = 0; i < 64 && cur; i++) {
+        if (seen.has(cur)) throw new Error("Zyklus erkannt: Dieser Zettel kann nicht indirekt auf sich selbst warten.");
+        seen.add(cur);
+        const r = tasksArr.find((x) => x.id === cur && !x.deleted_at);
+        cur = r ? r.blocked_by_task_id : null;
+      }
+    };
+    const enrichTasks = (includeDone = true) => {
+      const live = (db.tasks || []).filter((x) => !x.deleted_at);
+      const byId = Object.fromEntries(live.map((x) => [x.id, x]));
+      const habById = Object.fromEntries((db.habits || []).map((h) => [h.id, h]));
+      const blocksCounts = {};
+      for (const tk of live) {
+        if (tk.done_at) continue;
+        const bid = tk.blocked_by_task_id;
+        if (bid && byId[bid] && !byId[bid].done_at) blocksCounts[bid] = (blocksCounts[bid] || 0) + 1;
+      }
+      const list = live
+        .filter((tk) => includeDone || !tk.done_at)
+        .map((tk) => {
+          const blocker = tk.blocked_by_task_id ? byId[tk.blocked_by_task_id] : null;
+          const is_blocked = Boolean(!tk.done_at && blocker && !blocker.done_at);
+          const h = tk.habit_id ? habById[tk.habit_id] : null;
+          return {
+            ...tk,
+            is_blocked,
+            blocker_title: blocker ? blocker.title : "",
+            blocks_count: blocksCounts[tk.id] || 0,
+            habit_name: h ? h.name : "",
+            habit_color: h ? h.color : "",
+            habit_unit: h ? h.unit : "x",
+          };
+        });
+      list.sort((a, b) => {
+        const da = a.done_at ? 1 : 0, dbv = b.done_at ? 1 : 0;
+        if (da !== dbv) return da - dbv;
+        const ba = a.is_blocked ? 1 : 0, bb = b.is_blocked ? 1 : 0;
+        if (ba !== bb) return ba - bb;
+        const ha = a.due_date ? 0 : 1, hb = b.due_date ? 0 : 1;
+        if (ha !== hb) return ha - hb;
+        const dueCmp = (a.due_date || "9999-99-99").localeCompare(b.due_date || "9999-99-99");
+        if (dueCmp !== 0) return dueCmp;
+        const prCmp = (Number(b.priority || 0)) - (Number(a.priority || 0));
+        if (prCmp !== 0) return prCmp;
+        return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+      });
+      return list;
+    };
+
+    if (path === "/api/tasks" && method === "GET") {
+      const inc = u.searchParams.get("include_done") !== "false";
+      return { tasks: enrichTasks(inc) };
+    }
+    if (path === "/api/tasks" && method === "POST") {
+      const title = String(body.title || "").trim().slice(0, 180);
+      if (!title) throw new Error("Titel darf nicht leer sein");
+      const habit_id = String(body.habit_id || "").trim() || null;
+      if (habit_id && !db.habits.some((h) => h.id === habit_id)) throw new Error("Unbekanntes Habit");
+      const blocked_by_task_id = String(body.blocked_by_task_id || "").trim() || null;
+      const tid = `t-${Math.random().toString(16).slice(2, 10)}${Date.now().toString(16).slice(-4)}`;
+      checkTaskCycle(tid, blocked_by_task_id);
+      const ts = nowIso();
+      db.tasks = db.tasks || [];
+      db.tasks.push({
+        id: tid,
+        title,
+        habit_id,
+        priority: Number(body.priority || 0) > 0 ? 1 : 0,
+        due_date: cleanDue(body.due_date),
+        blocked_by_task_id,
+        done_at: null,
+        done_event_uuid: null,
+        created_at: ts,
+        updated_at: ts,
+        deleted_at: null,
+      });
+      saveDB(db);
+      return enrichTasks(true).find((x) => x.id === tid);
+    }
+    const mTkComp = path.match(/^\/api\/tasks\/([^/]+)\/complete$/);
+    if (mTkComp && method === "POST") {
+      const tid = decodeURIComponent(mTkComp[1]);
+      const tk = (db.tasks || []).find((x) => x.id === tid && !x.deleted_at);
+      if (!tk) throw new Error("Zettel nicht gefunden");
+      const ts = nowIso();
+      let loggedEv = null;
+      if (!tk.done_at) {
+        const logHab = body.log_habit !== false;
+        const h = tk.habit_id ? db.habits.find((x) => x.id === tk.habit_id && !x.archived) : null;
+        if (logHab && h) {
+          const step = Number(h.tap_step || 1);
+          const evUuid = `loc-tk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          loggedEv = {
+            id: (db.next_id = (db.next_id || 1) + 1),
+            client_uuid: evUuid,
+            habit_id: h.id,
+            amount: step,
+            occurred_at: body.occurred_at || ts,
+            window_minutes: 0,
+            source: "tap",
+            note: tk.title,
+            created_at: ts,
+            updated_at: ts,
+            deleted_at: null,
+          };
+          db.events.push(loggedEv);
+          tk.done_event_uuid = evUuid;
+        }
+        tk.done_at = ts;
+        tk.updated_at = ts;
+        saveDB(db);
+      }
+      const all = enrichTasks(true);
+      const doneTask = all.find((x) => x.id === tid);
+      const unlocked = all.filter((x) => x.blocked_by_task_id === tid && !x.done_at && !x.is_blocked);
+      return { task: doneTask, event: loggedEv, unlocked };
+    }
+    const mTkReopen = path.match(/^\/api\/tasks\/([^/]+)\/reopen$/);
+    if (mTkReopen && method === "POST") {
+      const tid = decodeURIComponent(mTkReopen[1]);
+      const tk = (db.tasks || []).find((x) => x.id === tid && !x.deleted_at);
+      if (!tk) throw new Error("Zettel nicht gefunden");
+      tk.done_at = null;
+      tk.updated_at = nowIso();
+      saveDB(db);
+      return enrichTasks(true).find((x) => x.id === tid);
+    }
+    const mTk = path.match(/^\/api\/tasks\/([^/]+)$/);
+    if (mTk && method === "PATCH") {
+      const tid = decodeURIComponent(mTk[1]);
+      const tk = (db.tasks || []).find((x) => x.id === tid && !x.deleted_at);
+      if (!tk) throw new Error("Zettel nicht gefunden");
+      if (body.title !== undefined && body.title !== null) {
+        const tClean = String(body.title).trim().slice(0, 180);
+        if (!tClean) throw new Error("Titel darf nicht leer sein");
+        tk.title = tClean;
+      }
+      if ("habit_id" in body) {
+        const hid = String(body.habit_id || "").trim() || null;
+        if (hid && !db.habits.some((h) => h.id === hid)) throw new Error("Unbekanntes Habit");
+        tk.habit_id = hid;
+      }
+      if (body.priority !== undefined && body.priority !== null) tk.priority = Number(body.priority) > 0 ? 1 : 0;
+      if (body.due_date !== undefined && body.due_date !== null) tk.due_date = cleanDue(body.due_date);
+      if ("blocked_by_task_id" in body) {
+        const bid = String(body.blocked_by_task_id || "").trim() || null;
+        checkTaskCycle(tid, bid);
+        tk.blocked_by_task_id = bid;
+      }
+      tk.updated_at = nowIso();
+      saveDB(db);
+      return enrichTasks(true).find((x) => x.id === tid);
+    }
+    if (mTk && method === "DELETE") {
+      const tid = decodeURIComponent(mTk[1]);
+      const tk = (db.tasks || []).find((x) => x.id === tid && !x.deleted_at);
+      if (!tk) throw new Error("Zettel nicht gefunden");
+      const ts = nowIso();
+      tk.deleted_at = ts;
+      tk.updated_at = ts;
+      for (const ch of db.tasks || []) {
+        if (!ch.deleted_at && ch.blocked_by_task_id === tid) {
+          ch.blocked_by_task_id = null;
+          ch.updated_at = ts;
+        }
+      }
+      saveDB(db);
+      return { ok: true };
     }
 
     throw new Error(`Unbekannter lokaler Endpunkt: ${method} ${path}`);

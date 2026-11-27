@@ -169,6 +169,7 @@ def export_local_state_for_vault(db_path: Path = DEFAULT_DB_PATH) -> dict[str, A
         events = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id ASC").fetchall()]
         dims = [dict(r) for r in conn.execute("SELECT * FROM state_dimensions ORDER BY sort_order ASC").fetchall()]
         snaps_raw = conn.execute("SELECT * FROM snapshots ORDER BY id ASC").fetchall()
+        tasks = [dict(r) for r in conn.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchall()]
     snaps = []
     for r in snaps_raw:
         d = dict(r)
@@ -198,6 +199,7 @@ def export_local_state_for_vault(db_path: Path = DEFAULT_DB_PATH) -> dict[str, A
             "nudge_mode",
             "routing_mode",
             "followup_enabled",
+            "task_nudges_enabled",
             "mood_groups",
             "mood_groups_updated_at",
             "active_mood_group",
@@ -212,13 +214,14 @@ def export_local_state_for_vault(db_path: Path = DEFAULT_DB_PATH) -> dict[str, A
         "events": events,
         "state_dimensions": dims,
         "snapshots": snaps,
+        "tasks": tasks,
         "settings": sync_settings,
     }
 
 
 def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> dict[str, int]:
     """Conflict-free CRDT/LWW merge of a decrypted remote vault into local SQLite WAL."""
-    stats = {"habits": 0, "edges": 0, "events": 0, "snapshots": 0, "dimensions": 0}
+    stats = {"habits": 0, "edges": 0, "events": 0, "snapshots": 0, "dimensions": 0, "tasks": 0}
     ts_now = now_iso()
 
     with get_conn(db_path) as conn:
@@ -475,6 +478,65 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                     )
                     stats["snapshots"] += 1
 
+        # 5b. Tasks ("Offene Zettel" — two-pass LWW by id so blocked_by_task_id FKs never fail on ordering!)
+        rem_tasks = [rt for rt in (remote.get("tasks") or []) if isinstance(rt, dict) and rt.get("id") and rt.get("title")]
+        local_tasks = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM tasks").fetchall()}
+        pending_blockers: list[tuple[str, str | None]] = []
+        for rt in rem_tasks:
+            tid = str(rt["id"])
+            r_upd = rt.get("updated_at") or rt.get("created_at") or ts_now
+            r_hid = rt.get("habit_id") if rt.get("habit_id") in local_habits else None
+            lt = local_tasks.get(tid)
+            if lt is None:
+                conn.execute(
+                    """
+                    INSERT INTO tasks(id, title, habit_id, priority, due_date, blocked_by_task_id, done_at, done_event_uuid, created_at, updated_at, deleted_at)
+                    VALUES(?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        tid,
+                        str(rt["title"])[:180],
+                        r_hid,
+                        1 if int(rt.get("priority") or 0) > 0 else 0,
+                        str(rt.get("due_date") or ""),
+                        rt.get("done_at"),
+                        rt.get("done_event_uuid"),
+                        rt.get("created_at") or ts_now,
+                        r_upd,
+                        rt.get("deleted_at"),
+                    ),
+                )
+                local_tasks[tid] = dict(rt)
+                pending_blockers.append((tid, rt.get("blocked_by_task_id") or None))
+                stats["tasks"] += 1
+            else:
+                l_upd = lt.get("updated_at") or lt.get("created_at") or ""
+                if r_upd > l_upd or (r_upd == l_upd and rt.get("deleted_at") and not lt.get("deleted_at")):
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                        SET title=?, habit_id=?, priority=?, due_date=?, done_at=?, done_event_uuid=?, updated_at=?, deleted_at=?
+                        WHERE id=?
+                        """,
+                        (
+                            str(rt["title"])[:180],
+                            r_hid,
+                            1 if int(rt.get("priority") or 0) > 0 else 0,
+                            str(rt.get("due_date") or ""),
+                            rt.get("done_at"),
+                            rt.get("done_event_uuid"),
+                            r_upd,
+                            rt.get("deleted_at"),
+                            tid,
+                        ),
+                    )
+                    pending_blockers.append((tid, rt.get("blocked_by_task_id") or None))
+                    stats["tasks"] += 1
+        all_task_ids = {r[0] for r in conn.execute("SELECT id FROM tasks").fetchall()}
+        for tid, bid in pending_blockers:
+            safe_bid = bid if (bid and bid != tid and bid in all_task_ids) else None
+            conn.execute("UPDATE tasks SET blocked_by_task_id=? WHERE id=?", (safe_bid, tid))
+
         # 6. Synced settings (mood_groups via timezone-safe LWW on mood_groups_updated_at)
         rem_settings = remote.get("settings") or {}
         if "mood_groups" in rem_settings:
@@ -497,6 +559,11 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                 conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('mood_groups_updated_at', ?)", (r_mg_upd or ts_now,))
                 if "active_mood_group" in rem_settings:
                     conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('active_mood_group', ?)", (str(rem_settings["active_mood_group"]),))
+        if "task_nudges_enabled" in rem_settings:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('task_nudges_enabled', ?)",
+                ("1" if str(rem_settings["task_nudges_enabled"]) != "0" else "0",),
+            )
 
     return stats
 

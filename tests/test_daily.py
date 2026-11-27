@@ -1349,6 +1349,84 @@ class TestDailyCore(unittest.TestCase):
         self.assertAlmostEqual(sn_after_retry[sn1["id"]], 4.0, places=2)
         self.assertAlmostEqual(sn_after_retry[sn2["id"]], 7.0, places=2)
 
+    def test_habit_coupled_tasks_blocking_nudges_and_e2ee(self) -> None:
+        from unittest.mock import patch
+        from daily.nudges import NudgeScheduler, resolve_notification_options
+
+        app = create_app(db_path=self.db, enable_nudge_loop=False)
+        client = TestClient(app)
+
+        office = client.post("/api/habits", json={"name": "Office", "kind": "min", "target": 1}).json()
+        # Create prerequisite + blocked parent (e.g. Screenshots -> Prototype Fund) + due task
+        shots = client.post("/api/tasks", json={"title": "Screenshots machen", "habit_id": office["id"], "priority": 1}).json()
+        due_soon = (date.today() + timedelta(days=2)).isoformat()
+        fund = client.post(
+            "/api/tasks",
+            json={
+                "title": "Prototype Fund Antrag einreichen",
+                "habit_id": office["id"],
+                "due_date": due_soon,
+                "blocked_by_task_id": shots["id"],
+            },
+        ).json()
+        self.assertTrue(fund["is_blocked"])
+        self.assertEqual(fund["blocker_title"], "Screenshots machen")
+
+        # Cycle protection: Screenshots cannot wait on Prototype Fund!
+        cyc = client.patch(f"/api/tasks/{shots['id']}", json={"blocked_by_task_id": fund["id"]})
+        self.assertEqual(cyc.status_code, 400)
+
+        # Notification options BEFORE completing prerequisite: surfaces unblocked Screenshots, NEVER blocked Prototype Fund!
+        open_before = client.get("/api/tasks?include_done=false").json()["tasks"]
+        opts_before = resolve_notification_options(office, [office], [], {}, tasks=open_before, task_nudges_enabled=True)
+        self.assertIn("Screenshots machen", opts_before)
+        self.assertNotIn("Prototype Fund Antrag einreichen", opts_before)
+
+        # Complete prerequisite -> auto-logs Office +1 AND unlocks Prototype Fund!
+        comp = client.post(f"/api/tasks/{shots['id']}/complete", json={"log_habit": True}).json()
+        self.assertIsNotNone(comp["event"])
+        self.assertEqual(comp["event"]["habit_id"], office["id"])
+        self.assertEqual(comp["event"]["note"], "Screenshots machen")
+        self.assertEqual([u["id"] for u in comp["unlocked"]], [fund["id"]])
+
+        summary = client.get(f"/api/today?day={date.today().isoformat()}").json()
+        office_card = next(h for h in summary["habits"] if h["id"] == office["id"])
+        self.assertEqual(office_card["direct"], 1.0)
+
+        # Notification options AFTER unlocking: Prototype Fund now surfaces cleanly!
+        open_after = client.get("/api/tasks?include_done=false").json()["tasks"]
+        opts_after = resolve_notification_options(office, [office], [], {}, tasks=open_after, task_nudges_enabled=True)
+        self.assertIn("Prototype Fund Antrag einreichen", opts_after)
+        self.assertNotIn("Screenshots machen", opts_after)
+
+        # Calm deadline nudge fires once for unblocked due_soon task when task_nudges_enabled=1, silent when 0!
+        sched = NudgeScheduler(db_path=self.db, port=8090)
+        noon = datetime.combine(date.today(), datetime.min.time()).replace(hour=12, minute=0)
+        with patch("daily.nudges.send_desktop_notification", return_value=True):
+            fired = sched.evaluate_once(now=noon)
+        self.assertTrue(any(f["type"] == "task_due" and f["task_id"] == fund["id"] for f in fired))
+
+        # Toggle task_nudges_enabled=0 in Setup -> no deadline pings & no task options!
+        client.patch("/api/settings", json={"task_nudges_enabled": 0})
+        sched2 = NudgeScheduler(db_path=self.db, port=8090)
+        with patch("daily.nudges.send_desktop_notification", return_value=True):
+            fired_off = sched2.evaluate_once(now=noon)
+        self.assertFalse(any(f["type"] == "task_due" for f in fired_off))
+
+        # E2EE round-trip: tasks + blocked_by_task_id + task_nudges_enabled sync cleanly to another device
+        from daily.db import get_settings, list_tasks as db_list_tasks
+        from daily.e2ee import export_local_state_for_vault, merge_remote_state_into_db
+        other_db = Path(self.tmp.name) / "tasks_sync_target.db"
+        init_db(other_db)
+        merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
+        synced_tasks = {t["id"]: t for t in db_list_tasks(include_done=True, db_path=other_db)}
+        self.assertIn(shots["id"], synced_tasks)
+        self.assertIn(fund["id"], synced_tasks)
+        self.assertIsNotNone(synced_tasks[shots["id"]]["done_at"])
+        self.assertEqual(synced_tasks[fund["id"]]["blocked_by_task_id"], shots["id"])
+        self.assertFalse(synced_tasks[fund["id"]]["is_blocked"])
+        self.assertEqual(get_settings(other_db).get("task_nudges_enabled"), "0")
+
 
 if __name__ == "__main__":
     unittest.main()

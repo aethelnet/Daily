@@ -18,6 +18,7 @@ from .db import (
     list_habits,
     list_snapshots,
     list_state_dimensions,
+    list_tasks,
 )
 from .ml import DEFAULT_TABPFN_THRESHOLD, predict_contextual_nudges
 
@@ -52,9 +53,13 @@ def resolve_notification_options(
     edges: list[dict[str, Any]],
     today_direct: dict[str, float],
     max_options: int = 4,
+    tasks: list[dict[str, Any]] | None = None,
+    task_nudges_enabled: bool = True,
 ) -> list[str]:
-    """Build concrete option suggestions straight from the signed (+) routing graph!
+    """Build concrete option suggestions straight from unblocked habit tasks + the signed (+) routing graph!
 
+    - Actionable (unblocked) open tasks attached to this habit surface first so when TabPFN or an observed peak
+      says "Good moment for Office", the notification directly suggests concrete next steps (never blocked ones!).
     - For min/neutral goals (e.g. 'Kreativität'): surfaces active cards routing with + into this goal
       (e.g. 'Buch: Dune', 'Bild gemalt', 'Musik'), prioritizing cards not yet touched today.
     - For max limits (e.g. 'Late Coffee'): uses explicit nudge_alternatives PLUS active cards that positively
@@ -71,7 +76,17 @@ def resolve_notification_options(
             seen.add(clean.lower())
             options.append(clean)
 
-    # 1. Explicit alternatives typed by the user come first
+    # 0. Actionable (unblocked) open one-off tasks attached to this habit (up to 2 concrete next actions!)
+    if task_nudges_enabled and tasks:
+        habit_tasks = [
+            t
+            for t in tasks
+            if t.get("habit_id") == hid and not t.get("done_at") and not t.get("deleted_at") and not t.get("is_blocked")
+        ]
+        for tk in habit_tasks[:2]:
+            add_opt(str(tk.get("title") or ""))
+
+    # 1. Explicit alternatives typed by the user come next
     raw_alts = (habit.get("nudge_alternatives") or "").strip()
     if raw_alts:
         for part in raw_alts.replace(";", ",").split(","):
@@ -150,13 +165,22 @@ class NudgeScheduler:
         edges = list_edges(db_path=self.db_path)
         events_14 = list_events(days_back=14, db_path=self.db_path)
         peaks = compute_hourly_peaks(habits, events_14)
+        open_tasks = list_tasks(include_done=False, db_path=self.db_path)
+        task_nudges_on = settings.get("task_nudges_enabled", "1") == "1"
 
         day_summary = compute_day_summary(day=today, db_path=self.db_path)
         today_cards = {h["id"]: h for h in day_summary["habits"]}
         today_direct = {hid: float(card["direct"]) for hid, card in today_cards.items()}
 
         def format_prompt(habit_obj: dict[str, Any], header_label: str, reason: str = "") -> tuple[str, str]:
-            opts = resolve_notification_options(habit_obj, habits, edges, today_direct)
+            opts = resolve_notification_options(
+                habit_obj,
+                habits,
+                edges,
+                today_direct,
+                tasks=open_tasks,
+                task_nudges_enabled=task_nudges_on,
+            )
             if habit_obj.get("kind") == "min":
                 title = f"Daily · Guter Moment für {habit_obj['name']}"
                 opt_line = f"Optionen: {' · '.join(opts)}" if opts else f"Kurzer Impuls für {habit_obj['name']}"
@@ -303,6 +327,37 @@ class NudgeScheduler:
                                 "body": body,
                             }
                         )
+
+        # 1d. Calm real-deadline reminder (ONLY for unblocked open tasks with an explicit due_date within <= 3 days, max 1/day)
+        if task_nudges_on and open_tasks:
+            today_date = now.date()
+            for tk in open_tasks:
+                if tk.get("is_blocked") or not tk.get("due_date"):
+                    continue
+                try:
+                    due_d = datetime.fromisoformat(tk["due_date"]).date()
+                except ValueError:
+                    continue
+                days_left = (due_d - today_date).days
+                if days_left > 3:
+                    continue
+                dkey = f"task_due:{today}:{tk['id']}"
+                if dkey in self._fired_keys:
+                    continue
+                self._fired_keys.add(dkey)
+                if days_left < 0:
+                    when_lbl = f"Frist vor {abs(days_left)} T."
+                elif days_left == 0:
+                    when_lbl = "Frist heute"
+                elif days_left == 1:
+                    when_lbl = "Frist morgen"
+                else:
+                    when_lbl = f"Frist in {days_left} Tagen"
+                h_ctx = f" ({tk['habit_name']})" if tk.get("habit_name") else ""
+                title = f"Daily · {when_lbl}{h_ctx}"
+                body = f"{tk['title']}\nhttp://127.0.0.1:{self.port}"
+                send_desktop_notification(title, body)
+                fired.append({"type": "task_due", "task_id": tk["id"], "title": title, "body": body})
 
         # 2. Idle retro check-in prompt
         interval_h = max(1, int(settings.get("checkin_interval_hours", "3")))
