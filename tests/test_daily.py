@@ -1327,12 +1327,27 @@ class TestDailyCore(unittest.TestCase):
         self.assertEqual(fc_curve["scale_max"], 6)
         self.assertEqual(max(pt["v"] for pt in fc_curve["timeline"]["actual"]), 6.0)
 
-        # 5. E2EE merge propagates custom scale_max cleanly to second device
+        # 5. E2EE merge propagates custom scale_max & snapshot scales cleanly to second device
         other_db = Path(self.tmp.name) / "scale_sync_target.db"
         init_db(other_db)
         merge_remote_state_into_db(export_local_state_for_vault(self.db), db_path=other_db)
         other_dims = {d["id"]: d for d in list_state_dimensions(db_path=other_db)}
         self.assertEqual(other_dims[fc["id"]]["scale_max"], 6)
+
+        # 6. Idempotent double-conversion armor: even if a stale peer reverted scale_max to 5
+        # while snapshots already carry scales={'stimmung': 7}, setting scale_max=7 MUST NOT double-convert!
+        client.patch("/api/state/dimensions/stimmung", json={"scale_max": 7})
+        sn_7 = {s["id"]: s for s in client.get(f"/api/today?day={today_iso}").json()["snapshots"]}
+        self.assertAlmostEqual(sn_7[sn1["id"]]["ratings"]["stimmung"], 4.0, places=2)
+        self.assertEqual(sn_7[sn1["id"]]["scales"]["stimmung"], 7)
+        from daily.db import get_conn
+        with get_conn(self.db) as conn:
+            conn.execute("UPDATE state_dimensions SET scale_max = 5 WHERE id = 'stimmung'")
+        res_retry = client.patch("/api/state/dimensions/stimmung", json={"scale_max": 7}).json()
+        self.assertEqual(res_retry.get("rescaled_snapshots", 0), 0)
+        sn_after_retry = {s["id"]: s["ratings"]["stimmung"] for s in client.get(f"/api/today?day={today_iso}").json()["snapshots"]}
+        self.assertAlmostEqual(sn_after_retry[sn1["id"]], 4.0, places=2)
+        self.assertAlmostEqual(sn_after_retry[sn2["id"]], 7.0, places=2)
 
 
 if __name__ == "__main__":

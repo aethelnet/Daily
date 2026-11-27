@@ -181,8 +181,14 @@
       } else {
         const rUpd = rd.updated_at || rd.created_at || "";
         const lUpd = ld.updated_at || ld.created_at || "";
-        if (rUpd > lUpd) {
-          Object.assign(ld, rd, { color: rd.color || ld.color });
+        const rHasScale = rd.scale_max != null;
+        const rScale = rHasScale ? Math.max(2, Math.min(10, Math.round(Number(rd.scale_max || 5)))) : null;
+        const lScale = Math.max(2, Math.min(10, Math.round(Number(ld.scale_max || 5))));
+        if (rUpd > lUpd || (rUpd === lUpd && rScale !== null && rScale !== 5 && lScale === 5)) {
+          Object.assign(ld, rd, {
+            color: rd.color || ld.color,
+            scale_max: rScale !== null ? rScale : lScale,
+          });
         }
       }
     }

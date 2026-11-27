@@ -177,6 +177,11 @@ def export_local_state_for_vault(db_path: Path = DEFAULT_DB_PATH) -> dict[str, A
         except Exception:
             d["ratings"] = {}
         try:
+            raw_sc = json.loads(d.pop("scales_json", "{}") or "{}")
+            d["scales"] = raw_sc if isinstance(raw_sc, dict) else {}
+        except Exception:
+            d["scales"] = {}
+        try:
             d["causes"] = json.loads(d.pop("causes_json", "[]") or "[]")
         except Exception:
             d["causes"] = []
@@ -322,7 +327,11 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
             else:
                 ld = local_dims[did]
                 l_upd = ld.get("updated_at") or ld.get("created_at") or ""
-                if r_upd > l_upd:
+                r_has_scale = rd.get("scale_max") is not None
+                r_scale = max(2, min(10, int(rd.get("scale_max") or 5))) if r_has_scale else None
+                l_scale = max(2, min(10, int(ld.get("scale_max") or 5)))
+                if r_upd > l_upd or (r_upd == l_upd and r_scale is not None and r_scale != 5 and l_scale == 5):
+                    next_scale = r_scale if r_scale is not None else l_scale
                     conn.execute(
                         """
                         UPDATE state_dimensions
@@ -334,7 +343,7 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                             rd.get("low_label", ld.get("low_label", "")),
                             rd.get("high_label", ld.get("high_label", "")),
                             rd.get("color", ""),
-                            max(2, min(10, int(rd.get("scale_max") or ld.get("scale_max") or 5))),
+                            next_scale,
                             int(rd.get("sort_order", ld.get("sort_order", 0))),
                             1 if rd.get("archived") else 0,
                             r_upd,
@@ -426,18 +435,20 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                 continue
             r_upd = rsn.get("updated_at") or rsn.get("created_at") or ts_now
             r_json = json.dumps(rsn.get("ratings") or {}, ensure_ascii=False)
+            s_json = json.dumps(rsn.get("scales") or {}, ensure_ascii=False)
             c_json = json.dumps(rsn.get("causes") or [], ensure_ascii=False)
             existing = conn.execute("SELECT * FROM snapshots WHERE client_uuid = ?", (c_uuid,)).fetchone()
             if not existing:
                 conn.execute(
                     """
-                    INSERT INTO snapshots(client_uuid, occurred_at, ratings_json, causes_json, note, created_at, updated_at, deleted_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO snapshots(client_uuid, occurred_at, ratings_json, scales_json, causes_json, note, created_at, updated_at, deleted_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         c_uuid,
                         rsn.get("occurred_at") or ts_now,
                         r_json,
+                        s_json,
                         c_json,
                         rsn.get("note", ""),
                         rsn.get("created_at") or ts_now,
@@ -450,10 +461,11 @@ def merge_remote_state_into_db(remote: dict[str, Any], db_path: Path = DEFAULT_D
                 l_upd = existing["updated_at"] or existing["created_at"] or ""
                 if r_upd > l_upd or (r_upd == l_upd and rsn.get("deleted_at") and not existing["deleted_at"]):
                     conn.execute(
-                        "UPDATE snapshots SET occurred_at=?, ratings_json=?, causes_json=?, note=?, updated_at=?, deleted_at=? WHERE id=?",
+                        "UPDATE snapshots SET occurred_at=?, ratings_json=?, scales_json=?, causes_json=?, note=?, updated_at=?, deleted_at=? WHERE id=?",
                         (
                             rsn.get("occurred_at") or existing["occurred_at"],
                             r_json,
+                            s_json if (rsn.get("scales") or {}) else (existing["scales_json"] if "scales_json" in existing.keys() else "{}"),
                             c_json,
                             rsn.get("note", existing["note"]),
                             r_upd,

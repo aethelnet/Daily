@@ -259,6 +259,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
                 client_uuid TEXT UNIQUE,
                 occurred_at TEXT NOT NULL,
                 ratings_json TEXT NOT NULL DEFAULT '{}',
+                scales_json TEXT NOT NULL DEFAULT '{}',
                 causes_json TEXT NOT NULL DEFAULT '[]',
                 note TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -299,6 +300,9 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> Path:
         if "updated_at" not in dim_cols:
             conn.execute("ALTER TABLE state_dimensions ADD COLUMN updated_at TEXT")
         conn.execute("UPDATE state_dimensions SET updated_at = created_at WHERE updated_at IS NULL")
+        sn_cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+        if "scales_json" not in sn_cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN scales_json TEXT NOT NULL DEFAULT '{}'")
         for dim_id, cur_color in conn.execute("SELECT id, color FROM state_dimensions").fetchall():
             if not (cur_color or "").strip():
                 conn.execute(
@@ -1154,10 +1158,10 @@ def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = 
         old_scale = _clean_scale_max(prev_row["scale_max"] if "scale_max" in prev_row.keys() else 5, 5)
         conn.execute(f"UPDATE state_dimensions SET {', '.join(sets)} WHERE id = ?", vals)
 
-        # Proportionally rescale all existing ratings for this axis when scale_max changes (e.g. 1-5 -> 1-7 or 1-7 -> 1-5)
+        # Proportionally rescale all existing ratings for this axis when scale_max changes (idempotent via per-snapshot scales_json!)
         if next_scale is not None and next_scale != old_scale:
             sn_rows = conn.execute(
-                "SELECT id, ratings_json FROM snapshots WHERE deleted_at IS NULL AND ratings_json LIKE ?",
+                "SELECT id, ratings_json, scales_json FROM snapshots WHERE deleted_at IS NULL AND ratings_json LIKE ?",
                 (f'%"{dim_id}"%',),
             ).fetchall()
             for sr in sn_rows:
@@ -1167,13 +1171,39 @@ def update_state_dimension(dim_id: str, fields: dict[str, Any], db_path: Path = 
                     continue
                 if dim_id not in rmap or rmap[dim_id] is None:
                     continue
+                try:
+                    smap = json.loads(sr["scales_json"] or "{}")
+                    if not isinstance(smap, dict):
+                        smap = {}
+                except Exception:
+                    smap = {}
                 old_v = float(rmap[dim_id])
-                norm = max(0.0, min(1.0, (old_v - 1.0) / float(max(1, old_scale - 1))))
+                has_recorded_scale = dim_id in smap and smap[dim_id] is not None
+                src_scale = _clean_scale_max(smap[dim_id], old_scale) if has_recorded_scale else old_scale
+                if src_scale == next_scale:
+                    # Already stored on next_scale -> NEVER double-convert!
+                    if not has_recorded_scale or smap.get(dim_id) != next_scale:
+                        smap[dim_id] = next_scale
+                        conn.execute(
+                            "UPDATE snapshots SET scales_json = ? WHERE id = ?",
+                            (json.dumps(smap, ensure_ascii=False), sr["id"]),
+                        )
+                    continue
+                if not has_recorded_scale and old_v > float(old_scale):
+                    # Legacy snapshot value already exceeds old_scale -> already on a larger scale; stamp without corrupting!
+                    smap[dim_id] = max(next_scale, int(round(old_v)))
+                    conn.execute(
+                        "UPDATE snapshots SET scales_json = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(smap, ensure_ascii=False), ts_now, sr["id"]),
+                    )
+                    continue
+                norm = max(0.0, min(1.0, (old_v - 1.0) / float(max(1, src_scale - 1))))
                 new_v = round(1.0 + norm * float(next_scale - 1), 2)
                 rmap[dim_id] = max(1.0, min(float(next_scale), new_v))
+                smap[dim_id] = next_scale
                 conn.execute(
-                    "UPDATE snapshots SET ratings_json = ?, updated_at = ? WHERE id = ?",
-                    (json.dumps(rmap, ensure_ascii=False), ts_now, sr["id"]),
+                    "UPDATE snapshots SET ratings_json = ?, scales_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(rmap, ensure_ascii=False), json.dumps(smap, ensure_ascii=False), ts_now, sr["id"]),
                 )
                 rescaled_count += 1
 
@@ -1199,6 +1229,11 @@ def _decode_snapshot(row: sqlite3.Row) -> dict[str, Any]:
         d["ratings"] = json.loads(d.pop("ratings_json", "{}") or "{}")
     except Exception:
         d["ratings"] = {}
+    try:
+        raw_scales = json.loads(d.pop("scales_json", "{}") or "{}")
+        d["scales"] = raw_scales if isinstance(raw_scales, dict) else {}
+    except Exception:
+        d["scales"] = {}
     try:
         d["causes"] = json.loads(d.pop("causes_json", "[]") or "[]")
     except Exception:
@@ -1227,13 +1262,15 @@ def create_snapshot(
             for r in conn.execute("SELECT id, scale_max FROM state_dimensions").fetchall()
         }
         clean_ratings: dict[str, float] = {}
+        clean_scales: dict[str, int] = {}
         for k, v in (ratings or {}).items():
             if v is None or v == "":
                 continue
             val = float(v)
-            s_max = float(dim_scales.get(str(k), 5))
-            if 1.0 <= val <= s_max:
+            s_max = int(dim_scales.get(str(k), 5))
+            if 1.0 <= val <= float(s_max):
                 clean_ratings[str(k)] = round(val, 2)
+                clean_scales[str(k)] = s_max
         if not clean_ratings and not clean_note and not clean_causes:
             raise ValueError("Bitte mindestens einen Wert, eine Ursache oder eine Notiz eintragen")
 
@@ -1242,10 +1279,19 @@ def create_snapshot(
             return _decode_snapshot(existing)
         cur = conn.execute(
             """
-            INSERT INTO snapshots(client_uuid, occurred_at, ratings_json, causes_json, note, created_at, updated_at, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO snapshots(client_uuid, occurred_at, ratings_json, scales_json, causes_json, note, created_at, updated_at, deleted_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
-            (c_uuid, ts, json.dumps(clean_ratings, ensure_ascii=False), json.dumps(clean_causes, ensure_ascii=False), clean_note, ts_now, ts_now),
+            (
+                c_uuid,
+                ts,
+                json.dumps(clean_ratings, ensure_ascii=False),
+                json.dumps(clean_scales, ensure_ascii=False),
+                json.dumps(clean_causes, ensure_ascii=False),
+                clean_note,
+                ts_now,
+                ts_now,
+            ),
         )
         row = conn.execute("SELECT * FROM snapshots WHERE id = ?", (cur.lastrowid,)).fetchone()
     return _decode_snapshot(row)
@@ -1263,16 +1309,20 @@ def update_snapshot(snapshot_id: int, fields: dict[str, Any], db_path: Path = DE
         }
 
         ratings = cur_dec["ratings"]
+        scales = dict(cur_dec.get("scales") or {})
         if "ratings" in fields and fields["ratings"] is not None:
             clean_ratings: dict[str, float] = {}
+            clean_scales: dict[str, int] = {}
             for k, v in (fields["ratings"] or {}).items():
                 if v is None or v == "":
                     continue
                 val = float(v)
-                s_max = float(dim_scales.get(str(k), 5))
-                if 1.0 <= val <= s_max:
+                s_max = int(dim_scales.get(str(k), 5))
+                if 1.0 <= val <= float(s_max):
                     clean_ratings[str(k)] = round(val, 2)
+                    clean_scales[str(k)] = s_max
             ratings = clean_ratings
+            scales = clean_scales
 
         causes = cur_dec["causes"]
         if "causes" in fields and fields["causes"] is not None:
@@ -1293,12 +1343,13 @@ def update_snapshot(snapshot_id: int, fields: dict[str, Any], db_path: Path = DE
         conn.execute(
             """
             UPDATE snapshots
-            SET occurred_at = ?, ratings_json = ?, causes_json = ?, note = ?, updated_at = ?
+            SET occurred_at = ?, ratings_json = ?, scales_json = ?, causes_json = ?, note = ?, updated_at = ?
             WHERE id = ? AND deleted_at IS NULL
             """,
             (
                 occurred_at,
                 json.dumps(ratings, ensure_ascii=False),
+                json.dumps(scales, ensure_ascii=False),
                 json.dumps(causes, ensure_ascii=False),
                 note,
                 now_iso(),
