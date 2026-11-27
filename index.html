@@ -121,6 +121,37 @@
       <div id="habit-grid" class="habit-grid"></div>
       <div id="dormant-habits-wrap" class="dormant-wrap hidden"></div>
 
+      <div id="tasks-panel" class="panel tasks-panel">
+        <div class="panel-head">
+          <h3><span data-i18n="tasks_title">Offene Zettel</span> <span id="tasks-count" class="muted mono"></span></h3>
+          <div class="row-inline" style="gap:6px;">
+            <span id="tasks-filter-chip" class="chip hidden"></span>
+            <span class="muted sm-text tasks-hint-txt" data-i18n="tasks_hint">Abhaken zählt automatisch fürs verknüpfte Habit</span>
+          </div>
+        </div>
+        <form id="task-quick-form" class="task-quick-form">
+          <input type="text" id="tk-title" autocomplete="off" data-i18n-placeholder="tk_title_ph" placeholder="+ Zettel parken (z. B. Überweisung, Screenshots machen)…" required />
+          <select id="tk-habit" data-i18n-title="tk_habit_title" title="Optionales Habit (wird beim Abhaken automatisch geloggt)">
+            <option value="" data-i18n="tk_no_habit">Ohne Habit</option>
+          </select>
+          <button type="button" class="pill task-prio-pill" id="tk-prio-btn" data-active="0" data-i18n="tk_prio_soon" data-i18n-title="tk_prio_title" title="Nach oben holen (Bald)">↑ Bald</button>
+          <input type="date" id="tk-due" class="compact-input task-due-inp" data-i18n-title="tk_due_title" title="Optionale echte Frist (z. B. Zahlungsziel)" />
+          <select id="tk-blocker" class="hidden" data-i18n-title="tk_blocker_title" title="Erst machbar nach einem anderen Zettel">
+            <option value="" data-i18n="tk_no_blocker">Erst nach …</option>
+          </select>
+          <button type="submit" class="btn primary sm" data-i18n="tk_add_btn">+</button>
+        </form>
+        <div id="tasks-actionable-list" class="task-list"></div>
+        <details id="tasks-blocked-details" class="task-sub-details hidden">
+          <summary><span data-i18n="tasks_waiting_head">Wartet auf Vorher-Schritt</span> <span id="tasks-blocked-count" class="muted mono"></span></summary>
+          <div id="tasks-blocked-list" class="task-list" style="margin-top:6px;"></div>
+        </details>
+        <details id="tasks-done-details" class="task-sub-details hidden">
+          <summary><span data-i18n="tasks_done_head">Kürzlich erledigt</span> <span id="tasks-done-count" class="muted mono"></span></summary>
+          <div id="tasks-done-list" class="task-list" style="margin-top:6px;"></div>
+        </details>
+      </div>
+
       <div class="panel log-panel">
         <div class="panel-head">
           <h3><span data-i18n="day_log">Tages-Log</span> <span id="log-count" class="muted mono"></span></h3>
@@ -401,6 +432,10 @@
               <label class="check-row sm-text">
                 <input type="checkbox" id="set-followup" checked />
                 <span data-i18n="notif_followup">Stille Nachfrage (+45 Min. nach festem Anker, falls noch nichts eingetragen)</span>
+              </label>
+              <label class="check-row sm-text">
+                <input type="checkbox" id="set-task-nudges" checked />
+                <span data-i18n="notif_task_nudges">Offene Zettel in Impulsen anbieten &amp; bei echter Frist (≤ 3 Tage) erinnern</span>
               </label>
               <div class="row-inline">
                 <label class="inline-setting">

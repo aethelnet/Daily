@@ -104,6 +104,9 @@ const state = {
   stateDims: [],
   archivedDims: [],
   edges: [],
+  tasks: [],
+  taskFilterHabitId: null,
+  addingPrereqForTaskId: null,
   settings: {},
   tags: [],
   filterKind: localStorage.getItem("daily_today_focus") === "1" ? "focus" : "all",
@@ -444,13 +447,15 @@ async function loadToday() {
   syncSortUI();
   try {
     await flushOfflineQueue(true);
-    const [data, meta] = await Promise.all([
+    const [data, meta, tkRes] = await Promise.all([
       api(`/api/today?day=${encodeURIComponent(state.day)}`),
       api("/api/habits"),
+      api("/api/tasks").catch(() => ({ tasks: [] })),
     ]);
     state.todayData = data;
     state.habits = data.habits;
     state.edges = data.active_edges || meta.edges || [];
+    state.tasks = (tkRes && tkRes.tasks) || [];
     state.settings = meta.settings || {};
     state.moodGroups = parseMoodGroups(state.settings);
     const savedMg = String(state.settings.active_mood_group || "alltag");
@@ -701,6 +706,10 @@ function renderHabitCardHtml(h, opts = {}) {
   const activePillHtml = isActive
     ? `<span class="active-chip" data-active-since="${esc(h.active_since)}" data-active-id="${esc(h.id)}" title="${esc(t("session_edit_start_title"))}"><span class="active-dot"></span><span data-active-txt="1">${esc(t("active_badge", { dur: activeDurTxt }))}</span></span>`
     : "";
+  const openHabitTaskCount = (state.tasks || []).filter((tk) => tk.habit_id === h.id && !tk.done_at && !tk.is_blocked).length;
+  const taskPillHtml = openHabitTaskCount > 0
+    ? `<button type="button" class="chip task-chip" data-focus-tasks-habit="${esc(h.id)}" title="${esc(t("tasks_title"))}">${esc(openHabitTaskCount === 1 ? t("tk_badge_one") : t("tk_badge_many", { n: openHabitTaskCount }))}</button>`
+    : "";
 
   const sessionBtnHtml =
     hasBlockMode && !isMeasure
@@ -721,7 +730,7 @@ function renderHabitCardHtml(h, opts = {}) {
   <div class="habit-card status-${esc(h.status)} ${extraCls}" style="--card-accent:${esc(h.color)}" data-id="${esc(h.id)}" data-has-links="${hasLinks ? "1" : "0"}">
     <div class="hc-top">
       <span class="hc-name">${esc(h.name)}${caret}</span>
-      <div class="row-inline hc-badges">${activePillHtml}${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
+      <div class="row-inline hc-badges">${activePillHtml}${taskPillHtml}${relTag}<span class="badge ${esc(kindBadgeClass(h))}">${esc(kindBadgeText(h))}</span></div>
     </div>
     <div class="hc-metrics">
       <span class="hc-val-wrap"><span class="hc-big${isMeasure && !hasTodayMeasure ? " is-empty" : ""}">${heroDisplay}</span>${denomHtml}</span>
@@ -1189,6 +1198,9 @@ function renderToday(data) {
     }
   }
 
+  // Habit-coupled one-off notes ("Offene Zettel")
+  renderTasksPanel();
+
   // Day log (events + Momentaufnahmen interleaved chronologically!)
   if (!state.logRange) {
     renderLogTimeline({
@@ -1198,6 +1210,197 @@ function renderToday(data) {
       habits: data.habits || [],
       singleDay: data.day,
     });
+  }
+}
+
+function formatTaskDueBadge(dueIso) {
+  if (!dueIso) return "";
+  const todayIso = localDateISO(new Date());
+  const d0 = new Date(`${todayIso}T00:00:00`);
+  const d1 = new Date(`${dueIso}T00:00:00`);
+  const daysLeft = Math.round((d1.getTime() - d0.getTime()) / 86400000);
+  if (!Number.isFinite(daysLeft)) return "";
+  let lbl = "";
+  let cls = "tk-due-pill";
+  if (daysLeft < 0) {
+    lbl = t("tk_due_over", { n: Math.abs(daysLeft) });
+    cls += " is-urgent";
+  } else if (daysLeft === 0) {
+    lbl = t("tk_due_today");
+    cls += " is-urgent";
+  } else if (daysLeft === 1) {
+    lbl = t("tk_due_tomorrow");
+    cls += " is-soon";
+  } else if (daysLeft <= 3) {
+    lbl = t("tk_due_in", { n: daysLeft });
+    cls += " is-soon";
+  } else {
+    lbl = fmtShortDay(dueIso);
+  }
+  return `<span class="${cls} mono">${esc(lbl)}</span>`;
+}
+
+function renderTasksPanel() {
+  const panel = $("#tasks-panel");
+  if (!panel) return;
+  const allTasks = state.tasks || [];
+  const openTasks = allTasks.filter((tk) => !tk.done_at);
+
+  // Populate habit dropdown & blocker dropdown
+  const habSel = $("#tk-habit");
+  if (habSel) {
+    const prevHab = state.taskFilterHabitId || habSel.value || "";
+    habSel.innerHTML =
+      `<option value="">${esc(t("tk_no_habit"))}</option>` +
+      (state.habits || []).map((h) => `<option value="${esc(h.id)}">${esc(h.name)}</option>`).join("");
+    if (prevHab && (state.habits || []).some((h) => h.id === prevHab)) habSel.value = prevHab;
+  }
+  const blkSel = $("#tk-blocker");
+  if (blkSel) {
+    const prevBlk = blkSel.value || "";
+    if (openTasks.length) {
+      blkSel.classList.remove("hidden");
+      blkSel.innerHTML =
+        `<option value="">${esc(t("tk_no_blocker"))}</option>` +
+        openTasks.map((tk) => `<option value="${esc(tk.id)}">${esc(tk.title.slice(0, 44))}</option>`).join("");
+      if (prevBlk && openTasks.some((tk) => tk.id === prevBlk)) blkSel.value = prevBlk;
+    } else {
+      blkSel.classList.add("hidden");
+      blkSel.value = "";
+    }
+  }
+
+  // Optional habit filter chip
+  const fChip = $("#tasks-filter-chip");
+  const filterHab = state.taskFilterHabitId ? (state.habits || []).find((h) => h.id === state.taskFilterHabitId) : null;
+  if (fChip) {
+    if (filterHab) {
+      fChip.classList.remove("hidden");
+      fChip.innerHTML = `<span class="tk-dot" style="background:${esc(filterHab.color)}"></span>${esc(filterHab.name)} <button type="button" class="tk-chip-x" id="btn-clear-task-filter" title="${esc(t("tk_filter_clear"))}">×</button>`;
+    } else {
+      fChip.classList.add("hidden");
+      fChip.innerHTML = "";
+    }
+  }
+
+  const scoped = filterHab ? allTasks.filter((tk) => tk.habit_id === filterHab.id) : allTasks;
+  const actionable = scoped.filter((tk) => !tk.done_at && !tk.is_blocked);
+  const blocked = scoped.filter((tk) => !tk.done_at && tk.is_blocked);
+  const cutoffMs = Date.now() - 7 * 86400000;
+  const recentDone = scoped
+    .filter((tk) => tk.done_at && new Date(tk.done_at).getTime() >= cutoffMs)
+    .sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)))
+    .slice(0, 12);
+
+  const countEl = $("#tasks-count");
+  if (countEl) {
+    const openN = actionable.length + blocked.length;
+    countEl.textContent = openN ? `(${actionable.length}${blocked.length ? ` + ${blocked.length}` : ""})` : "";
+  }
+
+  const actList = $("#tasks-actionable-list");
+  if (actList) {
+    if (!actionable.length && !blocked.length) {
+      actList.innerHTML = `<div class="muted sm-text tk-empty">${esc(t("tasks_empty"))}</div>`;
+    } else if (!actionable.length) {
+      actList.innerHTML = "";
+    } else {
+      actList.innerHTML = actionable
+        .map((tk) => {
+          const habPill = tk.habit_name
+            ? `<button type="button" class="tk-hab-pill" data-tk-filter-hab="${esc(tk.habit_id)}" style="--tk-col:${esc(tk.habit_color || "var(--accent)")}"><span class="tk-dot" style="background:${esc(tk.habit_color || "var(--accent)")}"></span>${esc(tk.habit_name)}</button>`
+            : "";
+          const prioBadge = tk.priority ? `<span class="tk-prio-tag mono">↑</span>` : "";
+          const dueBadge = formatTaskDueBadge(tk.due_date);
+          const blocksBadge = tk.blocks_count ? `<span class="tk-blocks-pill mono" title="${esc(t("tk_blocks_n", { n: tk.blocks_count }))}">↳ ${esc(t("tk_blocks_n", { n: tk.blocks_count }))}</span>` : "";
+          const prereqOpen = state.addingPrereqForTaskId === tk.id;
+          const prereqFormHtml = prereqOpen
+            ? `<form class="tk-prereq-form" data-tk-prereq-form="${esc(tk.id)}">
+                 <input type="text" class="tk-prereq-inp" placeholder="${esc(t("tk_add_prereq_ph"))}" required />
+                 <button type="submit" class="btn primary sm">+</button>
+                 <button type="button" class="btn ghost sm" data-tk-prereq-cancel="1">×</button>
+               </form>`
+            : "";
+          return `
+            <div class="task-row ${tk.priority ? "is-priority" : ""}" data-task-id="${esc(tk.id)}">
+              <div class="task-row-main">
+                <button type="button" class="tk-check" data-tk-complete="${esc(tk.id)}" aria-label="Abhaken" title="Abhaken${tk.habit_name ? ` (+1 ${esc(tk.habit_name)})` : ""}"></button>
+                <span class="tk-title">${esc(tk.title)}</span>
+                <div class="tk-meta">${prioBadge}${dueBadge}${blocksBadge}${habPill}</div>
+                <div class="tk-actions">
+                  <button type="button" class="tk-act-btn" data-tk-prereq-toggle="${esc(tk.id)}" title="${esc(t("tk_add_prereq_btn"))}">↳</button>
+                  <button type="button" class="tk-act-btn ${tk.priority ? "is-on" : ""}" data-tk-toggle-prio="${esc(tk.id)}" title="${esc(t("tk_prio_title"))}">↑</button>
+                  <button type="button" class="tk-act-btn is-del" data-tk-del="${esc(tk.id)}" title="Entfernen">×</button>
+                </div>
+              </div>
+              ${prereqFormHtml}
+            </div>`;
+        })
+        .join("");
+    }
+  }
+
+  const blkDet = $("#tasks-blocked-details");
+  const blkCnt = $("#tasks-blocked-count");
+  const blkList = $("#tasks-blocked-list");
+  if (blkDet && blkList) {
+    if (blocked.length) {
+      blkDet.classList.remove("hidden");
+      if (blkCnt) blkCnt.textContent = `(${blocked.length})`;
+      blkList.innerHTML = blocked
+        .map((tk) => {
+          const habPill = tk.habit_name
+            ? `<span class="tk-hab-pill" style="--tk-col:${esc(tk.habit_color || "var(--accent)")}"><span class="tk-dot" style="background:${esc(tk.habit_color || "var(--accent)")}"></span>${esc(tk.habit_name)}</span>`
+            : "";
+          const dueBadge = formatTaskDueBadge(tk.due_date);
+          return `
+            <div class="task-row is-blocked" data-task-id="${esc(tk.id)}">
+              <div class="task-row-main">
+                <span class="tk-lock" aria-hidden="true">◷</span>
+                <span class="tk-title">${esc(tk.title)}</span>
+                <span class="tk-wait-tag muted sm-text">${esc(t("tk_wait_prefix"))} <strong>${esc(tk.blocker_title || "…")}</strong></span>
+                <div class="tk-meta">${dueBadge}${habPill}</div>
+                <div class="tk-actions">
+                  <button type="button" class="tk-act-btn" data-tk-unblock="${esc(tk.id)}" title="Abhängigkeit lösen">✕↳</button>
+                  <button type="button" class="tk-act-btn is-del" data-tk-del="${esc(tk.id)}" title="Entfernen">×</button>
+                </div>
+              </div>
+            </div>`;
+        })
+        .join("");
+    } else {
+      blkDet.classList.add("hidden");
+      blkList.innerHTML = "";
+    }
+  }
+
+  const doneDet = $("#tasks-done-details");
+  const doneCnt = $("#tasks-done-count");
+  const doneList = $("#tasks-done-list");
+  if (doneDet && doneList) {
+    if (recentDone.length) {
+      doneDet.classList.remove("hidden");
+      if (doneCnt) doneCnt.textContent = `(${recentDone.length})`;
+      doneList.innerHTML = recentDone
+        .map(
+          (tk) => `
+          <div class="task-row is-done" data-task-id="${esc(tk.id)}">
+            <div class="task-row-main">
+              <span class="tk-done-mark" aria-hidden="true">✓</span>
+              <span class="tk-title">${esc(tk.title)}</span>
+              ${tk.habit_name ? `<span class="tk-hab-pill" style="--tk-col:${esc(tk.habit_color || "var(--accent)")}">${esc(tk.habit_name)}</span>` : ""}
+              <div class="tk-actions">
+                <button type="button" class="tk-act-btn" data-tk-reopen="${esc(tk.id)}" title="Wieder öffnen">↺</button>
+                <button type="button" class="tk-act-btn is-del" data-tk-del="${esc(tk.id)}" title="Entfernen">×</button>
+              </div>
+            </div>
+          </div>`
+        )
+        .join("");
+    } else {
+      doneDet.classList.add("hidden");
+      doneList.innerHTML = "";
+    }
   }
 }
 
@@ -2503,6 +2706,8 @@ function renderSetup(pairInfo = null, e2eeInfo = null) {
   $("#set-qend").value = state.settings.quiet_hours_end || "8";
   $("#set-notif").checked = state.settings.notifications_enabled === "1";
   $("#set-followup").checked = state.settings.followup_enabled !== "0";
+  const setTkEl = $("#set-task-nudges");
+  if (setTkEl) setTkEl.checked = state.settings.task_nudges_enabled !== "0";
   syncRoutingModeUI(state.settings.routing_mode || "observed");
   syncNudgeModeUI(state.settings.nudge_mode || "observed");
 
@@ -4471,6 +4676,16 @@ function bindEvents() {
   };
   const handleCardAreaClick = async (e) => {
     if (e.target.closest(".hc-measure-form")) return;
+    const tkChip = e.target.closest("[data-focus-tasks-habit]");
+    if (tkChip) {
+      e.stopPropagation();
+      const hid = tkChip.dataset.focusTasksHabit;
+      state.taskFilterHabitId = state.taskFilterHabitId === hid ? null : hid;
+      renderTasksPanel();
+      const panel = $("#tasks-panel");
+      if (panel) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
     const activeChip = e.target.closest(".active-chip[data-active-id]");
     if (activeChip) {
       e.stopPropagation();
@@ -6774,14 +6989,22 @@ function bindEvents() {
       const todaySummary = window.DailyLocalEngine.request(`/api/today?day=${todayIso}`, { method: "GET" });
       const cardsById = Object.fromEntries((todaySummary.habits || []).map((c) => [c.id, c]));
       const followupOn = s.followup_enabled !== "0";
+      const taskNudgesOn = s.task_nudges_enabled !== "0";
+      const openTasksRes = window.DailyLocalEngine.request("/api/tasks?include_done=false", { method: "GET" });
+      const openTasks = (openTasksRes && openTasksRes.tasks) || [];
 
-      // 1. Fixed anchor reminders + quiet +45m follow-up
+      // 1. Fixed anchor reminders + quiet +45m follow-up (with unblocked habit tasks as concrete options!)
       for (const h of todaySummary.habits || []) {
         if (h.kind === "min" && h.status === "met") continue;
         const rTimes = String(h.reminder_time || "").split(",").map((x) => x.trim()).filter(Boolean);
         if (!rTimes.length) continue;
         const days = new Set(String(h.reminder_days || "0,1,2,3,4,5,6").split(",").map((x) => x.trim()).filter(Boolean));
         if (days.size && !days.has(String(todayWd))) continue;
+        const taskOpts = taskNudgesOn
+          ? openTasks.filter((tk) => tk.habit_id === h.id && !tk.is_blocked).slice(0, 2).map((tk) => tk.title)
+          : [];
+        const altParts = [...taskOpts, ...String(h.nudge_alternatives || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean)];
+        const optBody = altParts.length ? `Optionen: ${altParts.slice(0, 3).join(" · ")}` : `Kurzer Impuls für ${h.name}`;
         for (const ts of rTimes) {
           const m = ts.match(/^(\d{1,2}):(\d{2})$/);
           if (!m) continue;
@@ -6790,7 +7013,7 @@ function bindEvents() {
             markAndPing(
               `anchor:${todayIso}:${h.id}:${ts}`,
               `Daily · ${h.name} (${ts})`,
-              h.nudge_alternatives ? `Optionen: ${h.nudge_alternatives}` : `Kurzer Impuls für ${h.name}`
+              optBody
             );
           }
           const fuMin = anchorMin + 45;
@@ -6802,6 +7025,20 @@ function bindEvents() {
               `Hast du um ${ts} „${h.name}“ gemacht? Kurz abhaken.`
             );
           }
+        }
+      }
+
+      // 1b. Calm real-deadline reminder (<= 3 days, unblocked open tasks only, max 1/day)
+      if (taskNudgesOn) {
+        const d0 = new Date(`${todayIso}T00:00:00`).getTime();
+        for (const tk of openTasks) {
+          if (tk.is_blocked || !tk.due_date) continue;
+          const d1 = new Date(`${tk.due_date}T00:00:00`).getTime();
+          const daysLeft = Math.round((d1 - d0) / 86400000);
+          if (!Number.isFinite(daysLeft) || daysLeft > 3) continue;
+          const lbl = daysLeft <= 0 ? "Frist heute" : daysLeft === 1 ? "Frist morgen" : `Frist in ${daysLeft} Tagen`;
+          const ctx = tk.habit_name ? ` (${tk.habit_name})` : "";
+          markAndPing(`task_due:${todayIso}:${tk.id}`, `Daily · ${lbl}${ctx}`, tk.title);
         }
       }
 
@@ -6834,6 +7071,7 @@ function bindEvents() {
         quiet_hours_end: Number($("#set-qend").value || 8),
         notifications_enabled: enabled ? 1 : 0,
         followup_enabled: $("#set-followup").checked ? 1 : 0,
+        task_nudges_enabled: $("#set-task-nudges") && !$("#set-task-nudges").checked ? 0 : 1,
       }),
     });
     if (enabled && isStandaloneBrowserMode() && typeof Notification !== "undefined" && Notification.permission === "default") {
@@ -6865,6 +7103,173 @@ function bindEvents() {
       toast(t("ping_unavail"), { durationMs: 5000 });
     }
   });
+
+  // ---- Tasks ("Offene Zettel") Event Bindings ----
+  const tkPrioBtn = $("#tk-prio-btn");
+  if (tkPrioBtn) {
+    tkPrioBtn.addEventListener("click", () => {
+      const next = tkPrioBtn.dataset.active === "1" ? "0" : "1";
+      tkPrioBtn.dataset.active = next;
+      tkPrioBtn.classList.toggle("active", next === "1");
+    });
+  }
+  const tkForm = $("#task-quick-form");
+  if (tkForm) {
+    tkForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const titleInp = $("#tk-title");
+      const title = (titleInp.value || "").trim();
+      if (!title) return;
+      const habit_id = ($("#tk-habit") && $("#tk-habit").value) || null;
+      const priority = tkPrioBtn && tkPrioBtn.dataset.active === "1" ? 1 : 0;
+      const due_date = ($("#tk-due") && $("#tk-due").value) || "";
+      const blocked_by_task_id = ($("#tk-blocker") && $("#tk-blocker").value) || null;
+      try {
+        await api("/api/tasks", {
+          method: "POST",
+          body: JSON.stringify({ title, habit_id, priority, due_date, blocked_by_task_id }),
+        });
+        titleInp.value = "";
+        if ($("#tk-due")) $("#tk-due").value = "";
+        if ($("#tk-blocker")) $("#tk-blocker").value = "";
+        if (tkPrioBtn) {
+          tkPrioBtn.dataset.active = "0";
+          tkPrioBtn.classList.remove("active");
+        }
+        await loadToday();
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+    });
+  }
+  const tkPanel = $("#tasks-panel");
+  if (tkPanel) {
+    tkPanel.addEventListener("click", async (e) => {
+      if (e.target.closest("#btn-clear-task-filter")) {
+        state.taskFilterHabitId = null;
+        renderTasksPanel();
+        return;
+      }
+      const filtHab = e.target.closest("[data-tk-filter-hab]");
+      if (filtHab) {
+        const hid = filtHab.dataset.tkFilterHab;
+        state.taskFilterHabitId = state.taskFilterHabitId === hid ? null : hid;
+        renderTasksPanel();
+        return;
+      }
+      const compBtn = e.target.closest("[data-tk-complete]");
+      if (compBtn) {
+        const tid = compBtn.dataset.tkComplete;
+        try {
+          const res = await api(`/api/tasks/${encodeURIComponent(tid)}/complete`, {
+            method: "POST",
+            body: JSON.stringify({ log_habit: true }),
+          });
+          const tk = res.task || {};
+          const unlockedNames = (res.unlocked || []).map((x) => x.title).join(", ");
+          const unlockSuffix = unlockedNames ? t("tk_unlocked_suffix", { names: unlockedNames }) : "";
+          if (res.event && tk.habit_name) {
+            toast(`${t("tk_done_logged_toast", { step: fmtNum(res.event.amount || 1), habit: tk.habit_name })}${unlockSuffix}`, { durationMs: unlockedNames ? 5200 : 3200 });
+          } else {
+            toast(`${t("tk_done_toast", { title: tk.title || "" })}${unlockSuffix}`, { durationMs: unlockedNames ? 5200 : 3000 });
+          }
+          await loadToday();
+        } catch (err) {
+          toast(t("err_prefix", { msg: err.message }));
+        }
+        return;
+      }
+      const prereqBtn = e.target.closest("[data-tk-prereq-toggle]");
+      if (prereqBtn) {
+        const tid = prereqBtn.dataset.tkPrereqToggle;
+        state.addingPrereqForTaskId = state.addingPrereqForTaskId === tid ? null : tid;
+        renderTasksPanel();
+        const inp = tkPanel.querySelector(".tk-prereq-inp");
+        if (inp) inp.focus();
+        return;
+      }
+      if (e.target.closest("[data-tk-prereq-cancel]")) {
+        state.addingPrereqForTaskId = null;
+        renderTasksPanel();
+        return;
+      }
+      const prioBtn = e.target.closest("[data-tk-toggle-prio]");
+      if (prioBtn) {
+        const tid = prioBtn.dataset.tkTogglePrio;
+        const cur = (state.tasks || []).find((x) => x.id === tid);
+        if (!cur) return;
+        try {
+          await api(`/api/tasks/${encodeURIComponent(tid)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ priority: cur.priority ? 0 : 1 }),
+          });
+          await loadToday();
+        } catch (err) {
+          toast(t("err_prefix", { msg: err.message }));
+        }
+        return;
+      }
+      const unblockBtn = e.target.closest("[data-tk-unblock]");
+      if (unblockBtn) {
+        const tid = unblockBtn.dataset.tkUnblock;
+        try {
+          await api(`/api/tasks/${encodeURIComponent(tid)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ blocked_by_task_id: null }),
+          });
+          await loadToday();
+        } catch (err) {
+          toast(t("err_prefix", { msg: err.message }));
+        }
+        return;
+      }
+      const reopenBtn = e.target.closest("[data-tk-reopen]");
+      if (reopenBtn) {
+        const tid = reopenBtn.dataset.tkReopen;
+        try {
+          await api(`/api/tasks/${encodeURIComponent(tid)}/reopen`, { method: "POST" });
+          await loadToday();
+        } catch (err) {
+          toast(t("err_prefix", { msg: err.message }));
+        }
+        return;
+      }
+      const delBtn = e.target.closest("[data-tk-del]");
+      if (delBtn) {
+        const tid = delBtn.dataset.tkDel;
+        try {
+          await api(`/api/tasks/${encodeURIComponent(tid)}`, { method: "DELETE" });
+          await loadToday();
+        } catch (err) {
+          toast(t("err_prefix", { msg: err.message }));
+        }
+      }
+    });
+    tkPanel.addEventListener("submit", async (e) => {
+      const pf = e.target.closest("[data-tk-prereq-form]");
+      if (!pf) return;
+      e.preventDefault();
+      const parentId = pf.dataset.tkPrereqForm;
+      const inp = pf.querySelector(".tk-prereq-inp");
+      const title = (inp && inp.value || "").trim();
+      if (!title) return;
+      const parent = (state.tasks || []).find((x) => x.id === parentId);
+      try {
+        const created = await api("/api/tasks", {
+          method: "POST",
+          body: JSON.stringify({ title, habit_id: (parent && parent.habit_id) || null, priority: (parent && parent.priority) || 0 }),
+        });
+        await api(`/api/tasks/${encodeURIComponent(parentId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ blocked_by_task_id: created.id }),
+        });
+        state.addingPrereqForTaskId = null;
+        await loadToday();
+      } catch (err) {
+        toast(t("err_prefix", { msg: err.message }));
+      }
+    });
+  }
 
   setInterval(refreshActiveSessionBadges, 30 * 1000);
   if (isStandaloneBrowserMode()) {
