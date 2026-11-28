@@ -775,7 +775,7 @@ function renderHabitCardHtml(h, opts = {}) {
     <div class="hc-actions">
       ${primaryActionHtml}
       <button class="btn sm btn-subtle" data-act="custom" data-id="${esc(h.id)}" title="${esc(t("card_custom_title"))}">${esc(t("card_custom_btn"))}</button>
-      <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">✎</button>
+      <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">⇄</button>
     </div>
   </div>`;
 }
