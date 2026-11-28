@@ -313,6 +313,17 @@ input[readonly]:focus {
   border-color: var(--text);
   color: var(--surface);
 }
+#today-kind-pills.is-search-override .pill.active,
+.task-habit-pills.is-search-override .pill.active {
+  background: var(--surface-2);
+  border-color: var(--border-strong, var(--border));
+  color: var(--muted);
+  opacity: 0.72;
+}
+#tasks-filter-chip.is-search-override {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
 
 /* ==================== DAY HEADER & FILTER BAR ==================== */
 .day-bar {
@@ -2327,20 +2338,6 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 .task-more-wrap {
   margin-top: 6px;
 }
-.tk-edit-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 7px;
-  padding-left: 27px;
-}
-.tk-edit-form .tk-edit-title {
-  flex: 1 1 160px;
-  min-width: 130px;
-}
-.tk-edit-form select {
-  max-width: 150px;
-}
 .tasks-hint-txt {
   opacity: 0.8;
 }
@@ -2350,6 +2347,15 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   gap: 6px;
   align-items: center;
   margin-bottom: 10px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: border-color 0.14s var(--ease), background 0.14s var(--ease), padding 0.14s var(--ease);
+}
+.task-quick-form.is-editing {
+  padding: 6px 7px;
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-2));
 }
 .task-quick-form #tk-title {
   flex: 1 1 210px;
@@ -2384,10 +2390,23 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 .task-row.is-priority {
   border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
 }
+.task-row[data-tk-editable="1"]:hover {
+  border-color: var(--border-strong, var(--muted));
+}
+.task-row.is-editing {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
 .task-row.is-blocked {
   opacity: 0.78;
   background: var(--surface-2);
   border-style: dashed;
+}
+.task-row.is-blocked.is-editing {
+  opacity: 1;
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 .task-row.is-done {
   opacity: 0.65;
@@ -2401,6 +2420,9 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.task-row[data-tk-editable="1"] .task-row-main {
+  cursor: pointer;
 }
 .tk-check {
   width: 19px;
@@ -2430,6 +2452,11 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   font-size: 13.5px;
   font-weight: 500;
   line-height: 1.3;
+}
+.tk-title[data-tk-select]:hover {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  text-underline-offset: 2px;
 }
 .tk-meta {
   display: flex;
