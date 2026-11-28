@@ -411,12 +411,17 @@ function initTheme() {
 }
 
 // ---- Tabs ----
-function setTab(tab) {
+function setTab(tab, opts = {}) {
   state.tab = tab;
   $$("[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${tab}`));
+  try { window.scrollTo({ top: 0, behavior: "instant" }); } catch { window.scrollTo(0, 0); }
   if (tab === "today") loadToday();
-  if (tab === "setup") loadSetup();
+  if (tab === "setup") {
+    const prePop = Boolean(opts.editId && (state.habits || []).some((h) => h.id === opts.editId));
+    if (prePop) populateHabitForm(opts.editId, { instant: true });
+    loadSetup(opts.editId || null, { skipScroll: prePop });
+  }
   if (tab === "analysis") loadAnalysis();
 }
 
@@ -721,6 +726,7 @@ function renderHabitCardHtml(h, opts = {}) {
     isActive ? "is-active" : "",
     isMeasure ? "is-measure" : "",
     opts.softDim ? "card-soft-dim" : "",
+    opts.doneDim && !opts.softDim ? "card-done-dim" : "",
     opts.synergy ? "card-synergy" : "",
     opts.relGlow || "",
   ]
@@ -769,7 +775,7 @@ function renderHabitCardHtml(h, opts = {}) {
     <div class="hc-actions">
       ${primaryActionHtml}
       <button class="btn sm btn-subtle" data-act="custom" data-id="${esc(h.id)}" title="${esc(t("card_custom_title"))}">${esc(t("card_custom_btn"))}</button>
-      <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">⇄</button>
+      <button class="btn sm btn-subtle icon-btn" data-act="edit" data-id="${esc(h.id)}" title="${esc(t("card_edit_title"))}">✎</button>
     </div>
   </div>`;
 }
@@ -909,6 +915,17 @@ function isHabitInFocusNow(h, _incomingTargets, selectedIds, connectedToSelected
   return false;
 }
 
+function isLoggedInCurrentPeakWindow(h) {
+  if (!h || !h.last_used_at) return false;
+  const todayIso = localDateISO(new Date());
+  if (state.day !== todayIso) return false;
+  if (String(h.last_used_at).slice(0, 10) !== todayIso) return false;
+  const lastMs = new Date(h.last_used_at).getTime();
+  if (!Number.isFinite(lastMs)) return false;
+  const ageMs = Date.now() - lastMs;
+  return ageMs >= -60000 && ageMs <= 3 * 3600000;
+}
+
 function computeSmartScore(h, ctx) {
   let score = 0;
   // Tier 1: Running timer & acute limit alerts + active cluster selection synergy
@@ -921,14 +938,19 @@ function computeSmartScore(h, ctx) {
   if (h.kind === "max" && h.status === "exceeded") score += 180;
   else if (h.kind === "max" && h.status === "warning") score += 140;
 
-  // Tier 2: Open goals with progress bar, unmeasured readings, and overdue cadence
+  // Tier 2: Open goals, unmeasured readings, and overdue cadence (fine-sorted by current time-of-day peak)
   const hrFit = Number(h.hour_fit || 0);
-  if (h.kind === "min" && h.target != null && h.status !== "met") {
+  const isGoalMet = h.kind === "min" && h.status === "met";
+  const isMeasuredToday = h.kind === "measure" && (h.event_count || 0) > 0;
+  const isOpenTargetGoal = h.kind === "min" && h.target != null && !isGoalMet;
+  const peakDoneNow = !isOpenTargetGoal && !isGoalMet && h.kind !== "max" && h.kind !== "measure" && isLoggedInCurrentPeakWindow(h);
+
+  if (isOpenTargetGoal) {
     score += (h.target_period || "day") === "day" ? 110 : 85;
     if (h.status === "in_progress") score += 12;
   }
   if (h.kind === "measure") {
-    if ((h.event_count || 0) === 0) score += 95 + 38 * hrFit;
+    if (!isMeasuredToday) score += 95 + 42 * hrFit;
     else score -= 65; // Already measured today -> rests calmly near the bottom
   }
   const med = h.median_interval_days != null ? Number(h.median_interval_days) : null;
@@ -938,21 +960,28 @@ function computeSmartScore(h, ctx) {
     if (dueRatio >= 0.72) score += 90 * Math.min(1.6, dueRatio);
   }
 
-  // Tier 3: Open activities, timer-ready blocks & time-of-day rhythm fit
+  // Tier 3: Open activities, timer-ready blocks & time-of-day peak fit (suppressed once goal/peak is already checked off)
   if (h.kind === "min" && h.target == null) {
     score += 30;
   }
-  if (h.block_minutes && Number(h.block_minutes) > 0 && h.kind !== "max" && h.kind !== "measure" && h.status !== "met") {
+  if (h.block_minutes && Number(h.block_minutes) > 0 && h.kind !== "max" && h.kind !== "measure" && !isGoalMet) {
     score += 22;
   }
-  if (h.kind !== "measure") {
-    score += (h.kind === "max" ? 16 : 42) * hrFit;
+  if (h.kind !== "measure" && !isGoalMet) {
+    if (h.kind === "max") {
+      score += 16 * hrFit;
+    } else if (peakDoneNow) {
+      // Peak just checked off -> step calmly beneath still-open peaks until the next time window
+      score -= 24;
+    } else {
+      score += 42 * hrFit;
+    }
   }
-  if (ctx.todayNeighborSet.has(h.id)) score += 18;
+  if (ctx.todayNeighborSet.has(h.id) && !isGoalMet && !isMeasuredToday && !peakDoneNow) score += 18;
 
   // Tier 4: Calmly settle completed goals & healthy (non-alert) Less/Weniger limits below active work
   if (h.kind === "max" && !isLimitAlert) score -= 55;
-  if (h.kind === "min" && h.status === "met") score -= 80;
+  if (isGoalMet) score -= 80;
   return score;
 }
 
@@ -1027,6 +1056,12 @@ function renderToday(data) {
     const isConflict = selectedIds.length > 0 && fit.negHits > 0 && fit.posHits === 0;
     const isLimitAlert = h.kind === "max" && (h.status === "warning" || h.status === "exceeded");
     const isMaxDim = !q && isSmart && h.kind === "max" && !isLimitAlert && !h.active_since && !selectedIds.includes(h.id);
+    const isDoneDim =
+      !q &&
+      isSmart &&
+      !h.active_since &&
+      !selectedIds.includes(h.id) &&
+      ((h.kind === "min" && h.status === "met") || (h.kind === "measure" && (h.event_count || 0) > 0));
     const isSynergy = selectedIds.length >= 2 && fit.posHits >= 2 && fit.negHits === 0;
     let relBadge = extra.relBadge || "";
     if (!relBadge && isSmart && isHabitCadenceDue(h)) {
@@ -1036,6 +1071,7 @@ function renderToday(data) {
       ...extra,
       relBadge,
       softDim: extra.softDim !== undefined ? extra.softDim : isConflict || isMaxDim,
+      doneDim: extra.doneDim !== undefined ? extra.doneDim : isDoneDim,
       synergy: extra.synergy !== undefined ? extra.synergy : isSynergy,
     };
   };
@@ -2686,7 +2722,7 @@ function syncRoutingModeUI(mode) {
   });
 }
 
-async function loadSetup(editId = null) {
+async function loadSetup(editId = null, opts = {}) {
   const [data, pairInfo, e2eeInfo] = await Promise.all([
     api("/api/habits?include_archived=true"),
     api("/api/sync/info").catch(() => null),
@@ -2702,7 +2738,7 @@ async function loadSetup(editId = null) {
   state.liquidByHabit = data.liquid || {};
   state.settings = data.settings || {};
   renderSetup(pairInfo, e2eeInfo);
-  if (editId) populateHabitForm(editId);
+  if (editId) populateHabitForm(editId, { scroll: !opts.skipScroll });
 }
 
 function formatAnchorBadge(h) {
@@ -3843,7 +3879,7 @@ function syncEdgeSourceToHabit(habitId) {
   }
 }
 
-function populateHabitForm(habitId) {
+function populateHabitForm(habitId, opts = {}) {
   const h = state.habits.find((x) => x.id === habitId);
   if (!h) return;
   clearHabitNameMatches();
@@ -3868,6 +3904,14 @@ function populateHabitForm(habitId) {
   $("#btn-cancel-edit").classList.remove("hidden");
   $("#btn-delete-habit").classList.remove("hidden");
   syncEdgeSourceToHabit(h.id);
+  if (opts.scroll !== false) {
+    requestAnimationFrame(() => {
+      const panel = $("#habit-editor-panel");
+      if (panel && typeof panel.scrollIntoView === "function") {
+        panel.scrollIntoView({ behavior: opts.instant ? "instant" : "smooth", block: "start" });
+      }
+    });
+  }
 }
 
 // ---- ANALYSIS VIEW (CALM, DIRECT, NO TECH CLUTTER) ----
@@ -4053,7 +4097,7 @@ function renderStateCurveSection(curves, timelineMeta) {
 
   // Measure real pixel width for razor-sharp 1:1 aspect ratio (zero squished ovals or warped text!)
   const hostW = chartEl.clientWidth || (chartEl.parentElement && chartEl.parentElement.clientWidth) || 760;
-  const W = Math.max(300, Math.round(hostW - 30));
+  const W = Math.max(280, Math.round(hostW - (hostW < 520 ? 18 : 30)));
   const H = W < 520 ? 196 : 226;
   const padL = 32;
   const padR = 16;
@@ -4252,7 +4296,45 @@ function renderStateCurveSection(curves, timelineMeta) {
   const allTicks = meta.habit_ticks || [];
   const visTicksAll = allTicks.filter((tk) => tk.t >= vStart && tk.t <= vEnd);
 
-  // Build visible viewport habit-pin legend summary (so colors are immediately readable without hovering + clickable to isolate!)
+  // Per-habit unit metadata & typical single-entry dose (median) so 36.8 °C never squashes 1x vs 2x!
+  const habMetaById = {};
+  for (const h of state.habits || []) habMetaById[h.id] = h;
+  const amountsByHabit = new Map();
+  for (const tk of allTicks) {
+    const a = Number(tk.amount || 0);
+    if (a > 0) {
+      let arr = amountsByHabit.get(tk.habit_id);
+      if (!arr) {
+        arr = [];
+        amountsByHabit.set(tk.habit_id, arr);
+      }
+      arr.push(a);
+    }
+  }
+  const unitScaleByHabit = new Map();
+  for (const [hid, arr] of amountsByHabit.entries()) {
+    arr.sort((a, b) => a - b);
+    const med = arr[Math.floor((arr.length - 1) / 2)];
+    unitScaleByHabit.set(hid, med > 1e-6 ? med : 1);
+  }
+  const normTickAmount = (tk) => {
+    const h = habMetaById[tk.habit_id];
+    if (h && h.kind === "measure") return 1.0;
+    const raw = Math.max(0.05, Number(tk.amount || 0));
+    const base = unitScaleByHabit.get(tk.habit_id) || 1;
+    return raw / base;
+  };
+  const fmtPinVal = (habitId, amt, count = 1) => {
+    const h = habMetaById[habitId];
+    const u = h && h.unit && h.unit !== "x" ? ` ${h.unit}` : "";
+    if (h && h.kind === "measure") {
+      const avg = count > 1 ? amt / count : amt;
+      return `${fmtNum(Math.round(avg * 100) / 100)}${u}`;
+    }
+    return `+${fmtNum(Math.round(amt * 100) / 100)}${u}`;
+  };
+
+  // Build visible viewport habit-pin legend summary (sorted by normalized activity, not raw °C/ml numbers!)
   const pinSummaryMap = new Map();
   for (const tk of visTicksAll) {
     const curS = pinSummaryMap.get(tk.habit_id) || {
@@ -4260,13 +4342,15 @@ function renderStateCurveSection(curves, timelineMeta) {
       habit_name: tk.habit_name,
       color: tk.color,
       amount: 0,
+      normAmount: 0,
       count: 0,
     };
     curS.amount += Number(tk.amount || 0);
+    curS.normAmount += normTickAmount(tk);
     curS.count += 1;
     pinSummaryMap.set(tk.habit_id, curS);
   }
-  const pinLegendItems = Array.from(pinSummaryMap.values()).sort((a, b) => b.amount - a.amount || b.count - a.count);
+  const pinLegendItems = Array.from(pinSummaryMap.values()).sort((a, b) => b.normAmount - a.normAmount || b.count - a.count);
   if (state.selectedChartHabitId && !pinSummaryMap.has(state.selectedChartHabitId) && !allTicks.some((tk) => tk.habit_id === state.selectedChartHabitId)) {
     state.selectedChartHabitId = null;
   }
@@ -4334,34 +4418,43 @@ function renderStateCurveSection(curves, timelineMeta) {
   const renderedPins = pinBuckets.map((b) => {
     const byHab = new Map();
     let totalAmt = 0;
+    let normTotal = 0;
     for (const tk of b.raw) {
-      const amt = Math.max(0.1, Number(tk.amount || 0));
+      const amt = Math.max(0.05, Number(tk.amount || 0));
+      const nAmt = normTickAmount(tk);
       totalAmt += amt;
+      normTotal += nAmt;
       const curH = byHab.get(tk.habit_id) || {
         habit_id: tk.habit_id,
         habit_name: tk.habit_name,
         color: tk.color,
         amount: 0,
+        normAmount: 0,
         count: 0,
         ts: tk.ts,
       };
       curH.amount += amt;
+      curH.normAmount += nAmt;
       curH.count += 1;
       byHab.set(tk.habit_id, curH);
     }
-    const items = Array.from(byHab.values()).sort((a, b2) => b2.amount - a.amount || b2.count - a.count);
+    const items = Array.from(byHab.values())
+      .map((it) => ({ ...it, displayVal: fmtPinVal(it.habit_id, it.amount, it.count) }))
+      .sort((a, b2) => b2.normAmount - a.normAmount || b2.count - a.count);
     return {
       cx: b.cx,
       tCenter: b.tCenter,
       bucketHr: b.bucketHr,
       total: totalAmt,
+      normTotal,
       rawCount: b.raw.length,
       ts: b.raw[0] ? b.raw[0].ts : "",
       items,
     };
   });
 
-  const maxPinTotal = Math.max(1, ...renderedPins.map((p) => p.total));
+  // Scale pin heights proportionally against the largest normalized bucket currently in view!
+  const maxPinNorm = Math.max(1, ...renderedPins.map((p) => p.normTotal));
   const yBot = padT + plotH;
   const barW =
     bucketHr === 0
@@ -4372,15 +4465,13 @@ function renderStateCurveSection(curves, timelineMeta) {
           ? Math.max(4.5, Math.min(10, pxPerDay * 0.44))
           : Math.max(6, Math.min(14, (168 / span) * plotW * 0.34));
 
+  const maxPinH = bucketHr === 0 ? 24 : 32;
   ticksLayer = renderedPins
     .map((p) => {
-      const totalH =
-        bucketHr === 0
-          ? Math.min(22, 10 + 10 * Math.sqrt(p.total / maxPinTotal))
-          : Math.min(30, 8 + 22 * Math.sqrt(p.total / maxPinTotal));
+      const totalH = Math.max(4, Math.min(maxPinH, (p.normTotal / maxPinNorm) * maxPinH));
       p.barH = totalH;
       p.barW = barW;
-      const tipParts = p.items.slice(0, 4).map((it) => `${it.habit_name} +${fmtNum(it.amount)}`);
+      const tipParts = p.items.slice(0, 4).map((it) => `${it.habit_name} ${it.displayVal}`);
       if (p.items.length > 4) tipParts.push(`+${p.items.length - 4}`);
       const tipTime =
         bucketHr === 0
@@ -4395,18 +4486,18 @@ function renderStateCurveSection(curves, timelineMeta) {
         const tx = p.cx.toFixed(1);
         const yTop = (yBot - totalH).toFixed(1);
         return `<g>
-          <line x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot.toFixed(1)}" stroke="${esc(it.color)}" stroke-width="2.4" stroke-linecap="round" opacity="0.88" />
+          <line class="pin-stem" x1="${tx}" y1="${yTop}" x2="${tx}" y2="${yBot.toFixed(1)}" stroke="${esc(it.color)}" stroke-width="2.4" stroke-linecap="round" opacity="0.88" />
           <circle cx="${tx}" cy="${yTop}" r="2.4" fill="${esc(it.color)}"><title>${esc(tip)}</title></circle>
         </g>`;
       }
-      // Stacked color micro-bar (used for zoomed-out aggregates & colliding same-time pins)
+      // Stacked color micro-bar (weighted by normalized doses so 36.8 °C never eclipses 1x/2x!)
       let curY = yBot;
       const segs = [];
       const topItems = p.items.slice(0, 5);
-      const topSum = topItems.reduce((s, it) => s + it.amount, 0) || 1;
+      const topNormSum = topItems.reduce((s, it) => s + it.normAmount, 0) || 1;
       for (let i = 0; i < topItems.length; i++) {
         const it = topItems[i];
-        const segH = Math.max(2.2, (it.amount / topSum) * totalH);
+        const segH = Math.max(2.2, (it.normAmount / topNormSum) * totalH);
         curY -= segH;
         const isTop = i === topItems.length - 1;
         segs.push(
@@ -4491,7 +4582,11 @@ function renderStateCurveSection(curves, timelineMeta) {
           .map((it) => {
             const isSel = state.selectedChartHabitId === it.habit_id;
             const isDim = !!state.selectedChartHabitId && !isSel;
-            return `<button type="button" class="pin-leg-chip${isSel ? " active" : ""}${isDim ? " dimmed" : ""}" data-chart-habit="${esc(it.habit_id)}" title="${esc(it.habit_name)} (${fmtNum(it.amount)})"><span class="chip-dot" style="background:${esc(it.color)}"></span>${esc(it.habit_name)} <span class="mono muted">${fmtNum(it.amount)}</span></button>`;
+            const hMeta = habMetaById[it.habit_id];
+            const legAmt = hMeta && hMeta.kind === "measure"
+              ? `${it.count}×`
+              : `${fmtNum(Math.round(it.amount * 100) / 100)}${hMeta && hMeta.unit && hMeta.unit !== "x" ? ` ${hMeta.unit}` : ""}`;
+            return `<button type="button" class="pin-leg-chip${isSel ? " active" : ""}${isDim ? " dimmed" : ""}" data-chart-habit="${esc(it.habit_id)}" title="${esc(it.habit_name)} (${esc(legAmt)})"><span class="chip-dot" style="background:${esc(it.color)}"></span>${esc(it.habit_name)} <span class="mono muted">${esc(legAmt)}</span></button>`;
           })
           .join("")}
       </div>`
@@ -5176,8 +5271,7 @@ function bindEvents() {
       if (btn.dataset.act === "toggle-active") toggleHabitActive(id);
       if (btn.dataset.act === "custom") openCustomLog(id);
       if (btn.dataset.act === "edit") {
-        setTab("setup");
-        setTimeout(() => loadSetup(id), 30);
+        setTab("setup", { editId: id });
       }
       return;
     }
@@ -7137,6 +7231,10 @@ function bindEvents() {
   // Smooth click-drag / swipe panning across the continuous timeline
   let chartDrag = null;
   chartHost.addEventListener("click", (e) => {
+    if (e.target.closest("[data-ro-clear]")) {
+      clearChartHover();
+      return;
+    }
     const habBtn = e.target.closest("[data-chart-habit]");
     if (!habBtn) return;
     const hid = habBtn.dataset.chartHabit;
@@ -7150,6 +7248,7 @@ function bindEvents() {
     if (!wrap) return;
     chartDrag = {
       pointerId: e.pointerId,
+      pointerType: e.pointerType || "mouse",
       startX: e.clientX,
       moved: false,
       origStart: state.chartView.startHr,
@@ -7162,7 +7261,7 @@ function bindEvents() {
   chartHost.addEventListener("pointermove", (e) => {
     if (!chartDrag || e.pointerId !== chartDrag.pointerId) return;
     const dx = e.clientX - chartDrag.startX;
-    if (Math.abs(dx) >= 4) chartDrag.moved = true;
+    if (Math.abs(dx) >= 6) chartDrag.moved = true;
     if (!chartDrag.moved) return;
     const span = chartDrag.origEnd - chartDrag.origStart;
     const shiftHr = -(dx / chartDrag.width) * span;
@@ -7172,11 +7271,12 @@ function bindEvents() {
   const endChartDrag = (e) => {
     if (!chartDrag || e.pointerId !== chartDrag.pointerId) return;
     const wasTap = !chartDrag.moved;
+    const isTouch = (e.pointerType || chartDrag.pointerType) !== "mouse";
     chartDrag = null;
     const wrap = chartHost.querySelector("[data-pan-chart]");
     if (wrap) wrap.classList.remove("is-dragging");
     try { chartHost.releasePointerCapture(e.pointerId); } catch {}
-    if (wasTap) updateChartHoverAtClientX(e.clientX);
+    if (wasTap) updateChartHoverAtClientX(e.clientX, { isTouch });
   };
   chartHost.addEventListener("pointerup", endChartDrag);
   chartHost.addEventListener("pointercancel", endChartDrag);
@@ -7252,7 +7352,7 @@ function bindEvents() {
       roEl.innerHTML = `<span>${esc(g.anchorTxt)}</span><span class="mono">${esc(g.rightSummary)}</span>`;
     }
   };
-  const updateChartHoverAtClientX = (clientX) => {
+  const updateChartHoverAtClientX = (clientX, opts = {}) => {
     const g = state._chartGeom;
     const svg = chartHost.querySelector(".state-chart-svg");
     if (!g || !svg) return;
@@ -7263,14 +7363,15 @@ function bindEvents() {
       clearChartHover();
       return;
     }
+    const isTouch = !!opts.isTouch;
     let hr = g.vStart + ((svgX - g.padL) / g.plotW) * g.span;
     const sMax = g.scaleMax || dimScaleMax(g.cur);
     const xOf = (tHr) => g.padL + ((tHr - g.vStart) / g.span) * g.plotW;
     const yOf = (v) => g.padT + ((sMax - Math.max(1, Math.min(sMax, v))) / Math.max(1, sMax - 1)) * g.plotH;
 
-    // Snap softly to a nearby observed snapshot dot (within 14px)
+    // Snap softly to a nearby observed snapshot dot (wider tolerance on touch!)
     let snappedDot = null;
-    let bestPx = 14;
+    let bestPx = isTouch ? 24 : 14;
     for (const pt of g.visActual || []) {
       const dist = Math.abs(xOf(pt.t) - svgX);
       if (dist < bestPx) {
@@ -7278,9 +7379,9 @@ function bindEvents() {
         snappedDot = pt;
       }
     }
-    // Find nearest habit pin / aggregated bar for instant name + amount readout!
+    // Find nearest habit pin / aggregated bar for instant name + amount readout (thumb-friendly on mobile!)
     let nearPin = null;
-    let bestPinPx = g.pinHitPx || 14;
+    let bestPinPx = isTouch ? Math.max(26, g.pinHitPx || 14) : g.pinHitPx || 14;
     for (const pin of g.renderedPins || []) {
       const dist = Math.abs(pin.cx - svgX);
       if (dist < bestPinPx) {
@@ -7288,7 +7389,8 @@ function bindEvents() {
         nearPin = pin;
       }
     }
-    if (snappedDot) hr = snappedDot.t;
+    if (snappedDot && (!nearPin || bestPx <= bestPinPx)) hr = snappedDot.t;
+    else if (nearPin && isTouch) hr = nearPin.tCenter;
     const cx = xOf(hr);
     const tl = (g.cur && g.cur.timeline) || {};
     const odePt = state.showOdeLine ? interpSeriesAt(tl.ode, hr) : null;
@@ -7297,10 +7399,10 @@ function bindEvents() {
     const ac = g.axisColor || "#368470";
     let markers = `<line x1="${cx.toFixed(1)}" y1="${g.padT}" x2="${cx.toFixed(1)}" y2="${g.padT + g.plotH}" stroke="var(--text-2)" stroke-width="1" opacity="0.32" />`;
     if (nearPin) {
-      const hw = Math.max(4, (nearPin.barW || 4) + 3);
-      const hh = (nearPin.barH || 12) + 3;
+      const hw = Math.max(5, (nearPin.barW || 4) + 4);
+      const hh = (nearPin.barH || 12) + 4;
       const yTopPin = g.padT + g.plotH - hh;
-      markers += `<rect x="${(nearPin.cx - hw / 2).toFixed(1)}" y="${yTopPin.toFixed(1)}" width="${hw.toFixed(1)}" height="${hh.toFixed(1)}" rx="2.5" fill="none" stroke="var(--text)" stroke-width="1.2" opacity="0.55" />`;
+      markers += `<rect x="${(nearPin.cx - hw / 2).toFixed(1)}" y="${yTopPin.toFixed(1)}" width="${hw.toFixed(1)}" height="${hh.toFixed(1)}" rx="2.5" fill="none" stroke="var(--text)" stroke-width="1.35" opacity="0.65" />`;
     }
     if (odePt) {
       markers += `<circle cx="${cx.toFixed(1)}" cy="${yOf(odePt.v).toFixed(1)}" r="4" fill="${esc(ac)}" stroke="var(--surface)" stroke-width="1.8" />`;
@@ -7333,21 +7435,29 @@ function bindEvents() {
     if (nearPin && nearPin.items && nearPin.items.length) {
       const topPinItems = nearPin.items.slice(0, 3);
       topPinItems.forEach((it) => {
-        pills.push(`<span class="ro-pill ro-pin"><span class="chip-dot" style="background:${esc(it.color)}"></span>${esc(it.habit_name)} +${fmtNum(it.amount)}</span>`);
+        const valTxt = it.displayVal || `+${fmtNum(it.amount)}`;
+        pills.push(`<span class="ro-pill ro-pin"><span class="chip-dot" style="background:${esc(it.color)}"></span>${esc(it.habit_name)} ${esc(valTxt)}</span>`);
       });
       if (nearPin.items.length > 3) {
         pills.push(`<span class="ro-pill muted">+${nearPin.items.length - 3}</span>`);
       }
     }
+    if (isTouch) {
+      pills.push(`<button type="button" class="ro-clear" data-ro-clear="1" aria-label="Schließen">×</button>`);
+    }
     const roEl = $("#state-chart-readout");
     if (roEl) roEl.innerHTML = `<span class="ro-live">${pills.join("")}</span>`;
   };
   chartHost.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
     if (chartDrag && chartDrag.moved) return;
     if (e.target.closest("#state-pin-legend")) return;
-    updateChartHoverAtClientX(e.clientX);
+    updateChartHoverAtClientX(e.clientX, { isTouch: false });
   });
-  chartHost.addEventListener("pointerleave", clearChartHover);
+  chartHost.addEventListener("pointerleave", (e) => {
+    if (e.pointerType !== "mouse") return;
+    clearChartHover();
+  });
 
   // Re-render crisp 1:1 SVG dimensions on window resize
   let chartResizeTimer = null;

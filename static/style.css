@@ -572,10 +572,19 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
 .habit-card.card-soft-dim {
   opacity: 0.54;
 }
+.habit-card.card-done-dim {
+  opacity: 0.68;
+}
 .habit-card.card-soft-dim:hover,
 .habit-card.card-soft-dim:focus-within,
-.habit-card.card-soft-dim:active {
+.habit-card.card-soft-dim:active,
+.habit-card.card-done-dim:hover,
+.habit-card.card-done-dim:focus-within,
+.habit-card.card-done-dim:active {
   opacity: 1;
+}
+#habit-editor-panel {
+  scroll-margin-top: 72px;
 }
 .habit-card.card-synergy {
   border-color: color-mix(in srgb, var(--pos) 45%, var(--border));
@@ -1738,6 +1747,25 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   border: 1px solid var(--border);
   font-size: 11px;
 }
+.state-chart-readout .ro-clear {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 999px;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  font-size: 13px;
+}
+.state-chart-readout .ro-clear:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
 .state-pin-legend {
   display: flex;
   align-items: center;
@@ -2261,6 +2289,21 @@ body.dark .active-chip { color: #5ec2a6; background: rgba(54, 132, 112, 0.24); }
   .graph-panel { padding: 12px 14px; }
   .graph-summary-hint { display: none; }
   .graph-canvas-wrap { height: 290px; }
+  .state-chart-wrap { padding: 8px 8px 6px; }
+  .state-chart-readout { font-size: 11px; gap: 6px; }
+  .state-chart-readout .ro-live { gap: 6px; font-size: 11px; }
+  .matrix { font-size: 10.5px; }
+  .matrix th, .matrix td { padding: 5px 1.5px; }
+  .matrix th { font-size: 9.5px; }
+  .matrix th:first-child, .matrix td:first-child {
+    max-width: 78px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-right: 4px;
+  }
+  .cell-val { min-width: 22px; padding: 2px 2px; font-size: 10px; }
+  .spark24, .spark-markers { gap: 1.5px; }
   .panel-head { flex-wrap: wrap; gap: 8px; }
   .row-2, .row-3 { grid-template-columns: 1fr; }
   .list-row, .ev-row, .route-cluster-row { flex-wrap: wrap; }
