@@ -4296,26 +4296,24 @@ function renderStateCurveSection(curves, timelineMeta) {
   const allTicks = meta.habit_ticks || [];
   const visTicksAll = allTicks.filter((tk) => tk.t >= vStart && tk.t <= vEnd);
 
-  // Per-habit unit metadata & typical single-entry dose (median) so 36.8 °C never squashes 1x vs 2x!
+  // Per-habit unit metadata & visible-viewport mean dose so each habit's typical visible entry = 1.0
+  // (e.g. a lone 3.6 Coding block or 36.8 °C reading equals 1x Smoke; 2x or two merged 1x pins = 2.0 -> single pins become half height!)
   const habMetaById = {};
   for (const h of state.habits || []) habMetaById[h.id] = h;
-  const amountsByHabit = new Map();
-  for (const tk of allTicks) {
+  const visSumsByHabit = new Map();
+  for (const tk of visTicksAll) {
     const a = Number(tk.amount || 0);
     if (a > 0) {
-      let arr = amountsByHabit.get(tk.habit_id);
-      if (!arr) {
-        arr = [];
-        amountsByHabit.set(tk.habit_id, arr);
-      }
-      arr.push(a);
+      const acc = visSumsByHabit.get(tk.habit_id) || { sum: 0, count: 0 };
+      acc.sum += a;
+      acc.count += 1;
+      visSumsByHabit.set(tk.habit_id, acc);
     }
   }
   const unitScaleByHabit = new Map();
-  for (const [hid, arr] of amountsByHabit.entries()) {
-    arr.sort((a, b) => a - b);
-    const med = arr[Math.floor((arr.length - 1) / 2)];
-    unitScaleByHabit.set(hid, med > 1e-6 ? med : 1);
+  for (const [hid, acc] of visSumsByHabit.entries()) {
+    const avg = acc.count > 0 ? acc.sum / acc.count : 1;
+    unitScaleByHabit.set(hid, avg > 1e-6 ? avg : 1);
   }
   const normTickAmount = (tk) => {
     const h = habMetaById[tk.habit_id];
