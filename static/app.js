@@ -5241,12 +5241,13 @@ function bindEvents() {
     if (state.todayData) renderToday(state.todayData);
   });
 
-  $("#habit-grid").addEventListener("mouseover", (e) => {
+  $("#habit-grid").addEventListener("pointerover", (e) => {
+    if (e.pointerType !== "mouse") return;
     const card = e.target.closest(".habit-card[data-id]");
     clearRouteHighlight();
     if (card) applyRouteHighlight(card.dataset.id);
   });
-  $("#habit-grid").addEventListener("mouseleave", clearRouteHighlight);
+  $("#habit-grid").addEventListener("pointerleave", clearRouteHighlight);
 
   // Day log interactions (full editor modal for events & snapshots + quick delete)
   $("#event-list").addEventListener("click", async (e) => {
