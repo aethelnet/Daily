@@ -496,9 +496,11 @@ input[readonly]:focus {
   background: var(--card-accent, var(--accent));
   opacity: 0.92;
 }
-.habit-card:hover {
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
+@media (hover: hover) and (pointer: fine) {
+  .habit-card:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-md);
+  }
 }
 .habit-card.status-met { background: linear-gradient(180deg, var(--pos-tint), var(--surface) 65%); }
 .habit-card.status-exceeded { background: linear-gradient(180deg, var(--neg-tint), var(--surface) 65%); }
