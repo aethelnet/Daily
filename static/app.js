@@ -986,8 +986,10 @@ function renderToday(data) {
   $$("#today-kind-pills [data-fkind]").forEach((p) => p.classList.toggle("active", p.dataset.fkind === state.filterKind));
 
   const q = state.filterQuery.trim().toLowerCase();
+  const kindPillsWrap = $("#today-kind-pills");
+  if (kindPillsWrap) kindPillsWrap.classList.toggle("is-search-override", Boolean(q));
   const visible = data.habits.filter((h) => {
-    if (state.filterKind !== "all" && state.filterKind !== "focus" && h.kind !== state.filterKind) return false;
+    if (!q && state.filterKind !== "all" && state.filterKind !== "focus" && h.kind !== state.filterKind) return false;
     if (q && !h.name.toLowerCase().includes(q) && !String(h.group_name || "").toLowerCase().includes(q)) return false;
     return true;
   });
@@ -1024,7 +1026,7 @@ function renderToday(data) {
     const fit = fitById[h.id] || { posHits: 0, negHits: 0, netWeight: 0, rels: [] };
     const isConflict = selectedIds.length > 0 && fit.negHits > 0 && fit.posHits === 0;
     const isLimitAlert = h.kind === "max" && (h.status === "warning" || h.status === "exceeded");
-    const isMaxDim = isSmart && h.kind === "max" && !isLimitAlert && !h.active_since && !selectedIds.includes(h.id);
+    const isMaxDim = !q && isSmart && h.kind === "max" && !isLimitAlert && !h.active_since && !selectedIds.includes(h.id);
     const isSynergy = selectedIds.length >= 2 && fit.posHits >= 2 && fit.negHits === 0;
     let relBadge = extra.relBadge || "";
     if (!relBadge && isSmart && isHabitCadenceDue(h)) {
@@ -1273,16 +1275,93 @@ function formatTaskDueBadge(dueIso) {
   return `<span class="${cls} mono">${esc(lbl)}</span>`;
 }
 
+function syncTaskQuickFormChrome() {
+  const isEditing = Boolean(state.editingTaskId);
+  const form = $("#task-quick-form");
+  if (form) form.classList.toggle("is-editing", isEditing);
+  const titleInp = $("#tk-title");
+  if (titleInp) titleInp.placeholder = isEditing ? t("tk_edit_ph") : t("tk_title_ph");
+  const subBtn = $("#tk-submit-btn");
+  if (subBtn) subBtn.textContent = isEditing ? t("tk_save_btn") : t("tk_add_btn");
+  const cancelBtn = $("#tk-edit-cancel");
+  if (cancelBtn) cancelBtn.classList.toggle("hidden", !isEditing);
+}
+
+function resetTaskQuickForm() {
+  state.editingTaskId = null;
+  const titleInp = $("#tk-title");
+  if (titleInp) titleInp.value = "";
+  const habSel = $("#tk-habit");
+  if (habSel) {
+    const defaultHab = state.taskFilterHabitId && state.taskFilterHabitId !== "__none__" ? state.taskFilterHabitId : "";
+    habSel.value = (state.habits || []).some((h) => h.id === defaultHab) ? defaultHab : "";
+  }
+  const prioBtn = $("#tk-prio-btn");
+  if (prioBtn) {
+    prioBtn.dataset.active = "0";
+    prioBtn.classList.remove("active");
+  }
+  const dueInp = $("#tk-due");
+  if (dueInp) dueInp.value = "";
+  const blkSel = $("#tk-blocker");
+  if (blkSel) blkSel.value = "";
+  syncTaskQuickFormChrome();
+}
+
+function selectTaskForEdit(tid) {
+  if (state.editingTaskId === tid) {
+    resetTaskQuickForm();
+    renderTasksPanel();
+    return;
+  }
+  const tk = (state.tasks || []).find((x) => x.id === tid && !x.done_at);
+  if (!tk) return;
+  state.editingTaskId = tk.id;
+  state.addingPrereqForTaskId = null;
+  renderTasksPanel();
+  const titleInp = $("#tk-title");
+  if (titleInp) titleInp.value = tk.title || "";
+  const habSel = $("#tk-habit");
+  if (habSel) habSel.value = tk.habit_id || "";
+  const prioBtn = $("#tk-prio-btn");
+  if (prioBtn) {
+    const on = tk.priority ? "1" : "0";
+    prioBtn.dataset.active = on;
+    prioBtn.classList.toggle("active", on === "1");
+  }
+  const dueInp = $("#tk-due");
+  if (dueInp) dueInp.value = tk.due_date || "";
+  const blkSel = $("#tk-blocker");
+  if (blkSel) blkSel.value = tk.blocked_by_task_id || "";
+  syncTaskQuickFormChrome();
+  if (titleInp) {
+    titleInp.focus();
+    titleInp.setSelectionRange(titleInp.value.length, titleInp.value.length);
+  }
+  const form = $("#task-quick-form");
+  if (form && typeof form.scrollIntoView === "function") {
+    form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
 function renderTasksPanel() {
   const panel = $("#tasks-panel");
   if (!panel) return;
   const allTasks = state.tasks || [];
   const openTasks = allTasks.filter((tk) => !tk.done_at);
 
+  if (state.editingTaskId && !openTasks.some((tk) => tk.id === state.editingTaskId)) {
+    resetTaskQuickForm();
+  }
+
   // Populate habit dropdown & blocker dropdown
   const habSel = $("#tk-habit");
   if (habSel) {
-    const prevHab = state.taskFilterHabitId || habSel.value || "";
+    const prevHab = state.editingTaskId
+      ? habSel.value || ""
+      : state.taskFilterHabitId && state.taskFilterHabitId !== "__none__"
+      ? state.taskFilterHabitId
+      : habSel.value || "";
     habSel.innerHTML =
       `<option value="">${esc(t("tk_no_habit"))}</option>` +
       (state.habits || []).map((h) => `<option value="${esc(h.id)}">${esc(h.name)}</option>`).join("");
@@ -1291,21 +1370,26 @@ function renderTasksPanel() {
   const blkSel = $("#tk-blocker");
   if (blkSel) {
     const prevBlk = blkSel.value || "";
-    if (openTasks.length) {
+    const blockerCandidates = openTasks.filter((tk) => tk.id !== state.editingTaskId);
+    if (blockerCandidates.length) {
       blkSel.classList.remove("hidden");
       blkSel.innerHTML =
         `<option value="">${esc(t("tk_no_blocker"))}</option>` +
-        openTasks.map((tk) => `<option value="${esc(tk.id)}">${esc(tk.title.slice(0, 44))}</option>`).join("");
-      if (prevBlk && openTasks.some((tk) => tk.id === prevBlk)) blkSel.value = prevBlk;
+        blockerCandidates.map((tk) => `<option value="${esc(tk.id)}">${esc(tk.title.slice(0, 44))}</option>`).join("");
+      if (prevBlk && blockerCandidates.some((tk) => tk.id === prevBlk)) blkSel.value = prevBlk;
     } else {
       blkSel.classList.add("hidden");
       blkSel.value = "";
     }
   }
+  syncTaskQuickFormChrome();
+
+  const q = String(state.filterQuery || "").trim().toLowerCase();
 
   // Quick 1-tap Habit filter pills right inside Offene Zettel (only shown when tasks span multiple buckets or >= 3 open!)
   const pillsWrap = $("#tasks-habit-pills");
   if (pillsWrap) {
+    pillsWrap.classList.toggle("is-search-override", Boolean(q));
     const countsByBucket = new Map();
     for (const tk of openTasks) {
       const k = tk.habit_id || "__none__";
@@ -1338,6 +1422,7 @@ function renderTasksPanel() {
   const filterIsNone = state.taskFilterHabitId === "__none__";
   const filterHab = !filterIsNone && state.taskFilterHabitId ? (state.habits || []).find((h) => h.id === state.taskFilterHabitId) : null;
   if (fChip) {
+    fChip.classList.toggle("is-search-override", Boolean(q));
     if (filterHab) {
       fChip.classList.remove("hidden");
       fChip.innerHTML = `<span class="tk-dot" style="background:${esc(filterHab.color)}"></span>${esc(filterHab.name)} <button type="button" class="tk-chip-x" id="btn-clear-task-filter" title="${esc(t("tk_filter_clear"))}">×</button>`;
@@ -1350,7 +1435,6 @@ function renderTasksPanel() {
     }
   }
 
-  const q = String(state.filterQuery || "").trim().toLowerCase();
   const habGroupById = {};
   for (const h of state.habits || []) {
     if (h && h.id && h.group_name) habGroupById[h.id] = String(h.group_name).toLowerCase();
@@ -1366,7 +1450,9 @@ function renderTasksPanel() {
     );
   };
 
-  const scopedBase = filterIsNone
+  const scopedBase = q
+    ? allTasks
+    : filterIsNone
     ? allTasks.filter((tk) => !tk.habit_id)
     : filterHab
     ? allTasks.filter((tk) => tk.habit_id === filterHab.id)
@@ -1406,7 +1492,7 @@ function renderTasksPanel() {
           const dueBadge = formatTaskDueBadge(tk.due_date);
           const blocksBadge = tk.blocks_count ? `<span class="tk-blocks-pill mono" title="${esc(t("tk_blocks_n", { n: tk.blocks_count }))}">↳ ${esc(t("tk_blocks_n", { n: tk.blocks_count }))}</span>` : "";
           const prereqOpen = state.addingPrereqForTaskId === tk.id;
-          const editOpen = state.editingTaskId === tk.id;
+          const isEditing = state.editingTaskId === tk.id;
           const prereqFormHtml = prereqOpen
             ? `<form class="tk-prereq-form" data-tk-prereq-form="${esc(tk.id)}">
                  <input type="text" class="tk-prereq-inp" placeholder="${esc(t("tk_add_prereq_ph"))}" required />
@@ -1414,37 +1500,19 @@ function renderTasksPanel() {
                  <button type="button" class="btn ghost sm" data-tk-prereq-cancel="1">×</button>
                </form>`
             : "";
-          const editFormHtml = editOpen
-            ? `<form class="tk-edit-form" data-tk-edit-form="${esc(tk.id)}">
-                 <input type="text" class="tk-edit-title" value="${esc(tk.title)}" required />
-                 <select class="tk-edit-habit">
-                   <option value="">${esc(t("tk_no_habit"))}</option>
-                   ${(state.habits || []).map((h) => `<option value="${esc(h.id)}" ${tk.habit_id === h.id ? "selected" : ""}>${esc(h.name)}</option>`).join("")}
-                 </select>
-                 <input type="date" class="compact-input tk-edit-due" value="${esc(tk.due_date || "")}" title="${esc(t("tk_due_title"))}" />
-                 <select class="tk-edit-blocker">
-                   <option value="">${esc(t("tk_no_blocker"))}</option>
-                   ${openTasks.filter((o) => o.id !== tk.id).map((o) => `<option value="${esc(o.id)}" ${tk.blocked_by_task_id === o.id ? "selected" : ""}>${esc(o.title.slice(0, 38))}</option>`).join("")}
-                 </select>
-                 <button type="submit" class="btn primary sm">OK</button>
-                 <button type="button" class="btn ghost sm" data-tk-edit-cancel="1">×</button>
-               </form>`
-            : "";
           return `
-            <div class="task-row ${tk.priority ? "is-priority" : ""}" data-task-id="${esc(tk.id)}">
+            <div class="task-row ${tk.priority ? "is-priority" : ""} ${isEditing ? "is-editing" : ""}" data-task-id="${esc(tk.id)}" data-tk-editable="1">
               <div class="task-row-main">
                 <button type="button" class="tk-check" data-tk-complete="${esc(tk.id)}" aria-label="Abhaken" title="Abhaken${tk.habit_name ? ` (+1 ${esc(tk.habit_name)})` : ""}"></button>
-                <span class="tk-title">${esc(tk.title)}</span>
+                <span class="tk-title" data-tk-select="${esc(tk.id)}" role="button" tabindex="0" title="${esc(t("tk_select_edit_title"))}">${esc(tk.title)}</span>
                 <div class="tk-meta">${prioBadge}${dueBadge}${blocksBadge}${habPill}</div>
                 <div class="tk-actions">
                   <button type="button" class="tk-act-btn" data-tk-prereq-toggle="${esc(tk.id)}" title="${esc(t("tk_add_prereq_btn"))}">↳</button>
                   <button type="button" class="tk-act-btn ${tk.priority ? "is-on" : ""}" data-tk-toggle-prio="${esc(tk.id)}" title="${esc(t("tk_prio_title"))}">↑</button>
-                  <button type="button" class="tk-act-btn" data-tk-edit-toggle="${esc(tk.id)}" title="Bearbeiten (Habit, Frist, Blocker)">✎</button>
                   <button type="button" class="tk-act-btn is-del" data-tk-del="${esc(tk.id)}" title="Entfernen">×</button>
                 </div>
               </div>
               ${prereqFormHtml}
-              ${editFormHtml}
             </div>`;
         })
         .join("");
@@ -1473,14 +1541,15 @@ function renderTasksPanel() {
       blkList.innerHTML = blocked
         .map((tk) => {
           const habPill = tk.habit_name
-            ? `<span class="tk-hab-pill" style="--tk-col:${esc(tk.habit_color || "var(--accent)")}"><span class="tk-dot" style="background:${esc(tk.habit_color || "var(--accent)")}"></span>${esc(tk.habit_name)}</span>`
+            ? `<button type="button" class="tk-hab-pill" data-tk-filter-hab="${esc(tk.habit_id)}" style="--tk-col:${esc(tk.habit_color || "var(--accent)")}"><span class="tk-dot" style="background:${esc(tk.habit_color || "var(--accent)")}"></span>${esc(tk.habit_name)}</button>`
             : "";
           const dueBadge = formatTaskDueBadge(tk.due_date);
+          const isEditing = state.editingTaskId === tk.id;
           return `
-            <div class="task-row is-blocked" data-task-id="${esc(tk.id)}">
+            <div class="task-row is-blocked ${isEditing ? "is-editing" : ""}" data-task-id="${esc(tk.id)}" data-tk-editable="1">
               <div class="task-row-main">
                 <span class="tk-lock" aria-hidden="true">◷</span>
-                <span class="tk-title">${esc(tk.title)}</span>
+                <span class="tk-title" data-tk-select="${esc(tk.id)}" role="button" tabindex="0" title="${esc(t("tk_select_edit_title"))}">${esc(tk.title)}</span>
                 <span class="tk-wait-tag muted sm-text">${esc(t("tk_wait_prefix"))} <strong>${esc(tk.blocker_title || "…")}</strong></span>
                 <div class="tk-meta">${dueBadge}${habPill}</div>
                 <div class="tk-actions">
@@ -4891,6 +4960,12 @@ function bindEvents() {
     state.filterKind = pill.dataset.fkind;
     if (state.filterKind === "focus") localStorage.setItem("daily_today_focus", "1");
     else if (state.filterKind === "all") localStorage.setItem("daily_today_focus", "0");
+    if (state.filterQuery.trim()) {
+      state.filterQuery = "";
+      const sInp = $("#today-search");
+      if (sInp) sInp.value = "";
+      hideFilterAutocomplete("#today-search-ac");
+    }
     state.showDormantToday = false;
     $$("#today-kind-pills [data-fkind]").forEach((p) => p.classList.toggle("active", p === pill));
     if (state.todayData) renderToday(state.todayData);
@@ -7515,26 +7590,49 @@ function bindEvents() {
       const priority = tkPrioBtn && tkPrioBtn.dataset.active === "1" ? 1 : 0;
       const due_date = ($("#tk-due") && $("#tk-due").value) || "";
       const blocked_by_task_id = ($("#tk-blocker") && $("#tk-blocker").value) || null;
+      const editingId = state.editingTaskId;
       try {
-        await api("/api/tasks", {
-          method: "POST",
-          body: JSON.stringify({ title, habit_id, priority, due_date, blocked_by_task_id }),
-        });
-        titleInp.value = "";
-        if ($("#tk-due")) $("#tk-due").value = "";
-        if ($("#tk-blocker")) $("#tk-blocker").value = "";
-        if (tkPrioBtn) {
-          tkPrioBtn.dataset.active = "0";
-          tkPrioBtn.classList.remove("active");
+        if (editingId) {
+          await api(`/api/tasks/${encodeURIComponent(editingId)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ title, habit_id, priority, due_date, blocked_by_task_id }),
+          });
+        } else {
+          await api("/api/tasks", {
+            method: "POST",
+            body: JSON.stringify({ title, habit_id, priority, due_date, blocked_by_task_id }),
+          });
         }
+        resetTaskQuickForm();
         await loadToday();
       } catch (err) {
         toast(t("err_prefix", { msg: err.message }));
       }
     });
+    tkForm.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && state.editingTaskId) {
+        e.preventDefault();
+        resetTaskQuickForm();
+        renderTasksPanel();
+      }
+    });
+  }
+  const tkEditCancelBtn = $("#tk-edit-cancel");
+  if (tkEditCancelBtn) {
+    tkEditCancelBtn.addEventListener("click", () => {
+      resetTaskQuickForm();
+      renderTasksPanel();
+    });
   }
   const tkPanel = $("#tasks-panel");
   if (tkPanel) {
+    tkPanel.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const sel = e.target.closest("[data-tk-select]");
+      if (!sel) return;
+      e.preventDefault();
+      selectTaskForEdit(sel.dataset.tkSelect);
+    });
     tkPanel.addEventListener("click", async (e) => {
       if (e.target.closest("#btn-clear-task-filter")) {
         state.taskFilterHabitId = null;
@@ -7544,7 +7642,15 @@ function bindEvents() {
       const pillBtn = e.target.closest("[data-tk-pill]");
       if (pillBtn) {
         state.taskFilterHabitId = pillBtn.dataset.tkPill || null;
-        renderTasksPanel();
+        if (state.filterQuery.trim()) {
+          state.filterQuery = "";
+          const sInp = $("#today-search");
+          if (sInp) sInp.value = "";
+          hideFilterAutocomplete("#today-search-ac");
+          if (state.todayData) renderToday(state.todayData);
+        } else {
+          renderTasksPanel();
+        }
         return;
       }
       if (e.target.closest("[data-tk-toggle-more]")) {
@@ -7552,24 +7658,19 @@ function bindEvents() {
         renderTasksPanel();
         return;
       }
-      const editToggle = e.target.closest("[data-tk-edit-toggle]");
-      if (editToggle) {
-        const tid = editToggle.dataset.tkEditToggle;
-        state.editingTaskId = state.editingTaskId === tid ? null : tid;
-        state.addingPrereqForTaskId = null;
-        renderTasksPanel();
-        return;
-      }
-      if (e.target.closest("[data-tk-edit-cancel]")) {
-        state.editingTaskId = null;
-        renderTasksPanel();
-        return;
-      }
       const filtHab = e.target.closest("[data-tk-filter-hab]");
       if (filtHab) {
         const hid = filtHab.dataset.tkFilterHab;
         state.taskFilterHabitId = state.taskFilterHabitId === hid ? null : hid;
-        renderTasksPanel();
+        if (state.filterQuery.trim()) {
+          state.filterQuery = "";
+          const sInp = $("#today-search");
+          if (sInp) sInp.value = "";
+          hideFilterAutocomplete("#today-search-ac");
+          if (state.todayData) renderToday(state.todayData);
+        } else {
+          renderTasksPanel();
+        }
         return;
       }
       const compBtn = e.target.closest("[data-tk-complete]");
@@ -7613,11 +7714,16 @@ function bindEvents() {
         const tid = prioBtn.dataset.tkTogglePrio;
         const cur = (state.tasks || []).find((x) => x.id === tid);
         if (!cur) return;
+        const nextPrio = cur.priority ? 0 : 1;
         try {
           await api(`/api/tasks/${encodeURIComponent(tid)}`, {
             method: "PATCH",
-            body: JSON.stringify({ priority: cur.priority ? 0 : 1 }),
+            body: JSON.stringify({ priority: nextPrio }),
           });
+          if (state.editingTaskId === tid && tkPrioBtn) {
+            tkPrioBtn.dataset.active = String(nextPrio);
+            tkPrioBtn.classList.toggle("active", nextPrio === 1);
+          }
           await loadToday();
         } catch (err) {
           toast(t("err_prefix", { msg: err.message }));
@@ -7632,6 +7738,9 @@ function bindEvents() {
             method: "PATCH",
             body: JSON.stringify({ blocked_by_task_id: null }),
           });
+          if (state.editingTaskId === tid && $("#tk-blocker")) {
+            $("#tk-blocker").value = "";
+          }
           await loadToday();
         } catch (err) {
           toast(t("err_prefix", { msg: err.message }));
@@ -7658,30 +7767,20 @@ function bindEvents() {
         } catch (err) {
           toast(t("err_prefix", { msg: err.message }));
         }
+        return;
+      }
+      const selTitle = e.target.closest("[data-tk-select]");
+      if (selTitle) {
+        selectTaskForEdit(selTitle.dataset.tkSelect);
+        return;
+      }
+      const rowMain = e.target.closest('.task-row[data-tk-editable="1"] .task-row-main');
+      if (rowMain && !e.target.closest("button, input, select, a, form")) {
+        const row = rowMain.closest(".task-row");
+        if (row && row.dataset.taskId) selectTaskForEdit(row.dataset.taskId);
       }
     });
     tkPanel.addEventListener("submit", async (e) => {
-      const ef = e.target.closest("[data-tk-edit-form]");
-      if (ef) {
-        e.preventDefault();
-        const tid = ef.dataset.tkEditForm;
-        const title = (ef.querySelector(".tk-edit-title")?.value || "").trim();
-        const habit_id = ef.querySelector(".tk-edit-habit")?.value || null;
-        const due_date = ef.querySelector(".tk-edit-due")?.value || "";
-        const blocked_by_task_id = ef.querySelector(".tk-edit-blocker")?.value || null;
-        if (!title) return;
-        try {
-          await api(`/api/tasks/${encodeURIComponent(tid)}`, {
-            method: "PATCH",
-            body: JSON.stringify({ title, habit_id, due_date, blocked_by_task_id }),
-          });
-          state.editingTaskId = null;
-          await loadToday();
-        } catch (err) {
-          toast(t("err_prefix", { msg: err.message }));
-        }
-        return;
-      }
       const pf = e.target.closest("[data-tk-prereq-form]");
       if (!pf) return;
       e.preventDefault();
