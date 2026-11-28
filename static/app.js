@@ -4296,22 +4296,35 @@ function renderStateCurveSection(curves, timelineMeta) {
   const allTicks = meta.habit_ticks || [];
   const visTicksAll = allTicks.filter((tk) => tk.t >= vStart && tk.t <= vEnd);
 
-  // Per-habit unit metadata & visible-viewport mean dose so each habit's typical visible entry = 1.0
-  // (e.g. a lone 3.6 Coding block or 36.8 °C reading equals 1x Smoke; 2x or two merged 1x pins = 2.0 -> single pins become half height!)
+  // Stable 30-day reference window (pan-invariant!) so scrolling left/right NEVER makes pin heights jump.
+  // Per-habit 30d mean normalizes each habit's typical single entry to 1.0 (measures like 36.8 °C are always 1.0).
+  const refWindowTicks = allTicks.filter((tk) => tk.t >= nowHr - 30 * 24 && tk.t <= nowHr + 24);
+  const refTicksBase = refWindowTicks.length ? refWindowTicks : allTicks;
   const habMetaById = {};
   for (const h of state.habits || []) habMetaById[h.id] = h;
-  const visSumsByHabit = new Map();
-  for (const tk of visTicksAll) {
+  const refSumsByHabit = new Map();
+  for (const tk of refTicksBase) {
     const a = Number(tk.amount || 0);
     if (a > 0) {
-      const acc = visSumsByHabit.get(tk.habit_id) || { sum: 0, count: 0 };
+      const acc = refSumsByHabit.get(tk.habit_id) || { sum: 0, count: 0 };
       acc.sum += a;
       acc.count += 1;
-      visSumsByHabit.set(tk.habit_id, acc);
+      refSumsByHabit.set(tk.habit_id, acc);
+    }
+  }
+  // Fallback for habits that only have ticks older than 30 days
+  for (const tk of allTicks) {
+    if (refSumsByHabit.has(tk.habit_id)) continue;
+    const a = Number(tk.amount || 0);
+    if (a > 0) {
+      const acc = refSumsByHabit.get(tk.habit_id) || { sum: 0, count: 0 };
+      acc.sum += a;
+      acc.count += 1;
+      refSumsByHabit.set(tk.habit_id, acc);
     }
   }
   const unitScaleByHabit = new Map();
-  for (const [hid, acc] of visSumsByHabit.entries()) {
+  for (const [hid, acc] of refSumsByHabit.entries()) {
     const avg = acc.count > 0 ? acc.sum / acc.count : 1;
     unitScaleByHabit.set(hid, avg > 1e-6 ? avg : 1);
   }
@@ -4451,8 +4464,50 @@ function renderStateCurveSection(curves, timelineMeta) {
     };
   });
 
-  // Scale pin heights proportionally against the largest normalized bucket currently in view!
-  const maxPinNorm = Math.max(1, ...renderedPins.map((p) => p.normTotal));
+  // Pan-invariant 30-day p95 height ceiling for the current zoom bucket size (bucketHr):
+  // stays 100% constant while panning sideways, recalculates on zoom changes, and caps 1-off extreme outliers cleanly!
+  const refTicksScoped = state.selectedChartHabitId
+    ? refTicksBase.filter((tk) => tk.habit_id === state.selectedChartHabitId)
+    : refTicksBase;
+  const refBucketTotals = [];
+  if (refTicksScoped.length) {
+    if (bucketHr === 0) {
+      const sortedRef = [...refTicksScoped].sort((a, b) => a.t - b.t);
+      let lastT = null;
+      let accNorm = 0;
+      for (const tk of sortedRef) {
+        const nAmt = normTickAmount(tk);
+        if (lastT !== null && Math.abs(tk.t - lastT) <= 0.25) {
+          accNorm += nAmt;
+        } else {
+          if (lastT !== null) refBucketTotals.push(accNorm);
+          lastT = tk.t;
+          accNorm = nAmt;
+        }
+      }
+      if (lastT !== null) refBucketTotals.push(accNorm);
+    } else {
+      const rMap = new Map();
+      for (const tk of refTicksScoped) {
+        let rKey;
+        if (bucketHr === 168) {
+          const dt = new Date(originMs + tk.t * 3600000);
+          const monOff = (dt.getDay() + 6) % 7;
+          const mon = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - monOff, 0, 0, 0);
+          rKey = Math.round(((mon.getTime() - originMs) / 3600000) / 24);
+        } else if (bucketHr === 24) {
+          rKey = Math.floor(tk.t / 24);
+        } else {
+          rKey = Math.floor(tk.t / bucketHr);
+        }
+        rMap.set(rKey, (rMap.get(rKey) || 0) + normTickAmount(tk));
+      }
+      refBucketTotals.push(...rMap.values());
+    }
+  }
+  refBucketTotals.sort((a, b) => a - b);
+  const idx95 = refBucketTotals.length ? Math.min(refBucketTotals.length - 1, Math.round(0.95 * (refBucketTotals.length - 1))) : 0;
+  const scaleRefNorm = Math.max(1, refBucketTotals.length ? refBucketTotals[idx95] : 1);
   const yBot = padT + plotH;
   const barW =
     bucketHr === 0
@@ -4466,7 +4521,7 @@ function renderStateCurveSection(curves, timelineMeta) {
   const maxPinH = bucketHr === 0 ? 24 : 32;
   ticksLayer = renderedPins
     .map((p) => {
-      const totalH = Math.max(4, Math.min(maxPinH, (p.normTotal / maxPinNorm) * maxPinH));
+      const totalH = Math.max(4, Math.min(maxPinH, (p.normTotal / scaleRefNorm) * maxPinH));
       p.barH = totalH;
       p.barW = barW;
       const tipParts = p.items.slice(0, 4).map((it) => `${it.habit_name} ${it.displayVal}`);
